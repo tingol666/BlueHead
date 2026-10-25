@@ -4,9 +4,10 @@ import hashlib
 from pathlib import Path
 import subprocess
 import zipfile
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "1.2.2"
+VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text("utf-8"))["project"]["version"]
 FILES = {".gitignore", "README.md", "README.txt", "LICENSE", "THIRD_PARTY_NOTICES.txt", "CHANGELOG.md",
          "CONTRIBUTING.md", "pyproject.toml", "requirements.lock.txt", "dependencies.json", "ffmpeg-build.json",
          "global.json", "NuGet.Config", "launch.py", "engine_launch.py"}
@@ -67,16 +68,16 @@ def main():
     lines += ['RMDir "$INSTDIR\\' + nsis_literal(str(path.relative_to(portable))) + '"' for path in directories]
     remove.write_text("\n".join(lines) + "\n", "utf-8-sig")
     installer = release / f"BlueHead-{VERSION}-Setup-x64.exe"
-    subprocess.run([str(args.nsis.resolve()), "/V2", "/DRELEASE_DIR=" + str(portable),
+    subprocess.run([str(args.nsis.resolve()), "/V2", "/DAPP_VERSION=" + VERSION, "/DRELEASE_DIR=" + str(portable),
                     "/DOUTPUT_FILE=" + str(installer), "/DREMOVE_FILES=" + str(remove),
                     str(ROOT / "installer/BlueHead.nsi")], cwd=ROOT / "installer", check=True)
     portable_zip = release / f"BlueHead-{VERSION}-Portable-x64.zip"
-    with zipfile.ZipFile(portable_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+    with zipfile.ZipFile(portable_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for file in public:
             archive.write(file, "BlueHead/" + file.relative_to(portable).as_posix())
         archive.writestr("BlueHead/portable.flag", "BlueHead portable mode; settings and pairing are stored in data/.\n")
     source_zip = release / f"BlueHead-{VERSION}-Source.zip"
-    with zipfile.ZipFile(source_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+    with zipfile.ZipFile(source_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for file, relative in public_sources():
             archive.write(file, "BlueHead/" + relative.as_posix())
     artifacts = [installer, portable_zip, source_zip, release / "VALIDATION.md"]

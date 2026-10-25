@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdatomic.h>
 
 #define API __declspec(dllexport)
 #define INPUTS 8
@@ -20,19 +21,39 @@ typedef struct {
     int active, buffering;
     float gain, gate, gate_target;
     double phase, drift;
+    atomic_uint queued_view, drift_view, gate_view;
+    atomic_ullong dropped_view;
 } Input;
-typedef struct {
+typedef struct Mixer {
     CRITICAL_SECTION lock;
     Input input[INPUTS];
-    uint64_t underruns, contentions;
+    atomic_ullong underruns, contentions;
+    atomic_uint master_bits;
     int call;
     float sinc[PHASES + 1][TAPS];
 } Mixer;
+
+static void publish_input(Input *s) {
+    atomic_store_explicit(&s->queued_view, s->frames, memory_order_relaxed);
+    atomic_store_explicit(&s->dropped_view, s->dropped, memory_order_relaxed);
+    atomic_store_explicit(&s->drift_view, (unsigned)(s->drift * 1000000 + 1000), memory_order_relaxed);
+}
+API void bh_mix_master(Mixer *m, float gain) {
+    if (!m || !isfinite(gain)) return;
+    unsigned bits; memcpy(&bits, &gain, sizeof(bits));
+    atomic_store_explicit(&m->master_bits, bits, memory_order_relaxed);
+}
+API float bh_mix_master_value(Mixer *m) {
+    unsigned bits = atomic_load_explicit(&m->master_bits, memory_order_relaxed);
+    float gain; memcpy(&gain, &bits, sizeof(gain)); return gain;
+}
 
 API Mixer *bh_mix_create(void) {
     Mixer *m = calloc(1, sizeof(Mixer));
     if (!m) return NULL;
     InitializeCriticalSection(&m->lock);
+    atomic_init(&m->underruns, 0); atomic_init(&m->contentions, 0);
+    atomic_init(&m->master_bits, 0x3f800000u);
     m->call = -1;
     /* Band-limited fractional delay, computed once outside the callback.
      * 64-tap Blackman-Harris window, interpolated 1024-phase coefficient table. */
@@ -48,6 +69,8 @@ API Mixer *bh_mix_create(void) {
         for (int t = 0; t < TAPS; t++) m->sinc[p][t] /= (float)sum;
     }
     for (int i = 0; i < INPUTS; i++) {
+        atomic_init(&m->input[i].queued_view, 0); atomic_init(&m->input[i].dropped_view, 0);
+        atomic_init(&m->input[i].drift_view, 1000); atomic_init(&m->input[i].gate_view, 0);
         m->input[i].pcm = calloc(CAPACITY * 2, sizeof(float));
         if (!m->input[i].pcm) {
             for (int j = 0; j < i; j++) free(m->input[j].pcm);
@@ -70,6 +93,7 @@ API int bh_mix_add(Mixer *m, uint32_t target, uint32_t maximum) {
         s->active = 1; s->read = s->frames = s->history = 0; s->gain = s->gate = s->gate_target = 1.0f;
         s->target = target; s->maximum = maximum; s->buffering = 1;
         s->dropped = s->rendered = 0; s->phase = s->drift = 0;
+        atomic_store(&s->gate_view, 1); publish_input(s);
         index = i; break;
     }
     LeaveCriticalSection(&m->lock); return index;
@@ -85,6 +109,7 @@ API void bh_mix_clear(Mixer *m, int index) {
     EnterCriticalSection(&m->lock);
     Input *s = &m->input[index];
     s->read = s->frames = s->history = 0; s->buffering = 1; s->phase = s->drift = 0;
+    publish_input(s);
     LeaveCriticalSection(&m->lock);
 }
 API void bh_mix_gain(Mixer *m, int index, float gain) {
@@ -94,10 +119,13 @@ API void bh_mix_gain(Mixer *m, int index, float gain) {
 }
 API void bh_mix_gate(Mixer *m, int index, int enabled) {
     if (!m || index < 0 || index >= INPUTS) return;
+    enabled = !!enabled;
+    if (atomic_load_explicit(&m->input[index].gate_view, memory_order_relaxed) == (unsigned)enabled) return;
     EnterCriticalSection(&m->lock);
     Input *s = &m->input[index];
     s->gate_target = enabled ? 1.0f : 0.0f;
     if (!s->frames || s->buffering) s->gate = s->gate_target;
+    atomic_store_explicit(&s->gate_view, (unsigned)enabled, memory_order_relaxed);
     LeaveCriticalSection(&m->lock);
 }
 API void bh_mix_call(Mixer *m, int index) {
@@ -121,6 +149,7 @@ API void bh_mix_write(Mixer *m, int index, const float *pcm, uint32_t frames) {
     memcpy(s->pcm + write * 2, pcm, first * 2 * sizeof(float));
     memcpy(s->pcm, pcm + first * 2, (frames - first) * 2 * sizeof(float));
     s->frames += frames;
+    publish_input(s);
     LeaveCriticalSection(&m->lock);
 }
 static float sample(Input *s, int offset, int channel) {
@@ -143,7 +172,7 @@ static float interpolate(Mixer *m, Input *s, int offset, int channel, float frac
 API int bh_mix_render(Mixer *m, float *output, uint32_t count, float master) {
     if (!m || !output || count > CAPACITY || !isfinite(master)) return -1;
     memset(output, 0, count * 2 * sizeof(float));
-    if (!TryEnterCriticalSection(&m->lock)) { InterlockedIncrement64((LONG64*)&m->contentions); return 0; }
+    if (!TryEnterCriticalSection(&m->lock)) { atomic_fetch_add_explicit(&m->contentions, 1, memory_order_relaxed); return 0; }
     for (int i = 0; i < INPUTS; i++) {
         Input *s = &m->input[i];
         if (!s->active) continue;
@@ -186,6 +215,7 @@ API int bh_mix_render(Mixer *m, float *output, uint32_t count, float master) {
         s->phase = s->frames ? position - consumed : 0;
         s->rendered += produced;
         if (produced < count) { s->buffering = 1; m->underruns++; }
+        publish_input(s);
     }
     float peak = 0;
     for (uint32_t j = 0; j < count*2; j++) {
@@ -200,12 +230,13 @@ API int bh_mix_render(Mixer *m, float *output, uint32_t count, float master) {
 }
 API uint64_t bh_mix_value(Mixer *m, int index, int field) {
     if (!m) return 0;
-    EnterCriticalSection(&m->lock);
     uint64_t value = 0;
-    if (index < 0) value = field == 0 ? m->underruns : m->contentions;
+    if (index < 0) value = field == 0 ? atomic_load(&m->underruns) : atomic_load(&m->contentions);
     else if (index < INPUTS) {
         Input *s = &m->input[index];
-        value = field == 0 ? s->frames : field == 1 ? s->dropped : (uint64_t)(s->drift * 1000000 + 1000);
+        value = field == 0 ? atomic_load_explicit(&s->queued_view, memory_order_relaxed) :
+                field == 1 ? atomic_load_explicit(&s->dropped_view, memory_order_relaxed) :
+                atomic_load_explicit(&s->drift_view, memory_order_relaxed);
     }
-    LeaveCriticalSection(&m->lock); return value;
+    return value;
 }

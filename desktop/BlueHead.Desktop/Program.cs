@@ -50,6 +50,12 @@ internal static class Program
         Directory.CreateDirectory(folder);
         var checks = new Dictionary<string, bool>();
         var window = new MainWindow(true); app.MainWindow = window;
+        checks["sidebar_and_help_use_build_version"] = window.SidebarVersion.Text == AppVersion.Label && window.HelpVersion.Text == AppVersion.Title;
+        checks["diagnostics_use_build_version"] = JsonSerializer.SerializeToElement(window.CreateDiagnosticsReport()).Text("version") == AppVersion.Number;
+        using (var correct = JsonDocument.Parse(JsonSerializer.Serialize(new { version = AppVersion.Number }))) EngineClient.ValidateVersion(correct.RootElement);
+        checks["matching_engine_version_is_accepted"] = true;
+        try { using var wrong = JsonDocument.Parse("{\"version\":\"0.0.0\"}"); EngineClient.ValidateVersion(wrong.RootElement); checks["mismatched_engine_version_is_rejected"] = false; }
+        catch (IOException) { checks["mismatched_engine_version_is_rejected"] = true; }
         window.Show();
         WindowSizing.Apply(window, true); Pump();
         checks["adaptive_start_fits_actual_monitor_work_area"] = WindowSizing.FitsCurrentWorkArea(window);

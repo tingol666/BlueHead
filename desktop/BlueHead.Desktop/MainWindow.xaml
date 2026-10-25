@@ -22,7 +22,7 @@
 
     <DockPanel Margin="10,19,10,16">
 
-     <StackPanel DockPanel.Dock="Bottom" Margin="14,0,0,0"><TextBlock Text="1.2.2 · 正式版" Style="{StaticResource Caption}"/><StackPanel Orientation="Horizontal" Margin="0,10,0,0"><Ellipse Width="5" Height="5" Fill="#0A8A7A" VerticalAlignment="Center" Margin="0,0,7,0"/><TextBlock Text="本机蓝牙连接" FontSize="11" Foreground="{StaticResource Muted}"/></StackPanel></StackPanel>
+     <StackPanel DockPanel.Dock="Bottom" Margin="14,0,0,0"><TextBlock x:Name="SidebarVersion" Text="{x:Static local:AppVersion.Label}" Style="{StaticResource Caption}"/><StackPanel Orientation="Horizontal" Margin="0,10,0,0"><Ellipse Width="5" Height="5" Fill="#0A8A7A" VerticalAlignment="Center" Margin="0,0,7,0"/><TextBlock Text="本机蓝牙连接" FontSize="11" Foreground="{StaticResource Muted}"/></StackPanel></StackPanel>
 
      <StackPanel>
 
@@ -279,7 +279,7 @@
 
      <ScrollViewer x:Name="HelpPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel>
 
-      <TextBlock Text="帮助与诊断" Style="{StaticResource Heading}"/><TextBlock Text="BlueHead 1.2.2 · 正式版" Foreground="{StaticResource Muted}" Margin="0,6,0,8"/><TextBlock Margin="0,0,0,18"><Hyperlink x:Name="HelpProjectLink" NavigateUri="{x:Static local:ProjectLinks.Repository}" RequestNavigate="ProjectNavigate" Foreground="{StaticResource Accent}" ToolTip="在浏览器打开项目主页">GitHub · github.com/tingol666/BlueHead ↗</Hyperlink></TextBlock>
+      <TextBlock Text="帮助与诊断" Style="{StaticResource Heading}"/><TextBlock x:Name="HelpVersion" Text="{x:Static local:AppVersion.Title}" Foreground="{StaticResource Muted}" Margin="0,6,0,8"/><TextBlock Margin="0,0,0,18"><Hyperlink x:Name="HelpProjectLink" NavigateUri="{x:Static local:ProjectLinks.Repository}" RequestNavigate="ProjectNavigate" Foreground="{StaticResource Accent}" ToolTip="在浏览器打开项目主页">GitHub · github.com/tingol666/BlueHead ↗</Hyperlink></TextBlock>
 
       <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="连接移动设备" FontSize="17" FontWeight="SemiBold"/><TextBlock x:Name="HelpSteps" Text="1. 从首页点击设置蓝牙接收，按提示选择使用方式、准备适配器。&#x0a;&#x0a;2. 点击开始接收，在移动设备的蓝牙设置中连接 BlueHead PC。&#x0a;&#x0a;3. 开启移动设备端的媒体音频和通话音频，即可播放并使用麦克风。" Margin="0,16,0,0"/><TextBlock Text="录音、录像应用需支持并选择蓝牙麦克风，电脑端不能强制更换移动端应用的录音源。仅接收声音方式需要先在 Windows 设置中完成配对。使用麦克风建议戴电脑耳机，当前没有声学回声消除。" Style="{StaticResource Caption}" Margin="0,18,0,0"/></StackPanel></Border>
 

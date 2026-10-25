@@ -19,6 +19,7 @@ class NativeMixer:
         api.bh_mix_gain.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_float]
         api.bh_mix_write.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint]
         api.bh_mix_render.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_float]
+        api.bh_mix_master.argtypes = [ctypes.c_void_p, ctypes.c_float]
         api.bh_mix_value.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
         api.bh_mix_value.restype = ctypes.c_uint64
         self.handle = api.bh_mix_create()

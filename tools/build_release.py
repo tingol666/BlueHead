@@ -6,9 +6,10 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "1.2.2"
+VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text("utf-8"))["project"]["version"]
 
 
 def run(*args):
@@ -23,9 +24,9 @@ def copy_tree(source, destination):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--assemble-only", action="store_true")
-    parser.add_argument("--desktop", type=Path, default=ROOT / "work/publish-desktop-final")
-    parser.add_argument("--helper", type=Path, default=ROOT / "work/publish-helper-final")
-    parser.add_argument("--engine", type=Path, default=ROOT / "work/engine-final-0.2/BlueHead.Engine")
+    parser.add_argument("--desktop", type=Path, default=ROOT / "work/publish-desktop")
+    parser.add_argument("--helper", type=Path, default=ROOT / "work/publish-helper")
+    parser.add_argument("--engine", type=Path, default=ROOT / "work/engine/BlueHead.Engine")
     parser.add_argument("--output", type=Path, default=ROOT.parent / "releases" / VERSION)
     args = parser.parse_args()
     release = args.output.resolve()
@@ -39,7 +40,7 @@ def main():
         for project, output in (("Desktop", args.desktop), ("DriverHelper", args.helper)):
             run(dotnet, "publish", ROOT / f"desktop/BlueHead.{project}/BlueHead.{project}.csproj", "-c", "Release",
                 "-r", "win-x64", "--self-contained", "true", "-o", output, "-p:DebugType=None", "-p:DebugSymbols=false")
-        run(sys.executable, ROOT / "tools/package_engine.py", args.engine.parent, ROOT / "work/build-engine-final-0.2")
+        run(sys.executable, ROOT / "tools/package_engine.py", args.engine.parent, ROOT / "work/build-engine")
     app = portable / "app"
     copy_tree(args.desktop, app)
     for source in args.helper.iterdir():

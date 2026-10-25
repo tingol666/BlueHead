@@ -11,22 +11,20 @@ def test_endpoint_resampling_keeps_pitch_and_bounded_clock_error(rate):
     import numpy as np
     from bluehead.audio import OutputRenderer
 
-    class Tone:
-        rate = 48000
-        position = 0
-
-        def render(self, frames):
-            tone = .2 * np.sin(2 * np.pi * 1000 * np.arange(self.position, self.position + frames) / self.rate)
-            self.position += frames
-            return np.repeat(tone[:, None], 2, axis=1).astype(np.float32)
-
-    mixer = Tone()
+    mixer = Mixer(buffer_ms=0)
+    mixer.add("tone")
     renderer = OutputRenderer(mixer, rate)
-    output = np.concatenate([renderer.render(rate // 100) for _ in range(100)])
+    blocks = []
+    for i in range(101):
+        tone = .2 * np.sin(2 * np.pi * 1000 * np.arange(i*480, (i+1)*480) / mixer.rate)
+        mixer.write("tone", np.repeat(tone[:, None], 2, axis=1).astype(np.float32))
+        if i:
+            blocks.append(renderer.render(rate // 100))
+    output = np.concatenate(blocks)
     peak = np.argmax(abs(np.fft.rfft(output[:, 0])))
     assert peak == 1000 and .13 < np.std(output) < .15
-    assert 48000 <= mixer.position <= 48480
-    assert renderer.pending_frames < rate // 100
+    assert 0 <= mixer.inputs["tone"].frames <= 480
+    renderer.native.close()
 
 
 class FakeStream:

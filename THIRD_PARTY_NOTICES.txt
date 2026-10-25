@@ -13,6 +13,13 @@ The application loads bluehead/assets/libusb-1.0.dll (official VS2022 MS64 build
 Exact source tarball, license, binary/source hashes and original download URLs
 are included in vendor/libusb. The native library remains replaceable.
 
+SpeexDSP 1.2.1 resampler: BSD-3-Clause, https://gitlab.xiph.org/xiph/speexdsp.
+Pinned commit 1b28a0f61bc31162979e1f26f3981fc3637095c8; original standalone
+float/SSE2 source and file hashes are in vendor/speexdsp. Statically linked
+into bluehead_audio.dll with BlueHead-prefixed symbols; upstream code unchanged.
+Native callback integration follows sounddevice's library-author interface,
+also used by spatialaudio/python-rtmixer; no rtmixer code is copied.
+
 libldacdec: MIT. Pinned commit 7f3bd6cc1586b764b02f2e4f20b16c7ff18758b9.
 https://github.com/hegdi/libldacdec
 BlueHead changes are clearly identified in tools/build_ldac.py: bounds checks,

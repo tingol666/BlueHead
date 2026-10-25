@@ -173,6 +173,19 @@ class Mixer:
         self.underruns = 0
 
     @property
+    def master(self):
+        return self._master
+
+    @master.setter
+    def master(self, value):
+        value = float(value)
+        if not np.isfinite(value):
+            raise ValueError("Audio gain must be finite")
+        self._master = max(0.0, min(2.0, value))
+        if self.native:
+            self.native.library.bh_mix_master(self.native.handle, self._master)
+
+    @property
     def call_active(self):
         return self._call_active
 
@@ -392,34 +405,15 @@ class SwitchableStream:
 
 
 class OutputRenderer:
-    """Use an endpoint's native rate while keeping the Bluetooth mixer at 48 kHz."""
+    """Offline facade for the same native renderer used by PortAudio."""
     def __init__(self, mixer, rate):
+        from .realtime import NativeRender
         self.mixer, self.rate = mixer, rate
-        self.chunks = deque()
-        self.pending_frames = 0
-        self.resampler = None if rate == mixer.rate else av.AudioResampler(format="flt", layout="stereo", rate=rate)
+        self.native = NativeRender(mixer.native, rate)
 
     def render(self, count):
-        if self.resampler is None:
-            return self.mixer.render(count)
-        while self.pending_frames < count:
-            pcm = self.mixer.render(480)
-            frame = av.AudioFrame.from_ndarray(pcm.reshape(1, -1), "flt", "stereo")
-            frame.sample_rate = self.mixer.rate
-            for converted in self.resampler.resample(frame):
-                samples = converted.to_ndarray().reshape(-1, 2).copy()
-                self.chunks.append(samples)
-                self.pending_frames += len(samples)
         out = np.empty((count, 2), dtype=np.float32)
-        offset = 0
-        while offset < count:
-            samples = self.chunks.popleft()
-            take = min(len(samples), count - offset)
-            out[offset:offset + take] = samples[:take]
-            if take < len(samples):
-                self.chunks.appendleft(samples[take:])
-            self.pending_frames -= take
-            offset += take
+        self.native.render_into(out)
         return out
 
 
@@ -427,29 +421,37 @@ class AudioOutput(SwitchableStream):
     @on_audio_thread
     def __init__(self, mixer, output_device=None):
         import sounddevice as sd
+        from .realtime import PlaybackStream
         self.mixer = mixer
-        self.underflows = 0
 
         def create(device):
             resolved = resolve_endpoint(device, "output")
+            endpoint = sd.query_devices(resolved, "output")
+            wasapi = "WASAPI" in sd.query_hostapis()[endpoint["hostapi"]]["name"]
+            # Prefer Windows shared-mode conversion. Drivers that reject it
+            # use the preallocated native SpeexDSP renderer at their own rate.
+            extra = sd.WasapiSettings(auto_convert=True) if wasapi else None
             rate = mixer.rate
             try:
-                sd.check_output_settings(device=resolved, samplerate=rate, channels=2, dtype="float32")
+                sd.check_output_settings(device=resolved, samplerate=rate, channels=2, dtype="float32",
+                                         extra_settings=extra)
             except sd.PortAudioError:
-                rate = int(sd.query_devices(resolved, "output")["default_samplerate"])
-            renderer = OutputRenderer(mixer, rate)
+                rate = int(endpoint["default_samplerate"])
+                extra = None
 
-            def callback(outdata, frames, time_info, status):
-                if status:
-                    self.underflows += 1
-                if renderer.resampler is None:
-                    mixer.render_into(outdata)
-                else:
-                    outdata[:] = renderer.render(frames)
+            def open_stream(rate, extra):
+                return PlaybackStream(mixer, rate, resolved, extra)
 
-            return sd.OutputStream(
-                samplerate=rate, channels=2, dtype="float32",
-                blocksize=0, latency="low", device=resolved,
-                callback=callback,
-            )
+            try:
+                return open_stream(rate, extra)
+            except sd.PortAudioError:
+                if extra is None:
+                    raise
+                # Some drivers pass format probing but reject auto-conversion
+                # at stream creation. Preserve the existing native-rate path.
+                return open_stream(int(endpoint["default_samplerate"]), None)
         super().__init__(create, output_device, "output")
+
+    @property
+    def underflows(self):
+        return self.stream.snapshot().get("status_events", 0)

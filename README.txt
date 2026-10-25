@@ -1,4 +1,4 @@
-BlueHead 1.2.2 | Windows x64
+BlueHead 1.2.4 | Windows x64
 项目主页：https://github.com/tingol666/BlueHead
 
 运行 BlueHead.exe，无需另外安装 Python 或 .NET。

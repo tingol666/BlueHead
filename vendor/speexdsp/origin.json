@@ -1,0 +1,18 @@
+{
+  "project": "SpeexDSP",
+  "version": "1.2.1",
+  "tag": "SpeexDSP-1.2.1",
+  "commit": "1b28a0f61bc31162979e1f26f3981fc3637095c8",
+  "upstream": "https://gitlab.xiph.org/xiph/speexdsp",
+  "official_mirror": "https://github.com/xiph/speexdsp",
+  "license": "BSD-3-Clause",
+  "files_sha256": {
+    "resample.c": "c28fabfc082d0e7634eb678e2e3a2bc091148bbb8324e3d06669c9a9faf6793a",
+    "arch.h": "102f6a14a95f8ae0bcfc69270f3a9e3fbba08b63bba688ca524f71e3faa48c23",
+    "resample_sse.h": "350c061b7045107ee288a9964f5bd955ec570e5de4f8ce1faf593b024ae7e52a",
+    "speex_resampler.h": "7e439ec0dd30c32216b3ced17135f8992e5aaf53389d3f5996a7d900c453e65f",
+    "COPYING": "2654a4264b2bfe298dedc508748d140111840c315cc8eb646a3a68c13fa75b01",
+    "AUTHORS": "6e5a9d92c5f9ccd28fe0b15ad59443fbf435bfc6ab2221f532006d3717ddf642"
+  },
+  "modifications": "None. Standalone float/SSE2 resampler build with OUTSIDE_SPEEX and BlueHead-specific symbol prefix."
+}

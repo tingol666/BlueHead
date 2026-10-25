@@ -656,11 +656,13 @@ public partial class MainWindow
     {
         var dialog = new Microsoft.Win32.SaveFileDialog { FileName = "BlueHead-diagnostics.json", Filter = "诊断报告|*.json" };
         if (dialog.ShowDialog(this) != true) return;
-        var report = new { version = "1.2.2", time_utc = DateTime.UtcNow, os = Environment.OSVersion.VersionString, engine_ready = engine.Ready,
-            connected_devices = State.Devices.Count, telemetry = telemetry?.GetProperty("audio"), scope = "Anonymous counters only; no audio, keys, raw logs, device names or addresses" };
+        var report = CreateDiagnosticsReport();
         File.WriteAllText(dialog.FileName, JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
         FooterStatus.Text = "诊断报告已导出";
     }
+    internal object CreateDiagnosticsReport() =>
+        new { version = AppVersion.Number, time_utc = DateTime.UtcNow, os = Environment.OSVersion.VersionString, engine_ready = engine.Ready,
+            connected_devices = State.Devices.Count, telemetry = telemetry?.GetProperty("audio"), scope = "Anonymous counters only; no audio, keys, raw logs, device names or addresses" };
     private void ProjectNavigate(object sender, System.Windows.Navigation.RequestNavigateEventArgs e)
     {
         try { Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true }); }

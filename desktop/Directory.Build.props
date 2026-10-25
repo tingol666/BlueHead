@@ -3,12 +3,13 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>1.2.2</Version>
-    <InformationalVersion>1.2.2</InformationalVersion>
+    <Version>1.2.4</Version>
+    <InformationalVersion>1.2.4</InformationalVersion>
     <Company>BlueHead contributors</Company>
     <Product>BlueHead</Product>
     <Copyright>Copyright BlueHead contributors</Copyright>
     <Deterministic>true</Deterministic>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <SatelliteResourceLanguages>en;zh-Hans;zh-Hant</SatelliteResourceLanguages>
   </PropertyGroup>
 </Project>

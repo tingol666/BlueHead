@@ -226,8 +226,8 @@ class Microphone(SwitchableStream):
     @on_audio_thread
     def __init__(self, router, key, rate, device, emit):
         import sounddevice as sd
+        from .realtime import MicrophoneStream
         self.router, self.key, self.emit = router, key, emit
-        self.frames = self.overflows = 0
 
         def create(selected):
             resolved = resolve_endpoint(selected, "input")
@@ -242,21 +242,8 @@ class Microphone(SwitchableStream):
                     sd.check_input_settings(device=resolved, samplerate=capture_rate, channels=1, dtype="float32")
                 except sd.PortAudioError:
                     channels = min(2, info["max_input_channels"])
-            resampler = av.AudioResampler(format="s16", layout="mono", rate=rate)
-
-            def samples(data, count, time_info, status):
-                self.frames += count
-                if status:
-                    self.overflows += 1
-                mono = data[:, 0] if channels == 1 else data.mean(axis=1)
-                frame = av.AudioFrame.from_ndarray(mono.reshape(1, -1).copy(), "flt", "mono")
-                frame.sample_rate = capture_rate
-                for resampled in resampler.resample(frame):
-                    self.router.write_microphone(self.key, resampled.to_ndarray().tobytes())
-            return sd.InputStream(
-                device=resolved, samplerate=capture_rate, channels=channels, dtype="float32",
-                blocksize=0, latency="low", callback=samples,
-            )
+            return MicrophoneStream(capture_rate, channels, rate, resolved,
+                                    lambda data: self.router.write_microphone(self.key, data), emit)
 
         super().__init__(create, device, "input")
         try:
@@ -268,6 +255,14 @@ class Microphone(SwitchableStream):
     def switch_device(self, device):
         super().switch_device(device)
         self.router.clear(self.key)
+
+    @property
+    def frames(self):
+        return self.stream.snapshot().get("input_frames", 0)
+
+    @property
+    def overflows(self):
+        return self.stream.snapshot().get("status_events", 0)
 
 
 class CallManager:

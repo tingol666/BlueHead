@@ -3,8 +3,11 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tomllib
 
 root = Path(__file__).resolve().parents[1]
+version = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))["project"]["version"]
+numeric = ','.join(str(int(part)) for part in version.split('.')) + ',0'
 build = root / 'work/launcher-build'
 build.mkdir(parents=True, exist_ok=True)
 gcc = Path(shutil.which('gcc') or 'D:/Code/MSYS2/ucrt64/bin/gcc.exe')
@@ -12,8 +15,8 @@ windres = gcc.parent / 'windres.exe'
 icon = (root / 'bluehead/assets/bluehead.ico').as_posix()
 (build / 'launcher.rc').write_text(f'''1 ICON "{icon}"
 1 VERSIONINFO
-FILEVERSION 1,2,2,0
-PRODUCTVERSION 1,2,2,0
+FILEVERSION {numeric}
+PRODUCTVERSION {numeric}
 FILEOS 0x40004
 FILETYPE 1
 BEGIN
@@ -23,7 +26,7 @@ BEGIN
   BEGIN
    VALUE "FileDescription", "BlueHead"
    VALUE "ProductName", "BlueHead"
-   VALUE "FileVersion", "1.2.2"
+   VALUE "FileVersion", "{version}"
    VALUE "LegalCopyright", "BlueHead contributors"
   END
  END

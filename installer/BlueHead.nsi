@@ -12,6 +12,9 @@
 !ifndef REMOVE_FILES
  !error "Define REMOVE_FILES as the generated exact-file uninstall list"
 !endif
+!ifndef APP_VERSION
+ !error "Define APP_VERSION from the project version"
+!endif
 Name "BlueHead"
 OutFile "${OUTPUT_FILE}"
 InstallDir "$LOCALAPPDATA\Programs\BlueHead"
@@ -20,10 +23,10 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 SetCompressorDictSize 32
 BrandingText "BlueHead · 本机蓝牙音频中心"
-VIProductVersion "1.2.2.0"
+VIProductVersion "${APP_VERSION}.0"
 VIAddVersionKey "ProductName" "BlueHead"
-VIAddVersionKey "FileDescription" "BlueHead 1.2.2 安装程序"
-VIAddVersionKey "FileVersion" "1.2.2"
+VIAddVersionKey "FileDescription" "BlueHead ${APP_VERSION} 安装程序"
+VIAddVersionKey "FileVersion" "${APP_VERSION}"
 VIAddVersionKey "LegalCopyright" "BlueHead contributors"
 !define MUI_ICON "..\bluehead\assets\bluehead.ico"
 !define MUI_UNICON "..\bluehead\assets\bluehead.ico"
@@ -67,7 +70,7 @@ Section "BlueHead" Main
  CreateShortcut "$SMPROGRAMS\BlueHead\卸载 BlueHead.lnk" "$INSTDIR\Uninstall.exe"
  WriteRegStr HKCU "Software\BlueHead" "InstallDir" "$INSTDIR"
  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BlueHead" "DisplayName" "BlueHead"
- WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BlueHead" "DisplayVersion" "1.2.2"
+ WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BlueHead" "DisplayVersion" "${APP_VERSION}"
  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BlueHead" "Publisher" "BlueHead contributors"
  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BlueHead" "UninstallString" '"$INSTDIR\Uninstall.exe"'
  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BlueHead" "DisplayIcon" "$INSTDIR\BlueHead.exe"

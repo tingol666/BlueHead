@@ -47,7 +47,7 @@ public sealed class EngineClient : IDisposable
                 var value = document.RootElement;
                 if (!value.TryGetProperty("protocol", out var protocol) || protocol.GetInt32() != 1)
                     throw new IOException("界面与后台版本不匹配。");
-                if (value.Text("event") == "hello") Ready = true;
+                if (value.Text("event") == "hello") { ValidateVersion(value); Ready = true; }
                 Message?.Invoke(value.Clone());
             }
             if (!cancellation.IsCancellationRequested) Failed?.Invoke("蓝牙后台已退出。可重新打开程序；驱动恢复工具仍可独立使用。");
@@ -61,6 +61,11 @@ public sealed class EngineClient : IDisposable
         try { while (await child.StandardError.ReadLineAsync(cancellation) != null) { } }
         catch (OperationCanceledException) { }
         catch (IOException) { }
+    }
+    internal static void ValidateVersion(JsonElement hello)
+    {
+        if (hello.Text("version") != AppVersion.Number)
+            throw new IOException($"界面版本 {AppVersion.Number} 与后台版本 {hello.Text("version", "未知")} 不一致，请完整更新程序。");
     }
     public async Task SendAsync(object message)
     {

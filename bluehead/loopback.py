@@ -5,8 +5,8 @@ from pathlib import Path
 import sys
 import threading
 
-import av
 import numpy as np
+from .realtime import NativeCapture
 
 _retired = []  # Keep handles/DLLs owned if an OS Stop has not returned yet.
 
@@ -69,27 +69,28 @@ class SystemCapture:
     """Separate bounded source; microphone and SCO clocks never wait for capture."""
     def __init__(self, route, key, rate, emit):
         self.route, self.key, self.emit = route, key, emit
+        self.converter = NativeCapture(48000, 1, rate)
         self.raw = ProcessCapture()
         self.stop = threading.Event()
         self.frames = 0
-        self.resampler = av.AudioResampler(format="s16", layout="mono", rate=rate)
         self.thread = threading.Thread(target=self.run, daemon=True, name="computer-audio")
         try:
             self.thread.start()
         except Exception:
             self.raw.close()
+            self.converter.close()
             raise
 
     def run(self):
         buffer = np.empty(480, np.float32)
+        output = np.empty(1024, np.int16)
         try:
             while not self.stop.is_set():
                 count = self.raw.read(buffer)
                 if count:
-                    frame = av.AudioFrame.from_ndarray(buffer[:count].reshape(1, -1).copy(), "flt", "mono")
-                    frame.sample_rate = 48000
-                    for converted in self.resampler.resample(frame):
-                        self.route.write_system(self.key, converted.to_ndarray().tobytes())
+                    self.converter.push(buffer[:count])
+                    while (produced := self.converter.read_into(output)):
+                        self.route.write_system(self.key, output[:produced].tobytes())
                     self.frames += count
                 else:
                     self.stop.wait(.005)
@@ -97,6 +98,7 @@ class SystemCapture:
             if not self.stop.is_set():
                 self.emit("warning", message=f"电脑声音采集已停止，麦克风继续使用：{error}")
         finally:
+            self.converter.close()
             self.route.close()
             try:
                 self.raw.close()

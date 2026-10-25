@@ -1,0 +1,14 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Version>1.2.2</Version>
+    <InformationalVersion>1.2.2</InformationalVersion>
+    <Company>BlueHead contributors</Company>
+    <Product>BlueHead</Product>
+    <Copyright>Copyright BlueHead contributors</Copyright>
+    <Deterministic>true</Deterministic>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+</Project>

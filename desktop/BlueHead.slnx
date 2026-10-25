@@ -1,0 +1,5 @@
+<Solution>
+ <Project Path="BlueHead.Desktop/BlueHead.Desktop.csproj" />
+ <Project Path="BlueHead.DriverHelper/BlueHead.DriverHelper.csproj" />
+ <Project Path="BlueHead.Platform/BlueHead.Platform.csproj" />
+</Solution>

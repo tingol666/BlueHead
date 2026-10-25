@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>BlueHead</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>../../bluehead/assets/bluehead.ico</ApplicationIcon>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <StartupObject>BlueHead.Desktop.Program</StartupObject>
+  </PropertyGroup>
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+    <PackageReference Include="WPF-UI" Version="4.3.0" />
+    <ProjectReference Include="../BlueHead.Platform/BlueHead.Platform.csproj" />
+  </ItemGroup>
+</Project>

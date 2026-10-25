@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+ <PropertyGroup><OutputType>Exe</OutputType><UseWindowsForms>true</UseWindowsForms><AssemblyName>BlueHead.DriverHelper</AssemblyName></PropertyGroup>
+ <ItemGroup><ProjectReference Include="../BlueHead.Platform/BlueHead.Platform.csproj"/></ItemGroup>
+</Project>

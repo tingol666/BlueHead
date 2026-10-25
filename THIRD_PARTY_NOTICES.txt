@@ -1,0 +1,59 @@
+BlueHead third-party notices
+
+Original BlueHead Python, C, C++ and C# code: Apache License 2.0 (LICENSE).
+Bumble: Apache-2.0, Google LLC. Pinned commit e1fe43c9b44be0d974a6fd533ac6d494fc50510a.
+https://github.com/google/bumble
+backend.py and calls.py adapt Bumble's A2DP sink / HFP hands-free examples.
+windows_usb.py vendors the USB transport with BlueHead changes: owned-buffer ISO
+reads, descriptor reset, bounded cancellation barriers, transfer retirement and
+native event-thread shutdown. This source is included, not patched only in a venv.
+
+Native libusb 1.0.30: LGPL-2.1-or-later, https://github.com/libusb/libusb.
+The application loads bluehead/assets/libusb-1.0.dll (official VS2022 MS64 build).
+Exact source tarball, license, binary/source hashes and original download URLs
+are included in vendor/libusb. The native library remains replaceable.
+
+libldacdec: MIT. Pinned commit 7f3bd6cc1586b764b02f2e4f20b16c7ff18758b9.
+https://github.com/hegdi/libldacdec
+BlueHead changes are clearly identified in tools/build_ldac.py: bounds checks,
+stereo-only negotiation, float output bridge, and process isolation.
+Modified source and original license are included in vendor/libldacdec.
+
+AOSP libldac encoder: Apache-2.0; test fixture generation only, not used by the app.
+Pinned commit e8ff0f96f26b84b47711c549e0d60baa425cd70e.
+https://android.googlesource.com/platform/external/libldac
+Source for the test encoder is in vendor/libldac_encoder, copyright notices retained.
+
+PyAV: BSD-3-Clause. https://github.com/PyAV-Org/PyAV
+FFmpeg 9.0.2: LGPL-2.1-or-later, https://ffmpeg.org/.
+BlueHead rebuilds the unmodified official release with only its required audio
+codecs and filters. No external GPL video codecs are included. Exact source,
+SHA256 and configure/build details are in vendor/ffmpeg and tools/build_ffmpeg.py.
+PyAV PE import names are adapted to the replaceable canonical FFmpeg DLLs.
+The DLLs are distributed separately in app/engine/_internal/av.libs.
+The MIT/BSD winpthreads runtime license is in licenses/winpthreads.
+
+libwdi 1.5.1: LGPL-3.0-or-later, https://github.com/pbatard/libwdi.
+Original source and COPYING texts are in vendor/libwdi. BlueHead's reproducible
+build patch and modern inbox-WinUSB INF are in tools/build_wdi.py and native/.
+It generates a catalog and device INF; BlueHead binds an exact device instance
+using Windows SetupAPI. No Microsoft coinstaller or third-party kernel binary
+is redistributed. libwdi.dll remains a replaceable shared library.
+
+GCC runtime libraries (libgcc/libstdc++): GPL with GCC Runtime Library Exception.
+The process-capture DLL statically links the MinGW-w64 GCC runtime; matching
+COPYING3, COPYING.LIB and COPYING.RUNTIME texts are in licenses/gcc-runtime.
+https://www.gnu.org/licenses/gcc-exception-3.1.html
+
+WPF UI 4.3.0 / WPF UI Abstractions: MIT, https://github.com/lepoco/wpfui.
+.NET 10 runtime: MIT, https://github.com/dotnet/runtime.
+Their license and third-party notice files are included in licenses/.
+
+
+sounddevice / PortAudio: MIT-style licenses, see licenses/sounddevice.
+https://github.com/spatialaudio/python-sounddevice
+Python, NumPy, cryptography, libusb, PyWinRT and all other package versions and
+their upstream license texts are included in dependencies.json and licenses/.
+PyInstaller's bootloader exception permits redistribution of frozen programs.
+
+There is no affiliation or certification by Google, Microsoft, Sony or Qualcomm.

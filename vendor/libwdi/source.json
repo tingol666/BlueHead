@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/pbatard/libwdi",
+  "commit": "9b23b82a2dd1cbffc16d46c212f92c6bf8c0c602",
+  "version": "1.5.1",
+  "license": "LGPL-3.0-or-later",
+  "changes": "Modern Windows inbox WinUSB INF; catalog preparation only. BlueHead binds the exact device through SetupAPI. Build-time patch is in tools/build_wdi.py. No Microsoft coinstaller binaries are bundled."
+}

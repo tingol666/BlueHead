@@ -1,0 +1,65 @@
+{
+  "libavutil": {
+    "version": [
+      61,
+      1,
+      102
+    ],
+    "configuration": "--disable-everything --disable-autodetect --disable-programs --disable-doc --disable-debug --disable-network --disable-static --enable-shared --disable-x86asm --disable-pthreads --enable-w32threads --enable-avcodec --enable-avformat --enable-avfilter --enable-avdevice --enable-swscale --enable-swresample --enable-decoder='aac,aac_latm,sbc,aptx,aptx_hd,pcm_s16le' --enable-encoder='aac,sbc,aptx,aptx_hd,pcm_s16le' --enable-parser='aac,aac_latm,sbc' --enable-filter='abuffer,abuffersink,aformat,aresample' --target-os=mingw32 --arch=x86_64 --cc=gcc --extra-ldflags=-static-libgcc --prefix=/d/0000000/something/2026/Bluetooth/work/ffmpeg-audio/install",
+    "license": "LGPL version 2.1 or later"
+  },
+  "libavcodec": {
+    "version": [
+      63,
+      1,
+      102
+    ],
+    "configuration": "--disable-everything --disable-autodetect --disable-programs --disable-doc --disable-debug --disable-network --disable-static --enable-shared --disable-x86asm --disable-pthreads --enable-w32threads --enable-avcodec --enable-avformat --enable-avfilter --enable-avdevice --enable-swscale --enable-swresample --enable-decoder='aac,aac_latm,sbc,aptx,aptx_hd,pcm_s16le' --enable-encoder='aac,sbc,aptx,aptx_hd,pcm_s16le' --enable-parser='aac,aac_latm,sbc' --enable-filter='abuffer,abuffersink,aformat,aresample' --target-os=mingw32 --arch=x86_64 --cc=gcc --extra-ldflags=-static-libgcc --prefix=/d/0000000/something/2026/Bluetooth/work/ffmpeg-audio/install",
+    "license": "LGPL version 2.1 or later"
+  },
+  "libavformat": {
+    "version": [
+      63,
+      1,
+      102
+    ],
+    "configuration": "--disable-everything --disable-autodetect --disable-programs --disable-doc --disable-debug --disable-network --disable-static --enable-shared --disable-x86asm --disable-pthreads --enable-w32threads --enable-avcodec --enable-avformat --enable-avfilter --enable-avdevice --enable-swscale --enable-swresample --enable-decoder='aac,aac_latm,sbc,aptx,aptx_hd,pcm_s16le' --enable-encoder='aac,sbc,aptx,aptx_hd,pcm_s16le' --enable-parser='aac,aac_latm,sbc' --enable-filter='abuffer,abuffersink,aformat,aresample' --target-os=mingw32 --arch=x86_64 --cc=gcc --extra-ldflags=-static-libgcc --prefix=/d/0000000/something/2026/Bluetooth/work/ffmpeg-audio/install",
+    "license": "LGPL version 2.1 or later"
+  },
+  "libavdevice": {
+    "version": [
+      63,
+      1,
+      102
+    ],
+    "configuration": "--disable-everything --disable-autodetect --disable-programs --disable-doc --disable-debug --disable-network --disable-static --enable-shared --disable-x86asm --disable-pthreads --enable-w32threads --enable-avcodec --enable-avformat --enable-avfilter --enable-avdevice --enable-swscale --enable-swresample --enable-decoder='aac,aac_latm,sbc,aptx,aptx_hd,pcm_s16le' --enable-encoder='aac,sbc,aptx,aptx_hd,pcm_s16le' --enable-parser='aac,aac_latm,sbc' --enable-filter='abuffer,abuffersink,aformat,aresample' --target-os=mingw32 --arch=x86_64 --cc=gcc --extra-ldflags=-static-libgcc --prefix=/d/0000000/something/2026/Bluetooth/work/ffmpeg-audio/install",
+    "license": "LGPL version 2.1 or later"
+  },
+  "libavfilter": {
+    "version": [
+      12,
+      1,
+      102
+    ],
+    "configuration": "--disable-everything --disable-autodetect --disable-programs --disable-doc --disable-debug --disable-network --disable-static --enable-shared --disable-x86asm --disable-pthreads --enable-w32threads --enable-avcodec --enable-avformat --enable-avfilter --enable-avdevice --enable-swscale --enable-swresample --enable-decoder='aac,aac_latm,sbc,aptx,aptx_hd,pcm_s16le' --enable-encoder='aac,sbc,aptx,aptx_hd,pcm_s16le' --enable-parser='aac,aac_latm,sbc' --enable-filter='abuffer,abuffersink,aformat,aresample' --target-os=mingw32 --arch=x86_64 --cc=gcc --extra-ldflags=-static-libgcc --prefix=/d/0000000/something/2026/Bluetooth/work/ffmpeg-audio/install",
+    "license": "LGPL version 2.1 or later"
+  },
+  "libswscale": {
+    "version": [
+      10,
+      1,
+      102
+    ],
+    "configuration": "--disable-everything --disable-autodetect --disable-programs --disable-doc --disable-debug --disable-network --disable-static --enable-shared --disable-x86asm --disable-pthreads --enable-w32threads --enable-avcodec --enable-avformat --enable-avfilter --enable-avdevice --enable-swscale --enable-swresample --enable-decoder='aac,aac_latm,sbc,aptx,aptx_hd,pcm_s16le' --enable-encoder='aac,sbc,aptx,aptx_hd,pcm_s16le' --enable-parser='aac,aac_latm,sbc' --enable-filter='abuffer,abuffersink,aformat,aresample' --target-os=mingw32 --arch=x86_64 --cc=gcc --extra-ldflags=-static-libgcc --prefix=/d/0000000/something/2026/Bluetooth/work/ffmpeg-audio/install",
+    "license": "LGPL version 2.1 or later"
+  },
+  "libswresample": {
+    "version": [
+      7,
+      1,
+      102
+    ],
+    "configuration": "--disable-everything --disable-autodetect --disable-programs --disable-doc --disable-debug --disable-network --disable-static --enable-shared --disable-x86asm --disable-pthreads --enable-w32threads --enable-avcodec --enable-avformat --enable-avfilter --enable-avdevice --enable-swscale --enable-swresample --enable-decoder='aac,aac_latm,sbc,aptx,aptx_hd,pcm_s16le' --enable-encoder='aac,sbc,aptx,aptx_hd,pcm_s16le' --enable-parser='aac,aac_latm,sbc' --enable-filter='abuffer,abuffersink,aformat,aresample' --target-os=mingw32 --arch=x86_64 --cc=gcc --extra-ldflags=-static-libgcc --prefix=/d/0000000/something/2026/Bluetooth/work/ffmpeg-audio/install",
+    "license": "LGPL version 2.1 or later"
+  }
+}

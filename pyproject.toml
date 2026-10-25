@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bluehead"
+version = "1.2.2"
+description = "Local Windows Bluetooth media receiver and hands-free preview"
+requires-python = ">=3.13"
+license = "Apache-2.0"
+dependencies = ["bumble", "av", "numpy", "sounddevice", "winrt-Windows.Media.Audio", "winrt-Windows.Devices.Enumeration", "winrt-Windows.Foundation", "winrt-Windows.Foundation.Collections"]
+
+[project.urls]
+Homepage = "https://github.com/tingol666/BlueHead"
+Repository = "https://github.com/tingol666/BlueHead"
+Issues = "https://github.com/tingol666/BlueHead/issues"
+
+[tool.setuptools.packages.find]
+include = ["bluehead*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 115
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

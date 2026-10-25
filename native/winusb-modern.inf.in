@@ -1,0 +1,36 @@
+; BlueHead generated device package. Uses the Windows inbox WinUSB driver.
+; No third-party kernel binary or legacy coinstaller is installed.
+[Version]
+Signature = "$Windows NT$"
+Class = USBDevice
+ClassGuid = {88bae032-5a81-49f0-bc3d-a4ff138216d6}
+Provider = %ProviderName%
+CatalogFile = #CAT_FILENAME#
+DriverVer = #DRIVER_DATE#, #DRIVER_VERSION#
+PnpLockdown = 1
+
+[Manufacturer]
+%ProviderName% = BlueHead,NTamd64.10.0
+
+[BlueHead.NTamd64.10.0]
+%DeviceName% = Device,USB\#DEVICE_HARDWARE_ID#
+
+[Device]
+Include = winusb.inf
+Needs = WINUSB.NT
+
+[Device.Services]
+Include = winusb.inf
+Needs = WINUSB.NT.Services
+
+[Device.HW]
+Include = winusb.inf
+Needs = WINUSB.NT.HW
+AddReg = InterfaceGuid
+
+[InterfaceGuid]
+HKR,,DeviceInterfaceGUIDs,0x10000,"#DEVICE_INTERFACE_GUID#"
+
+[Strings]
+ProviderName = "BlueHead (libwdi)"
+DeviceName = "#DEVICE_DESCRIPTION#"

@@ -31,8 +31,9 @@ public sealed class DriverRecord
 public static partial class Drivers
 {
     public static string Store => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "BlueHead", "Drivers");
-    [GeneratedRegex(@"^USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}(?:&MI_[0-9A-F]{2})?\\[^\r\n]{1,200}$", RegexOptions.IgnoreCase)] private static partial Regex InstancePattern();
-    public static string RecordDirectory(string instanceId) => Path.Combine(Store, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(instanceId.ToUpperInvariant())))[..24]);
+    private static readonly Regex instancePattern = new(@"^USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}(?:&MI_[0-9A-F]{2})?\\[^\r\n]{1,200}$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+    private static Regex InstancePattern() => instancePattern;
+    public static string RecordDirectory(string instanceId) => Path.Combine(Store, FrameworkCompat.HashPrefix(instanceId.ToUpperInvariant()));
     public static DriverRecord? ReadRecord(string instanceId)
     {
         try
@@ -97,7 +98,7 @@ public static partial class Drivers
         record.UpdatedUtc = DateTime.UtcNow;
         var path = Path.Combine(RecordDirectory(record.InstanceId), "recovery.json");
         File.WriteAllText(path + ".tmp", JsonSerializer.Serialize(record, new JsonSerializerOptions { WriteIndented = true }));
-        File.Move(path + ".tmp", path, true);
+        FrameworkCompat.ReplaceFile(path + ".tmp", path);
     }
     private static (IntPtr Set, DeviceNative.DeviceInfo Device) Open(string instanceId)
     {
@@ -134,7 +135,7 @@ public static partial class Drivers
     private static async Task RunPnPAsync(params string[] arguments)
     {
         var start = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "pnputil.exe")) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        foreach (var argument in arguments) start.AddArgument(argument);
         using var process = Process.Start(start) ?? throw new IOException("无法启动驱动管理工具。");
         var stdout = process.StandardOutput.ReadToEndAsync(); var stderr = process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(90));
@@ -173,7 +174,7 @@ public static partial class Drivers
         var inf = Directory.GetFiles(backup, "*.inf", SearchOption.AllDirectories).FirstOrDefault();
         if (original.StartsWith("oem", StringComparison.OrdinalIgnoreCase) && inf == null) throw new IOException("原驱动备份不完整，未更换驱动。");
         var record = new DriverRecord { InstanceId = instanceId, OriginalInf = original, OriginalDescription = description, OriginalProvider = provider,
-            BackupInf = inf == null ? "original/inbox-reference.txt" : Path.GetRelativePath(folder, inf) };
+            BackupInf = inf == null ? "original/inbox-reference.txt" : FrameworkCompat.RelativePath(folder, inf) };
         Save(record); return record;
     }
     private static bool Bind(string instanceId, string infPath)
@@ -271,7 +272,7 @@ public static partial class Drivers
         for (var i = 0; i < 16; i++)
         {
             var transport = $"usb:{match.Groups[1].Value}:{match.Groups[2].Value}#{i}".ToLowerInvariant();
-            var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(transport)))[..24].ToLowerInvariant();
+            var hash = FrameworkCompat.HashPrefix(transport).ToLowerInvariant();
             try
             {
                 if (Mutex.TryOpenExisting("Local\\BlueHead-HCI-" + hash, out var mutex))

@@ -108,7 +108,8 @@ async def test_call_microphone_switch_keeps_voice_link_and_clears_old_capture(mo
     await manager.set_input_device(9)
     assert selected == [9] and manager.input_device == 9
     assert "phone" in manager.links and manager.router.owner == "phone"
-    assert not pending and manager.router.read("phone", 4) == bytes(4)
+    assert pending == b"old encoded audio"  # Finish an already encoded H2 frame.
+    assert manager.router.read("phone", 4) == bytes(4)
     manager.close()
 
 

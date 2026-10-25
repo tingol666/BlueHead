@@ -1,4 +1,4 @@
-"""Build/assemble a self-contained release without private state or driver changes."""
+"""Build/assemble a native-audio release without private state or driver changes."""
 import argparse
 import hashlib
 import os
@@ -34,12 +34,14 @@ def main():
     if portable.exists():
         raise SystemExit("Output already exists. Choose a fresh release directory; never overwrite a running application.")
     if not args.assemble_only:
-        for name in ("build_icon", "build_native", "build_audio", "build_loopback", "build_wdi", "build_ffmpeg", "collect_notices"):
+        run(sys.executable, ROOT / "tools/build_ffmpeg.py", "--native-only")
+        for name in ("build_icon", "build_native", "build_audio", "build_voice", "build_device", "build_ldac_media",
+                     "build_loopback", "build_wdi", "collect_notices"):
             run(sys.executable, ROOT / "tools" / (name + ".py"))
         dotnet = shutil.which("dotnet") or str(ROOT / "work/toolchain/dotnet/dotnet.exe")
         for project, output in (("Desktop", args.desktop), ("DriverHelper", args.helper)):
             run(dotnet, "publish", ROOT / f"desktop/BlueHead.{project}/BlueHead.{project}.csproj", "-c", "Release",
-                "-r", "win-x64", "--self-contained", "true", "-o", output, "-p:DebugType=None", "-p:DebugSymbols=false")
+                "-o", output, "-p:RestoreLockedMode=true", "-p:DebugType=None", "-p:DebugSymbols=false")
         run(sys.executable, ROOT / "tools/package_engine.py", args.engine.parent, ROOT / "work/build-engine")
     app = portable / "app"
     copy_tree(args.desktop, app)
@@ -62,13 +64,27 @@ def main():
     run(sys.executable, ROOT / "tools/build_launcher.py", portable / "BlueHead.exe")
     for name in ("LICENSE", "THIRD_PARTY_NOTICES.txt", "README.txt"):
         shutil.copy2(ROOT / name, portable / name)
-    copy_tree(ROOT / "licenses", portable / "licenses")
+    # Development-only packages remain documented in source, not in the app.
+    records = __import__("json").loads((ROOT / "dependencies.json").read_text("utf-8"))
+    development = {entry["name"].lower().replace("_", "-") for entry in records if entry.get("scope") == "development"}
+    for source in (ROOT / "licenses").iterdir():
+        # PyInstaller is a build dependency, but its bootloader/runtime hooks
+        # are embedded in the frozen executable: retain their license/exception.
+        if (source.name.lower().replace("_", "-") in development and source.name.lower() != "pyinstaller") or source.name == "windowsdesktop":
+            continue
+        if source.is_dir():
+            copy_tree(source, portable / "licenses" / source.name)
+        else:
+            shutil.copy2(source, portable / "licenses" / source.name)
     # FFmpeg DLLs must be the explicitly rebuilt audio-only libraries.
-    ffmpeg = app / "engine/_internal/av.libs"
-    expected = {"avcodec-63.dll", "avdevice-63.dll", "avfilter-12.dll", "avformat-63.dll", "avutil-61.dll",
-                "libwinpthread-1.dll", "swresample-7.dll", "swscale-10.dll"}
-    if {p.name for p in ffmpeg.glob("*.dll")} != expected:
+    ffmpeg = app / "engine/_internal"
+    expected = {"avcodec-63.dll", "avutil-61.dll", "swresample-7.dll"}
+    actual = {p.name for p in ffmpeg.glob("*.dll") if p.name.startswith(("avcodec-", "avutil-", "swresample-"))}
+    if actual != expected:
         raise RuntimeError("Unexpected FFmpeg libraries")
+    forbidden = {"av.libs", "av", "numpy", "numpy.libs", "sounddevice", "coreclr.dll", "hostfxr.dll"}
+    if any(file.name in forbidden for file in app.rglob("*")):
+        raise RuntimeError("Retired audio/runtime component found in release")
     for file in portable.rglob("*"):
         if file.name.lower() in {"pairing.json", "settings.json", "recovery.json"} or file.suffix in {".log", ".dmp"}:
             raise RuntimeError("Private data in release: " + str(file))

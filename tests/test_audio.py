@@ -2,7 +2,8 @@ import numpy as np
 import pytest
 
 from bluehead.audio import Decoder, Mixer
-from bluehead.calls import CallRouter, Msbc
+from bluehead.calls import CallRouter
+from .voice_reference import Msbc
 from bluehead.protocol import Format, Depacketizer, PacketError, parse_rtp, negotiated, capabilities
 from .vectors import signal, encode, wire_packets, quality, rtp, LdacEncoder
 

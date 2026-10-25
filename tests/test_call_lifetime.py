@@ -11,7 +11,8 @@ import pytest
 from bumble import hci, hfp
 
 from bluehead.audio import Mixer
-from bluehead.calls import CallManager, Msbc
+from bluehead.calls import CallManager
+from .voice_reference import Msbc
 from .test_protocols import Network
 
 
@@ -103,7 +104,7 @@ async def test_slow_microphone_leaves_hci_running_and_late_result_is_closed(monk
         # This runs while OS microphone opening is still blocked in another thread.
         first.sink(packet())
         assert len(uplink) == 2
-        assert manager.statistics["phone"]["decoded_frames"] == 120
+        assert manager.statistics["phone"]["decoded_frames"] == 360  # Native PCM is canonical 48 kHz.
         assert mixer.inputs["call:phone"].frames > 0
         assert manager.microphone is None
         if end == "shutdown":
@@ -122,7 +123,8 @@ async def test_slow_microphone_leaves_hci_running_and_late_result_is_closed(monk
         if end == "replace":
             await until(lambda: manager.microphone is not None)
             assert not manager.microphone.closed
-            assert manager.router.read("phone", 19) == bytes(19)
+            assert manager.router.adaptive
+            assert manager.router.read("phone", 720) == bytes(720)
         else:
             assert manager.microphone is None and manager.router.owner is None
         assert instances[0].closed
@@ -146,7 +148,7 @@ async def test_missing_microphone_keeps_phone_audio_decoding(monkeypatch):
         manager.on_link("phone", SimpleNamespace(active_codec=hfp.AudioCodec.MSBC), link)
         await manager.capture_tasks["phone"]
         link.sink(packet())
-        assert manager.statistics["phone"]["decoded_frames"] == 120
+        assert manager.statistics["phone"]["decoded_frames"] == 360
         assert mixer.inputs["call:phone"].frames > 0
         assert manager.microphone is None
         assert any(kind == "error" and "endpoint unavailable" in data["message"] for kind, data in events)
@@ -219,7 +221,8 @@ async def test_timed_out_capture_is_disposed_and_hot_selection_recovers(monkeypa
         release.set()
         await until(closed.is_set)
         assert instances[0].closed and not current.closed
-        assert manager.router.read("phone", 5) == bytes(5)
+        assert manager.router.adaptive
+        assert manager.router.read("phone", 720) == bytes(720)
     finally:
         release.set()
         manager.close()

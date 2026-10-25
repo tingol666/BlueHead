@@ -9,93 +9,18 @@ from dataclasses import replace
 import logging
 import threading
 
-import av
-import numpy as np
 from bumble import hci, hfp, rfcomm
 from bumble.core import PhysicalTransport
 
 from .audio import SwitchableStream, resolve_endpoint
 from .audio_runtime import on_audio_thread
 from .metrics import TrafficMeter
+from .uplink import CallRouter
+from .voice import VoiceCodec, available_codecs
+from .hfp_compat import HandsFreeProtocol, handsfree_records, selected_codec, renegotiate_fallback
 
 log = logging.getLogger(__name__)
 MICROPHONE_OPEN_TIMEOUT = 5
-
-
-class CallRouter:
-    """Mix mic and OS-filtered computer audio; never read the media mixer."""
-    def __init__(self):
-        self.owner = None
-        self.muted = False
-        self.buffer = bytearray()
-        self.system_buffer = bytearray()
-        self.microphone_gain = self.system_gain = 1.0
-        self.device_gains = {}
-        self.lock = threading.Lock()
-        self.maximum_bytes = 16000
-        self.trim_bytes = 8000
-
-    def configure(self, rate):
-        with self.lock:
-            # Keep at most 90 ms of captured speech, instead of up to 500 ms.
-            self.maximum_bytes = int(rate * 2 * .09)
-            self.trim_bytes = int(rate * 2 * .06)
-            self.buffer.clear()
-            self.system_buffer.clear()
-
-    def select(self, key):
-        with self.lock:
-            self.owner = key
-            self.buffer.clear()
-            self.system_buffer.clear()
-
-    def clear(self, key):
-        with self.lock:
-            if self.owner == key:
-                self.buffer.clear()
-
-    def write_microphone(self, key, data):
-        with self.lock:
-            if key == self.owner:
-                self.buffer.extend(data)
-                if len(self.buffer) > self.maximum_bytes:
-                    del self.buffer[:-self.trim_bytes]
-
-    def write_system(self, key, data):
-        with self.lock:
-            if key == self.owner:
-                self.system_buffer.extend(data)
-                if len(self.system_buffer) > self.maximum_bytes:
-                    del self.system_buffer[:-self.trim_bytes]
-
-    def clear_system(self):
-        with self.lock:
-            self.system_buffer.clear()
-
-    def read(self, key, length):
-        with self.lock:
-            if key != self.owner or self.muted:
-                self.buffer.clear() if key == self.owner else None
-                self.system_buffer.clear() if key == self.owner else None
-                return bytes(length)
-            take = min(length, len(self.buffer))
-            out = bytes(self.buffer[:take]) + bytes(length - take)
-            del self.buffer[:take]
-            take_system = min(length, len(self.system_buffer))
-            system = bytes(self.system_buffer[:take_system]) + bytes(length - take_system)
-            del self.system_buffer[:take_system]
-            gain = self.device_gains.get(key, 1.0)
-            if self.microphone_gain == gain == 1 and not take_system:
-                return out
-            count = length // 2 * 2
-            mic = np.frombuffer(out[:count], "<i2").astype(np.float32) * self.microphone_gain
-            computer = np.frombuffer(system[:count], "<i2").astype(np.float32) * self.system_gain
-            mixed = (mic + computer) * gain
-            peak = float(np.max(np.abs(mixed), initial=0))
-            if peak > 32767:
-                mixed *= 32767 / peak
-            mixed = np.clip(np.rint(mixed), -32768, 32767).astype("<i2")
-            return mixed.tobytes() + bytes(length - count)
 
 
 class CaptureRoute:
@@ -174,76 +99,15 @@ class PendingCapture:
             return microphone
 
 
-class Msbc:
-    """HFP H2 framing, 120 mono samples per 7.5 ms frame."""
-    SEQUENCES = (0x08, 0x38, 0xC8, 0xF8)
-
-    def __init__(self):
-        self.decoder = av.CodecContext.create("sbc", "r")
-        self.decoder.sample_rate = 16000
-        self.decoder.layout = "mono"
-        self.decoder.open()
-        self.encoder = av.CodecContext.create("sbc", "w")
-        self.encoder.sample_rate = 16000
-        self.encoder.layout = "mono"
-        self.encoder.format = "s16"
-        self.encoder.options = {"msbc": "1"}
-        self.encoder.open()
-        if self.encoder.frame_size != 120 or self.encoder.options:
-            raise RuntimeError("FFmpeg mSBC encoder unavailable")
-        self.receive_buffer = bytearray()
-        self.sequence = 0
-
-    def decode(self, data):
-        self.receive_buffer.extend(data)
-        if len(self.receive_buffer) > 512:
-            del self.receive_buffer[:-120]
-        result = []
-        while len(self.receive_buffer) >= 60:
-            b = self.receive_buffer
-            if b[0] != 1 or b[1] not in self.SEQUENCES or b[2] != 0xAD:
-                del b[0]
-                continue
-            packet = bytes(b[2:59])
-            del b[:60]
-            for frame in self.decoder.decode(av.Packet(packet)):
-                result.append(frame.to_ndarray().reshape(-1).astype(np.float32) / 32768.0)
-        return result
-
-    def encode(self, pcm):
-        samples = np.frombuffer(pcm, dtype="<i2").reshape(1, 120)
-        frame = av.AudioFrame.from_ndarray(samples, "s16", "mono")
-        frame.sample_rate = 16000
-        packets = self.encoder.encode(frame)
-        if len(packets) != 1 or packets[0].size != 57:
-            raise RuntimeError("Invalid mSBC frame length")
-        header = bytes([1, self.SEQUENCES[self.sequence]])
-        self.sequence = (self.sequence + 1) % 4
-        return header + bytes(packets[0]) + b"\x00"
-
-
 class Microphone(SwitchableStream):
     @on_audio_thread
     def __init__(self, router, key, rate, device, emit):
-        import sounddevice as sd
-        from .realtime import MicrophoneStream
+        from .capture import CaptureStream
         self.router, self.key, self.emit = router, key, emit
 
         def create(selected):
-            resolved = resolve_endpoint(selected, "input")
-            capture_rate = 48000
-            channels = 1
-            try:
-                sd.check_input_settings(device=resolved, samplerate=capture_rate, channels=1, dtype="float32")
-            except sd.PortAudioError:
-                info = sd.query_devices(resolved, "input")
-                capture_rate = int(info["default_samplerate"])
-                try:
-                    sd.check_input_settings(device=resolved, samplerate=capture_rate, channels=1, dtype="float32")
-                except sd.PortAudioError:
-                    channels = min(2, info["max_input_channels"])
-            return MicrophoneStream(capture_rate, channels, rate, resolved,
-                                    lambda data: self.router.write_microphone(self.key, data), emit)
+            return CaptureStream(resolve_endpoint(selected, "input"), rate,
+                lambda data: self.router.write_microphone(self.key, data), emit)
 
         super().__init__(create, device, "input")
         try:
@@ -252,8 +116,8 @@ class Microphone(SwitchableStream):
             self.close()
             raise
 
-    def switch_device(self, device):
-        super().switch_device(device)
+    def switch_device(self, device, force=False):
+        super().switch_device(device, force=force)
         self.router.clear(self.key)
 
     @property
@@ -281,6 +145,8 @@ class CallManager:
         self.statistics = {}
         self.traffic = {}
         self.voice_buffers = {}
+        self.voice_codecs = {}
+        self.downlink_gains, self.speaker_volumes = {}, {}
         self.system_enabled = False
         self.system_capture = self.system_route = None
         self.system_capture_tasks = {}
@@ -292,11 +158,12 @@ class CallManager:
                 hfp.HfFeature.ESCO_S4_SETTINGS_SUPPORTED,
             ],
             supported_hf_indicators=[],
-            supported_audio_codecs=[hfp.AudioCodec.CVSD, hfp.AudioCodec.MSBC],
+            supported_audio_codecs=[hfp.AudioCodec(codec) for codec in available_codecs()],
         )
         self.server = rfcomm.Server(device)
         channel = self.server.listen(self.on_dlc)
-        device.sdp_service_records[0x10002] = hfp.make_hf_sdp_records(0x10002, channel, self.configuration)
+        self.sdp_record = handsfree_records(0x10002, channel, self.configuration)
+        device.sdp_service_records[0x10002] = self.sdp_record
         device.on("connection", self.on_connection)
 
     def spawn(self, coroutine):
@@ -310,17 +177,31 @@ class CallManager:
         return task
 
     def snapshot(self, key):
-        if key not in self.links:
+        link = self.links.get(key)
+        if link is None:
             return {}
         stats = self.statistics.get(key, {})
         traffic = self.traffic.get(key, {})
         system_capture = self.system_capture
-        return {"active": True, "codec": stats.get("codec", ""), "rate": stats.get("rate", 0),
+        codec = self.voice_codecs.get(key)
+        voice = {}
+        if codec is not None:
+            try:
+                voice = codec.stats()
+            except (RuntimeError, OSError):
+                # The UI polls from another thread; hangup may close this
+                # context after we capture it. A retired snapshot is absent.
+                pass
+        result = {"active": True, "codec": stats.get("codec", ""), "rate": stats.get("rate", 0),
                 "rx_bitrate": traffic["rx"].snapshot()["bitrate"] if traffic else 0,
                 "tx_bitrate": traffic["tx"].snapshot()["bitrate"] if traffic else 0,
                 "rx_packets": stats.get("rx_packets", 0), "decode_errors": stats.get("decode_errors", 0),
+                "empty_packets": stats.get("empty_packets", 0),
+                "uplink_clock": self.router.snapshot(),
+                "voice": voice,
                 "microphone_active": self.microphone is not None,
                 "system_audio_active": system_capture is not None and system_capture.thread.is_alive()}
+        return result if self.links.get(key) is link else {}
 
     def close_system_capture(self):
         for task in list(self.system_capture_tasks.values()):
@@ -374,7 +255,7 @@ class CallManager:
         key = self.router.owner
         link = self.links.get(key)
         if enabled and link:
-            task = self.system_capture_tasks[key] = self.spawn(self.open_system_capture(key, link, self.statistics[key]["rate"]))
+            task = self.system_capture_tasks[key] = self.spawn(self.open_system_capture(key, link, 48000))
             await asyncio.shield(task)
             if self.links.get(key) is link and self.system_capture is None:
                 self.system_enabled = False
@@ -401,48 +282,76 @@ class CallManager:
 
         def disconnected(reason):
             task.cancel()
-            self.connections.pop(key, None)
-            self.clients.pop(key, None)
+            if self.connections.get(key) is connection:
+                self.connections.pop(key, None)
+                self.clients.pop(key, None)
+                self.control_locks.pop(key, None)
+                self.statistics.pop(key, None)
+                self.traffic.pop(key, None)
+                self.speaker_volumes.pop(key, None)
+                self.router.device_standard_gains.pop(key, None)
+                self.downlink_gains.pop(key, None)
         connection.once("disconnection", disconnected)
 
     async def ensure_control(self, key):
+        connection = self.connections.get(key)
+        if connection is None:
+            raise ValueError("移动设备已经断开")
         lock = self.control_locks.setdefault(key, asyncio.Lock())
         async with lock:
+            if self.closed or self.connections.get(key) is not connection:
+                raise ConnectionError("蓝牙连接已更换")
             if key not in self.protocols:
-                connection = self.connections.get(key)
-                if connection is None:
-                    raise ValueError("移动设备已经断开")
                 self.emit("call", key=key, state="正在连接蓝牙语音服务…")
                 async with asyncio.timeout(12):
                     record = await hfp.find_ag_sdp_record(connection)
+                    if self.closed or self.connections.get(key) is not connection:
+                        raise ConnectionError("蓝牙连接已更换")
                     if key not in self.protocols:
                         if record is None:
                             raise ValueError("移动设备没有提供 HFP 网关服务")
                         client = rfcomm.Client(connection)
-                        mux = await client.start()
-                        if key in self.protocols:
-                            await client.shutdown()
-                        else:
-                            dlc = await mux.open_dlc(record[0])
-                            self.clients[key] = client
-                            self.on_dlc(dlc)
+                        transferred = False
+                        try:
+                            mux = await client.start()
+                            if self.closed or self.connections.get(key) is not connection:
+                                raise ConnectionError("蓝牙连接已更换")
+                            if key not in self.protocols:
+                                dlc = await mux.open_dlc(record[0])
+                                if self.closed or self.connections.get(key) is not connection:
+                                    raise ConnectionError("蓝牙连接已更换")
+                                # An incoming SLC can win while open_dlc waits.
+                                # It owns the peer slot; retire only our new mux.
+                                if key not in self.protocols:
+                                    self.clients[key] = client
+                                    self.on_dlc(dlc)
+                                    transferred = True
+                        finally:
+                            if not transferred:
+                                if self.clients.get(key) is client:
+                                    self.clients.pop(key, None)
+                                self.retire_rfcomm_client(client)
             protocol = self.protocols.get(key)
             if protocol is None:
                 raise RuntimeError("蓝牙语音服务未连接")
             ready = self.control_ready[key]
             await asyncio.wait_for(ready.wait(), 12)
-            if not protocol._slc_initialized:
+            if (not protocol._slc_initialized or self.connections.get(key) is not connection
+                    or self.protocols.get(key) is not protocol):
                 raise RuntimeError("蓝牙语音服务协商未完成")
             return protocol
 
     def on_dlc(self, dlc):
         connection = dlc.multiplexer.l2cap_channel.connection
         key = str(connection.peer_address)
+        if self.closed or self.connections.get(key, connection) is not connection:
+            self.spawn(self.disconnect_dlc(dlc))
+            return
         self.connections[key] = connection
         if key in self.protocols:
-            self.spawn(dlc.disconnect())
+            self.spawn(self.disconnect_dlc(dlc))
             return
-        protocol = hfp.HfProtocol(dlc, self.configuration)
+        protocol = HandsFreeProtocol(dlc, self.configuration)
         self.protocols[key] = protocol
         ready = self.control_ready[key] = asyncio.Event()
         async def run_protocol():
@@ -452,12 +361,16 @@ class CallManager:
                 self.emit("call", key=key, state="蓝牙语音服务已就绪")
                 log.info("HFP service ready: %s", key)
                 await protocol.run()
+            except Exception as error:
+                # Malformed AT parameters must not be echoed into logs/UI.
+                log.warning("HFP service stopped (%s)", type(error).__name__)
+                if not self.closed and self.protocols.get(key) is protocol:
+                    self.emit("call", key=key, state="蓝牙语音服务已停止，可重新连接")
             finally:
                 ready.set()
                 # Bumble's run() can return after a protocol error. Never leave
                 # a dead session registered as a usable headset connection.
-                with contextlib.suppress(Exception):
-                    await dlc.disconnect()
+                await self.disconnect_dlc(dlc)
         self.spawn(run_protocol())
         def request(link_type):
             self.spawn(self.accept_audio(key, protocol, connection, link_type))
@@ -466,24 +379,78 @@ class CallManager:
         def failed(status):
             log.warning("SCO connection failed: peer=%s status=%s", key, status)
             self.emit("call", key=key, state=f"语音连接失败 · HCI 0x{status:02X}")
+            if status in (hci.HCI_UNSUPPORTED_FEATURE_OR_PARAMETER_VALUE_ERROR,
+                          hci.HCI_INVALID_HCI_COMMAND_PARAMETERS_ERROR, hci.HCI_UNSUPPORTED_REMOTE_FEATURE_ERROR):
+                self.spawn(self.codec_fallback(key, protocol, selected_codec(protocol)))
         connection.on("sco_request", request)
         connection.on("sco_connection", linked)
         connection.on("sco_connection_failure", failed)
         protocol.on("codec_negotiation", lambda codec: log.info("HFP codec: peer=%s codec=%s", key, codec.name))
+        def codec_failed(codec):
+            link = self.links.get(key)
+            if link is not None:
+                self.spawn(link.disconnect())
+        protocol.on("codec_failed", codec_failed)
+        protocol.on(protocol.EVENT_SPEAKER_VOLUME, lambda value: self.remote_volume(key, value, "speaker"))
+        protocol.on(protocol.EVENT_MICROPHONE_VOLUME, lambda value: self.remote_volume(key, value, "microphone"))
         protocol.on("ag_indicator", lambda indicator: self.indicator_changed(key, protocol, indicator))
         protocol.on("ring", lambda: self.emit("call", key=key, state="来电", phase="incoming"))
+        cleaned = False
         def closed():
+            nonlocal cleaned
+            if cleaned:
+                return
+            cleaned = True
             connection.remove_listener("sco_request", request)
             connection.remove_listener("sco_connection", linked)
             connection.remove_listener("sco_connection_failure", failed)
             if self.protocols.get(key) is protocol:
+                old_link = self.links.get(key)
                 self.protocols.pop(key, None)
                 self.control_ready.pop(key, None)
-            self.audio_closed(key)
-            self.emit("call", key=key, state="蓝牙语音服务已断开，可重连")
+                self.audio_closed(key)
+                if old_link is not None:
+                    self.spawn(self.disconnect_voice(old_link))
+                self.emit("call", key=key, state="蓝牙语音服务已断开，可重连")
+            protocol.stop()
+            client = self.clients.get(key)
+            if client is not None and client.multiplexer is dlc.multiplexer:
+                self.clients.pop(key, None)
+                self.retire_rfcomm_client(client)
+        protocol.on("protocol_error", lambda reason: self.spawn(self.disconnect_dlc(dlc)))
+        dlc.once("close", closed)
         dlc.multiplexer.l2cap_channel.once("close", closed)
         self.emit("call", key=key, state="正在建立蓝牙语音服务…")
         log.info("HFP RFCOMM connected: %s", key)
+
+    async def codec_fallback(self, key, protocol, failed_codec):
+        if self.closed or self.protocols.get(key) is not protocol or key in self.links:
+            return
+        result = await renegotiate_fallback(protocol, failed_codec=failed_codec)
+        if self.closed or self.protocols.get(key) is not protocol or key in self.links:
+            return
+        if result.requested:
+            codecs = "/".join(codec.name for codec in result.offered_codecs)
+            self.emit("call", key=key, state=f"正在回退语音编码 · {codecs}，等待设备重新协商")
+        elif result.reconnect_required:
+            self.emit("call", key=key, state="语音协商超时，请重新连接设备的蓝牙语音服务")
+            await self.disconnect_dlc(protocol.dlc)
+        elif result.status not in ("busy", "stale"):
+            self.emit("call", key=key, state="语音编码回退未完成，可重新连接设备后重试")
+
+    def set_downlink_gain(self, key, gain):
+        self.downlink_gains[key] = gain
+        self.mixer.set_gain("call:" + key, gain * self.speaker_volumes.get(key, 1.0))
+
+    def remote_volume(self, key, value, direction):
+        if type(value) is not int or not 0 <= value <= 15:
+            return
+        if direction == "speaker":
+            self.speaker_volumes[key] = value / 15
+            self.set_downlink_gain(key, self.downlink_gains.get(key, self.mixer.gains.get("call:" + key, 1.0)))
+        else:
+            self.router.device_standard_gains[key] = value / 15
+        self.emit("voice_volume", key=key, direction=direction, volume=value / 15)
 
     def indicator_changed(self, key, protocol, indicator):
         if indicator.indicator not in (hfp.AgIndicator.CALL, hfp.AgIndicator.CALL_SETUP, hfp.AgIndicator.CALL_HELD):
@@ -500,18 +467,32 @@ class CallManager:
         self.emit("call", key=key, state=state, phase=phase)
 
     async def accept_audio(self, key, protocol, connection, link_type):
+        if (self.closed or getattr(protocol, "stopped", False)
+                or self.protocols.get(key, protocol) is not protocol
+                or self.connections.get(key, connection) is not connection):
+            await self.device.send_async_command(hci.HCI_Reject_Synchronous_Connection_Request_Command(
+                bd_addr=connection.peer_address, reason=hci.HCI_ErrorCode.CONNECTION_REJECTED_DUE_TO_LIMITED_RESOURCES_ERROR))
+            return
         if self.router.owner and self.router.owner != key and self.links:
             await self.device.send_async_command(hci.HCI_Reject_Synchronous_Connection_Request_Command(
                 bd_addr=connection.peer_address, reason=hci.HCI_ErrorCode.CONNECTION_REJECTED_DUE_TO_LIMITED_RESOURCES_ERROR,
             ))
             self.emit("warning", key=key, message="另一设备正在使用语音通道，请先切换发送设备")
             return
-        msbc = protocol.active_codec == hfp.AudioCodec.MSBC
+        codec = selected_codec(protocol)
+        transparent = codec in (hfp.AudioCodec.MSBC, hfp.AudioCodec.LC3_SWB)
         log.info("SCO request: peer=%s link_type=%s codec=%s", key, link_type, protocol.active_codec)
         if link_type == hci.HCI_Connection_Complete_Event.LinkType.SCO:
+            if transparent:
+                # Compressed wideband codecs require eSCO. A different codec
+                # must be negotiated with AT+BCS, never silently relabelled.
+                await self.device.send_async_command(hci.HCI_Reject_Synchronous_Connection_Request_Command(
+                    bd_addr=connection.peer_address, reason=hci.HCI_ErrorCode.UNSUPPORTED_FEATURE_OR_PARAMETER_VALUE_ERROR))
+                self.emit("call", key=key, state="宽带语音需要 eSCO，等待设备重新协商")
+                await self.codec_fallback(key, protocol, codec)
+                return
             parameters = hfp.ESCO_PARAMETERS[hfp.DefaultCodecParameters.SCO_CVSD_D1]
-            msbc = False
-        elif msbc:
+        elif transparent:
             parameters = replace(
                 hfp.ESCO_PARAMETERS[hfp.DefaultCodecParameters.ESCO_MSBC_T2],
                 # The host encodes mSBC including H2 headers. All four coding
@@ -540,102 +521,108 @@ class CallManager:
                 voice_setting=int(hci.VoiceSetting(
                     input_sample_size=hci.VoiceSetting.InputSampleSize.SIZE_16_BITS,
                     input_data_format=hci.VoiceSetting.InputDataFormat.TWOS_COMPLEMENT,
-                    air_coding_format=(hci.VoiceSetting.AirCodingFormat.TRANSPARENT_DATA if msbc else hci.VoiceSetting.AirCodingFormat.CVSD),
+                    air_coding_format=(hci.VoiceSetting.AirCodingFormat.TRANSPARENT_DATA if transparent else hci.VoiceSetting.AirCodingFormat.CVSD),
                 )),
                 retransmission_effort=parameters.retransmission_effort,
                 packet_type=parameters.packet_type,
             )
         await self.device.send_async_command(command)
-        self.emit("call", key=key, state="正在连接宽带语音…" if msbc else "正在连接语音…")
+        self.emit("call", key=key, state=f"正在连接 {codec.name} 语音…")
 
     def on_link(self, key, protocol, link):
-        if self.closed:
+        if self.closed or getattr(protocol, "stopped", False) or self.protocols.get(key, protocol) is not protocol:
+            self.spawn(self.disconnect_voice(link))
             return
         if self.router.owner not in (None, key) and self.links:
+            self.spawn(link.disconnect())
+            return
+        codec_id = int(selected_codec(protocol))
+        compressed = codec_id in (2, 3)
+        expected_air = hci.CodecID.TRANSPARENT if compressed else hci.CodecID.CVSD
+        if link.air_mode != expected_air:
+            self.emit("warning", key=key, message="语音链路格式与协商编码不符，等待重新连接")
+            self.spawn(link.disconnect())
+            return
+        try:
+            codec = VoiceCodec(codec_id)
+        except Exception:
+            log.exception("Native voice codec initialization failed")
+            self.emit("warning", key=key, message="语音编码器未能启动，请重新连接")
             self.spawn(link.disconnect())
             return
         if key in self.links:
             self.audio_closed(key)
         self.router.select(key)
+        self.router.configure(48000, adaptive=True)
         self.links[key] = link
-        transparent = link.air_mode == hci.CodecID.TRANSPARENT
-        rate = 16000 if transparent else 8000
-        self.router.configure(rate)
-        codec = Msbc() if transparent else None
-        transmit_buffer = bytearray()
-        self.voice_buffers[key] = transmit_buffer
-        stats = self.statistics[key] = {"codec": "msbc" if codec else "cvsd", "rate": rate,
-                                       "rx_packets": 0, "tx_packets": 0, "decode_errors": 0,
-                                       "rx_bytes": 0, "tx_bytes": 0, "decoded_frames": 0}
+        self.voice_codecs[key] = codec
+        transmit_buffer = self.voice_buffers[key] = bytearray()
+        rate = {1: 8000, 2: 16000, 3: 32000}[codec_id]
+        stats = self.statistics[key] = {"codec": {1: "cvsd", 2: "msbc", 3: "lc3_swb"}[codec_id],
+            "rate": rate, "pcm_rate": 48000, "rx_packets": 0, "tx_packets": 0,
+            "decode_errors": 0, "rx_bytes": 0, "tx_bytes": 0, "decoded_frames": 0}
         traffic = self.traffic[key] = {"rx": TrafficMeter(), "tx": TrafficMeter()}
-        payload_ratio = 57 / 60 if codec else .5  # H2 transport -> mSBC / PCM host samples -> CVSD air payload.
-        log.info("SCO connected: peer=%s air_mode=%s codec=%s", key, link.air_mode, stats["codec"])
+        payload_ratio = {1: .5, 2: 57 / 60, 3: 58 / 60}[codec_id]
         mix_key = "call:" + key
         self.mixer.add(mix_key)
         self.mixer.call_active, self.mixer.call_source = True, mix_key
-        log.info("SCO mixer ready: peer=%s", key)
-        resampler = av.AudioResampler(format="flt", layout="stereo", rate=self.mixer.rate)
 
         def packet_received(packet):
             if self.links.get(key) is not link:
                 return
+            data = bytes(packet.data)
+            if not data:
+                stats["empty_packets"] = stats.get("empty_packets", 0) + 1
+                return  # An empty event does not establish an audio duration.
+            if len(data) > 255:
+                stats["decode_errors"] += 1
+                return
             stats["rx_packets"] += 1
-            stats["rx_bytes"] += len(packet.data)
-            traffic["rx"].add(len(packet.data) * payload_ratio)
+            stats["rx_bytes"] += len(data)
+            traffic["rx"].add(len(data) * payload_ratio)
             try:
-                if codec:
-                    while len(transmit_buffer) < len(packet.data):
-                        transmit_buffer.extend(codec.encode(self.router.read(key, 240)))
-                    uplink = bytes(transmit_buffer[:len(packet.data)])
-                    del transmit_buffer[:len(packet.data)]
-                else:
-                    data = packet.data[:len(packet.data) // 2 * 2]
-                    uplink = self.router.read(key, len(data))
-                # Keep uplink moving even when a downlink frame is corrupt.
+                while len(transmit_buffer) < len(data):
+                    transmit_buffer.extend(codec.encode(self.router.read(key, codec.pcm_frame_bytes)))
+                uplink = bytes(transmit_buffer[:len(data)])
+                del transmit_buffer[:len(data)]
+                # Uplink is independent from successful downlink decoding.
                 self.device.host.send_sco_sdu(link.handle, uplink)
                 stats["tx_packets"] += 1
                 stats["tx_bytes"] += len(uplink)
                 traffic["tx"].add(len(uplink) * payload_ratio)
-                if codec:
-                    decoded = codec.decode(packet.data) if packet.packet_status == 0 else []
-                else:
-                    decoded = ([np.frombuffer(data, "<i2").astype(np.float32) / 32768.0]
-                               if packet.packet_status == 0 else [])
-                for samples in decoded:
-                    stats["decoded_frames"] += len(samples)
-                    frame = av.AudioFrame.from_ndarray(samples.reshape(1, -1), "flt", "mono")
-                    frame.sample_rate = rate
-                    for out in resampler.resample(frame):
-                        self.mixer.write(mix_key, out.to_ndarray().reshape(-1, 2).copy())
+                codec.push_rx(data, int(packet.packet_status))
+                pcm = codec.read_pcm()
+                if pcm:
+                    self.mixer.write_voice(mix_key, pcm)
+                    stats["decoded_frames"] += len(pcm) // 2
             except Exception:
                 stats["decode_errors"] += 1
-                log.exception("SCO audio packet failed")
+                log.exception("Native SCO audio packet failed")
+
         link.sink = packet_received
         link.once("disconnection", lambda reason: self.audio_closed(key, link))
-        log.info("SCO receive handler ready: peer=%s", key)
-        self.emit("call", key=key, state=f"语音通道已连接 · {'mSBC' if codec else 'CVSD'}，正在打开麦克风", phase="active")
-        # Start USB OUT even before the controller delivers its first downlink.
-        priming = codec.encode(bytes(240)) if codec else bytes(48)
+        self.emit("call", key=key, state=f"语音通道已连接 · {codec.name}，正在打开麦克风", phase="active")
+        priming = codec.encode(bytes(codec.pcm_frame_bytes))
         self.device.host.send_sco_sdu(link.handle, priming)
         stats["tx_packets"] += 1
         stats["tx_bytes"] += len(priming)
-        self.capture_tasks[key] = self.spawn(self.open_microphone(key, link, rate))
+        self.capture_tasks[key] = self.spawn(self.open_microphone(key, link, 48000))
         if self.system_enabled:
-            self.system_capture_tasks[key] = self.spawn(self.open_system_capture(key, link, rate))
+            self.system_capture_tasks[key] = self.spawn(self.open_system_capture(key, link, 48000))
 
         async def check_audio():
             await asyncio.sleep(3)
             while self.links.get(key) is link:
                 frames = getattr(self.microphone, "frames", 0)
                 stats["microphone_frames"] = frames
+                stats["native"] = codec.stats()
                 if stats["rx_packets"] == 0:
-                    state = "语音已连接，等待移动设备语音数据"
+                    state = "语音已连接，等待设备语音数据"
                 elif stats["decoded_frames"] == 0:
-                    state = "已收到语音数据，解码异常；请查看日志"
+                    state = "已收到语音数据，等待有效音频"
                 else:
-                    state = f"语音通道使用中 · {'宽带语音（mSBC）' if codec else '标准语音（CVSD）'} · 麦克风{'工作中' if frames else '等待输入'}"
+                    state = f"语音通道使用中 · {codec.name} · 麦克风{'工作中' if frames else '等待输入'}"
                 self.emit("call", key=key, state=state, phase="active", statistics=dict(stats))
-                log.info("SCO counters: peer=%s %s", key, stats)
                 await asyncio.sleep(5)
         self.spawn(check_audio())
 
@@ -647,6 +634,38 @@ class CallManager:
             if not finished.cancelled() and finished.exception():
                 log.warning("Microphone close failed: %s", finished.exception())
         task.add_done_callback(done)
+
+    def retire_rfcomm_client(self, client):
+        async def release():
+            channel = getattr(client, "l2cap_channel", None)
+            try:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(client.shutdown(), 2)
+            finally:
+                # Upstream shutdown returns immediately when start failed
+                # before creating a multiplexer, even if it owns an L2CAP.
+                if channel is not None and getattr(client, "l2cap_channel", None) is channel:
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(channel.disconnect(), 1)
+        task = asyncio.create_task(release())
+        self.cleanup_tasks.add(task)
+        task.add_done_callback(self.cleanup_tasks.discard)
+
+    async def disconnect_dlc(self, dlc):
+        try:
+            await asyncio.wait_for(dlc.disconnect(), 2)
+        except (Exception, asyncio.CancelledError) as error:
+            # A peer which stops replying must not keep receiver shutdown
+            # waiting forever for an RFCOMM UA. Close only its RFCOMM channel.
+            channel = dlc.multiplexer.l2cap_channel
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(channel.disconnect(), 1)
+            if isinstance(error, asyncio.CancelledError):
+                raise
+
+    async def disconnect_voice(self, link):
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(link.disconnect(), 2)
 
     async def open_microphone(self, key, link, rate):
         route = CaptureRoute(self.router)
@@ -696,6 +715,9 @@ class CallManager:
                      self.statistics.get(key), getattr(self.microphone, "frames", 0))
         self.links.pop(key, None)
         self.voice_buffers.pop(key, None)
+        codec = self.voice_codecs.pop(key, None)
+        if codec:
+            codec.close()
         pending = self.capture_tasks.pop(key, None)
         if pending:
             pending.cancel()
@@ -727,13 +749,13 @@ class CallManager:
                 if self.microphone is microphone:
                     self.input_device = previous
                     raise
-            for pending in self.voice_buffers.values():
-                pending.clear()
+            # Complete the current H2 frame across endpoint hot swaps. Clearing
+            # its unsent suffix would corrupt compressed frames on the peer.
             if not self.microphone and not self.closed:
                 key = self.router.owner
                 link = self.links.get(key)
                 if link is not None:
-                    rate = self.statistics[key]["rate"]
+                    rate = 48000
                     retry = self.capture_tasks[key] = self.spawn(self.open_microphone(key, link, rate))
         if retry:
             await asyncio.shield(retry)
@@ -766,6 +788,9 @@ class CallManager:
         if self.closed:
             return
         self.closed = True
+        self.server.l2cap_server.close()
+        if self.device.sdp_service_records.get(0x10002) is self.sdp_record:
+            self.device.sdp_service_records.pop(0x10002, None)
         self.close_system_capture()
         self.device.remove_listener("connection", self.on_connection)
         for key in list(self.links):
@@ -784,4 +809,11 @@ class CallManager:
 
     async def wait_closed(self):
         while self.tasks or self.cleanup_tasks:
-            await asyncio.gather(*self.tasks, *self.cleanup_tasks, return_exceptions=True)
+            snapshot = tuple(self.tasks | self.cleanup_tasks)
+            await asyncio.gather(*snapshot, return_exceptions=True)
+            # gather(done_task) can return synchronously before its scheduled
+            # done callback removes it. Prune explicitly and let callbacks run.
+            finished = {task for task in snapshot if task.done()}
+            self.tasks.difference_update(finished)
+            self.cleanup_tasks.difference_update(finished)
+            await asyncio.sleep(0)

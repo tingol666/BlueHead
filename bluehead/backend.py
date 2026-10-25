@@ -15,7 +15,6 @@ import time
 from bumble import avdtp
 from bumble.a2dp import make_audio_sink_service_sdp_records
 from bumble.device import Device, DeviceConfiguration
-from bumble.core import AdvertisingData
 from bumble.pairing import PairingConfig
 from .usb_transport import open_transport, load_libusb
 
@@ -142,13 +141,28 @@ class MediaSession:
                 lost = getattr(getattr(decoder, "depacketizer", None), "lost", 0)
                 decoded_before = self.decoded_frames
                 try:
-                    for samples in decoder.feed(encoded):
+                    if hasattr(decoder, "decode_packet"):
+                        decoder.decode_packet(encoded)
                         with self.state_lock:
                             if not self.closed and not self.paused and generation == self.generation:
-                                self.mixer.write(self.key, samples)
-                                self.decoded_frames += len(samples)
-                                self.last_decoded = time.monotonic()
+                                frames = decoder.write_to(self.mixer, self.key)
+                                self.decoded_frames += frames
+                                if frames:
+                                    self.last_decoded = time.monotonic()
+                            else:
+                                decoder.discard_pcm()
+                    else:
+                        # Test adapters and isolated experimental codecs share
+                        # the same generation check before publishing PCM.
+                        for samples in decoder.feed(encoded):
+                            with self.state_lock:
+                                if not self.closed and not self.paused and generation == self.generation:
+                                    self.mixer.write(self.key, samples)
+                                    self.decoded_frames += len(samples)
+                                    self.last_decoded = time.monotonic()
                 except Exception:
+                    if hasattr(decoder, "discard_pcm"):
+                        decoder.discard_pcm()
                     self.errors += 1
                     if time.monotonic() - self.last_error > 5:
                         self.last_error = time.monotonic()
@@ -249,8 +263,11 @@ class Receiver:
         self.stop_event = asyncio.Event()
         self.output = None
         self.calls = None
+        self.avrcp = None
+        self.standard_volumes = {}
         self.native = None
         self.audio_lock = asyncio.Lock()
+        self.control_tasks = set()
         self.mixer.master = settings.playback_gain
         for key, gains in settings.device_volumes.items():
             self.mixer.set_gain(key, gains.get("down", 1))
@@ -258,14 +275,15 @@ class Receiver:
 
     def attach(self, device):
         self.device = device
-        device.inquiry_response = bytes(AdvertisingData([
-            (AdvertisingData.COMPLETE_LOCAL_NAME, self.settings.name.encode("utf-8")),
-            (AdvertisingData.COMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
-             bytes.fromhex("0b111e11") if self.settings.calls else bytes.fromhex("0b11")),
-        ]))
+        from .discovery import inquiry_response, add_server_record
+        device.inquiry_response = inquiry_response(self.settings.name, self.settings.calls)
         device.sdp_service_records = {
             0x10001: make_audio_sink_service_sdp_records(0x10001)
         }
+        from .avrcp import AvrcpManager
+        self.avrcp = AvrcpManager(self.emit, self.set_standard_volume,
+                                  lambda key: self.standard_volumes.get(key, 1.0))
+        self.avrcp.attach(device)
         device.on("connection", self.on_connection)
         listener = avdtp.Listener.for_device(device)
         listener.on("connection", self.on_protocol)
@@ -277,14 +295,34 @@ class Receiver:
             self.calls.router.microphone_gain = self.settings.microphone_gain
             self.calls.router.system_gain = self.settings.system_gain
             self.calls.router.device_gains = {key: gains.get("up", 1) for key, gains in self.settings.device_volumes.items()}
+            self.calls.downlink_gains = {key: gains.get("down", 1) for key, gains in self.settings.device_volumes.items()}
             self.calls.system_enabled = self.settings.system_audio_enabled
+        add_server_record(device)
+
+    def spawn_control(self, coroutine):
+        task = asyncio.create_task(coroutine)
+        self.control_tasks.add(task)
+        def finished(result):
+            self.control_tasks.discard(result)
+            if not result.cancelled() and result.exception() and not self.stop_event.is_set():
+                log.warning("Bluetooth control operation did not complete", exc_info=result.exception())
+        task.add_done_callback(finished)
+        return task
 
     def set_device_gain(self, key, direction, gain):
         if direction == "down":
-            self.mixer.set_gain(key, gain)
-            self.mixer.set_gain("call:" + key, gain)
+            self.mixer.set_gain(key, gain * self.standard_volumes.get(key, 1.0))
+            if self.calls:
+                self.calls.set_downlink_gain(key, gain)
+            else:
+                self.mixer.set_gain("call:" + key, gain)
         elif self.calls:
             self.calls.router.device_gains[key] = gain
+
+    def set_standard_volume(self, key, volume):
+        self.standard_volumes[key] = volume
+        gain = self.settings.device_volumes.get(key, {}).get("down", 1.0)
+        self.mixer.set_gain(key, gain * volume)
 
     def set_master_gain(self, bus, gain):
         if bus == "playback":
@@ -357,7 +395,7 @@ class Receiver:
         session.resume()
         self.ensure_media_watch()
         if self.settings.media_mode == "single" and key != self.media_owner:
-            asyncio.create_task(self.suspend_other_media())
+            self.spawn_control(self.suspend_other_media())
 
     def media_paused(self, key, session, terminal=False):
         if self.sessions.get(key) is not session or session.closed:
@@ -473,8 +511,13 @@ class Receiver:
 
     def on_connection(self, connection):
         key = str(connection.peer_address)
+        current = self.connections.get(key)
+        if current is connection:
+            return
+        if current is not None:
+            self.disconnected(key, current)
         if len(self.connections) >= self.settings.maximum_devices:
-            asyncio.create_task(connection.disconnect())
+            self.spawn_control(connection.disconnect())
             self.emit("warning", message="已达到设置的连接数量上限")
             return
         self.connections[key] = connection
@@ -482,15 +525,18 @@ class Receiver:
         async def read_name():
             try:
                 name = await asyncio.wait_for(self.device.request_remote_name(connection.peer_address), 3)
-                self.emit("name", key=key, name=name)
+                if self.connections.get(key) is connection:
+                    self.emit("name", key=key, name=name)
             except Exception:
                 pass
-        asyncio.create_task(read_name())
-        connection.on("disconnection", lambda reason: self.disconnected(key))
+        self.spawn_control(read_name())
+        connection.on("disconnection", lambda reason: self.disconnected(key, connection))
         # Keep accepting a second source after the first one pairs.
-        asyncio.create_task(self.advertise())
+        self.spawn_control(self.advertise())
 
-    def disconnected(self, key):
+    def disconnected(self, key, connection=None):
+        if connection is not None and self.connections.get(key) is not connection:
+            return
         self.connections.pop(key, None)
         self.media_sinks.pop(key, None)
         self.policy_suspended.discard(key)
@@ -502,8 +548,16 @@ class Receiver:
         session = self.sessions.pop(key, None)
         if session:
             session.close()
+        self.standard_volumes.pop(key, None)
+        if key in self.settings.device_volumes:
+            gain = self.settings.device_volumes[key].get("down", 1.0)
+            self.mixer.set_gain(key, gain)
+            self.mixer.set_gain("call:" + key, gain)
+        else:
+            self.mixer.gains.pop(key, None)
+            self.mixer.gains.pop("call:" + key, None)
         self.emit("device", key=key, state="已断开")
-        asyncio.create_task(self.advertise())
+        self.spawn_control(self.advertise())
 
     def on_protocol(self, protocol):
         key = str(protocol.l2cap_channel.connection.peer_address)
@@ -588,6 +642,8 @@ class Receiver:
                 self.output = AudioOutput(self.mixer, self.settings.output_device)
                 self.output.start()
                 await device.power_on()
+                from .discovery import update_inquiry_power
+                await update_inquiry_power(device, config.name, self.settings.calls)
                 await self.advertise()
                 self.emit("status", message=f"已就绪：在移动设备蓝牙列表连接 {config.name}")
                 stopped = asyncio.create_task(self.stop_event.wait())
@@ -599,6 +655,8 @@ class Receiver:
                     terminated.cancel()
                 if not self.stop_event.is_set():
                     raise ConnectionError("蓝牙适配器已断开")
+                if self.avrcp:
+                    await self.avrcp.aclose()
                 for connection in list(self.connections.values()):
                     with contextlib.suppress(Exception):
                         await asyncio.wait_for(connection.disconnect(), 2)
@@ -617,12 +675,19 @@ class Receiver:
                 if self.calls:
                     self.calls.close()
                     await self.calls.wait_closed()
+                if self.avrcp:
+                    await self.avrcp.aclose()
                 for session in list(self.sessions.values()):
                     session.close()
                 self.sessions.clear()
                 if self.output:
                     await asyncio.to_thread(self.output.close)
             finally:
+                self.stop_event.set()
+                for task in list(self.control_tasks):
+                    task.cancel()
+                await asyncio.gather(*self.control_tasks, return_exceptions=True)
+                self.control_tasks.clear()
                 watchdog.close()
                 lease.close()
                 self.emit("status", message="已停止")
@@ -657,7 +722,8 @@ class Receiver:
                 if self.calls:
                     await stack.enter_async_context(self.calls.input_lock)
                 mapped, errors = await asyncio.to_thread(refresh_devices, {
-                    "output": self.settings.output_device, "input": self.settings.input_device})
+                    "output": self.settings.output_device, "input": self.settings.input_device}, {
+                    "output": self.settings.output_endpoint_id, "input": self.settings.input_endpoint_id})
                 self.settings.output_device = mapped["output"]
                 self.settings.input_device = mapped["input"]
                 for direction in ("input", "output"):
@@ -668,7 +734,9 @@ class Receiver:
                 return mapped, errors
 
     async def action(self, action, key):
-        if action == "media_mode":
+        if action in ("play", "pause", "play_pause", "stop", "next", "previous") and self.avrcp:
+            await self.avrcp.command(key, action)
+        elif action == "media_mode":
             await self.set_media_mode(key)
         elif action == "select_media":
             await self.select_media(key)

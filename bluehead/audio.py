@@ -5,10 +5,9 @@ import contextlib
 import logging
 import threading
 
-import av
-import numpy as np
+import math
 
-from .protocol import Depacketizer, Format
+from .protocol import Format
 from .audio_runtime import on_audio_thread, register, unregister, close_raw, commit_change
 
 log = logging.getLogger(__name__)
@@ -16,126 +15,23 @@ log = logging.getLogger(__name__)
 
 @on_audio_thread
 def resolve_endpoint(device, direction):
-    """Prefer the Windows default WASAPI endpoint over PortAudio's MME default."""
-    if device is not None:
+    from .audio_device import inventory
+    from .endpoints import portaudio_id
+    if device is None or isinstance(device, str):
         return device
-    import sounddevice as sd
-    for api in sd.query_hostapis():
-        if "WASAPI" in api["name"]:
-            selected = api.get("default_" + direction + "_device", -1)
-            if selected is not None and selected >= 0:
-                return int(selected)
-    return None
+    identity = portaudio_id(device)
+    for item in inventory():
+        if item["endpoint_id"] == identity and item["direction"] == direction:
+            return item["endpoint_id"]
+    raise ValueError("所选音频设备已断开，请重新选择")
 
 
-class Decoder:
-    def __init__(self, fmt: Format, output_rate: int = 48000):
-        self.fmt, self.output_rate = fmt, output_rate
-        self.depacketizer = Depacketizer(fmt)
-        self.errors, self.frames, self.bytes = 0, 0, 0
-        self.coded_bytes = self.recoveries = 0
-        self.synchronizing = False
-        self.sync_buffer = bytearray()
-        self.resampler = av.AudioResampler(format="flt", layout="stereo", rate=output_rate)
-        if fmt.codec == "ldac":
-            from .ldac import LdacDecoder
-            self.native = LdacDecoder(fmt.rate)
-            self.context = None
-        else:
-            self.native = None
-            self.context = self._context()
-
-    def _context(self):
-        context = av.CodecContext.create({"aac": "aac_latm"}.get(self.fmt.codec, self.fmt.codec), "r")
-        context.sample_rate = self.fmt.rate
-        context.layout = "mono" if self.fmt.channels == 1 else "stereo"
-        context.open()
-        return context
-
-    def restart(self):
-        # Resuming can reset RTP sequence and aptX predictor/parity state.
-        # Keep AAC LATM StreamMuxConfig for useSameStreamMux packets.
-        self.depacketizer = Depacketizer(self.fmt)
-        self.synchronizing = False
-        self.sync_buffer.clear()
-        self.resampler = av.AudioResampler(format="flt", layout="stereo", rate=self.output_rate)
-        if self.native:
-            self.native.reset()
-        elif self.fmt.codec != "aac":
-            self.context = self._context()
-
-    def _aptx_resync(self, chunk):
-        """Find two parity cycles before restarting at a real 4-sample boundary.
-
-        An ongoing encoder can resume with any of its eight sync phases. Resetting
-        FFmpeg at every packet then makes all subsequent packets fail forever.
-        The transmitted parity bit is bit 13 (aptX) / 19 (HD) of each channel's
-        codeword; its stereo XOR is 00000001, repeated every eight blocks.
-        """
-        self.sync_buffer.extend(chunk)
-        block = 6 if self.fmt.codec == "aptx_hd" else 4
-        shift = 3 if block == 6 else 5
-        data = bytes(self.sync_buffer)
-        words = np.frombuffer(data, np.uint8).reshape(-1, block)
-        parity = ((words[:, 0] ^ words[:, block // 2]) >> shift) & 1
-        for start in (np.flatnonzero(parity == 1) - 7)[-16:][::-1]:
-            if start < 0 or start + 16 > len(parity):
-                continue
-            if (parity[start:start + 7].any() or parity[start + 8:start + 15].any() or
-                    parity[start + 15] != 1):
-                continue
-            self.context = self._context()
-            self.resampler = av.AudioResampler(format="flt", layout="stereo", rate=self.output_rate)
-            try:
-                frames = self.context.decode(av.Packet(data[start * block:]))
-            except av.InvalidDataError:
-                continue
-            self.sync_buffer.clear()
-            self.synchronizing = False
-            self.recoveries += 1
-            return frames
-        # Keep only enough trailing codewords to bridge the next packet.
-        self.sync_buffer[:] = data[-32 * block:]
-        return []
-
-    def feed(self, data: bytes) -> list[np.ndarray]:
-        self.bytes += len(data)
-        result = []
-        for chunk in self.depacketizer.feed(data):
-            self.coded_bytes += len(chunk) - (3 if self.fmt.codec == "aac" else 0)
-            if self.native:
-                pcm = self.native.decode(chunk)
-                frame = av.AudioFrame.from_ndarray(pcm.reshape(1, -1), "flt", "stereo")
-                frame.sample_rate = self.fmt.rate
-                decoded = [frame]
-            else:
-                # SBC may contain multiple frames; its parser splits on frame boundaries.
-                packets = self.context.parse(chunk) if self.fmt.codec == "sbc" else [av.Packet(chunk)]
-                if self.synchronizing:
-                    decoded = self._aptx_resync(chunk)
-                else:
-                    try:
-                        decoded = [f for p in packets for f in self.context.decode(p)]
-                    except av.InvalidDataError:
-                        self.errors += 1
-                        if self.fmt.codec not in ("aptx", "aptx_hd"):
-                            raise
-                        self.synchronizing = True
-                        decoded = self._aptx_resync(chunk)
-            for frame in decoded:
-                if frame.sample_rate != self.fmt.rate:
-                    raise ValueError("Decoded sample rate differs from negotiated rate")
-                for out in self.resampler.resample(frame):
-                    samples = out.to_ndarray().reshape(-1, 2).copy()
-                    if not np.isfinite(samples).all():
-                        raise ValueError("Non-finite decoded audio")
-                    result.append(samples)
-                    self.frames += len(samples)
-        return result
-
-    def close(self):
-        if self.native:
-            self.native.close()
+def Decoder(fmt: Format, output_rate=48000):
+    if fmt.codec == "ldac":
+        from .ldac import IsolatedMedia
+        return IsolatedMedia(fmt, output_rate)
+    from .media import NativeMedia
+    return NativeMedia(fmt, output_rate)
 
 
 @dataclass
@@ -158,12 +54,11 @@ class Mixer:
         self.call_target = int(rate * min(buffer_ms, call_buffer_ms) / 1000)
         self.call_maximum = min(self.maximum, int(rate * max(60, call_buffer_ms * 3) / 1000))
         self.native = None
-        if native and rate == 48000:
-            try:
-                from .pcm import NativeMixer
-                self.native = NativeMixer()
-            except OSError:
-                log.warning("Native mixer unavailable; using reference mixer")
+        if native:
+            if rate != 48000:
+                raise ValueError("Native mixer uses a fixed 48 kHz PCM clock")
+            from .pcm import NativeMixer
+            self.native = NativeMixer()
         self.inputs: dict[str, MixInput] = {}
         self.gains = {}
         self.lock = threading.Lock()
@@ -179,7 +74,7 @@ class Mixer:
     @master.setter
     def master(self, value):
         value = float(value)
-        if not np.isfinite(value):
+        if not math.isfinite(value):
             raise ValueError("Audio gain must be finite")
         self._master = max(0.0, min(2.0, value))
         if self.native:
@@ -258,6 +153,7 @@ class Mixer:
                         stream.gate = stream.gate_target
 
     def write(self, key, samples):
+        import numpy as np  # Development/reference array API only.
         if samples.ndim != 2 or samples.shape[1] != 2:
             raise ValueError("Mixer requires interleaved stereo")
         with self.lock:
@@ -275,7 +171,28 @@ class Mixer:
             stream.chunks.append(samples)
             stream.frames += len(samples)
 
+    def write_voice(self, key, pcm):
+        """48 kHz mono S16 from the native voice engine, with no array conversion."""
+        if not isinstance(pcm, bytes) or len(pcm) % 2 or len(pcm) > 48064 * 2:
+            raise ValueError("Invalid native voice PCM")
+        with self.lock:
+            stream = self.inputs.get(key)
+            if stream is None:
+                return
+            api = self.native.library
+            api.bh_mix_write_s16_mono(self.native.handle, stream.index, pcm, len(pcm) // 2)
+
+    def write_float_bytes(self, key, pcm):
+        """Owned stereo float32 bytes from an isolated native decoder."""
+        if not isinstance(pcm, bytes) or len(pcm) % 8 or len(pcm) > 48064 * 8:
+            raise ValueError("Invalid native stereo PCM")
+        with self.lock:
+            stream = self.inputs.get(key)
+            if stream is not None:
+                self.native.library.bh_mix_write(self.native.handle, stream.index, pcm, len(pcm) // 8)
+
     def render(self, frames):
+        import numpy as np  # Development/offline facade; native callback bypasses it.
         if self.native:
             output = np.empty((frames, 2), dtype=np.float32)
             self.render_into(output)
@@ -364,11 +281,11 @@ class SwitchableStream:
             self.running = True
 
     @on_audio_thread
-    def switch_device(self, device):
+    def switch_device(self, device, force=False):
         with self._lock:
             if self.closed or self.closing:
                 raise RuntimeError("音频连接已结束")
-            if device == self.device:
+            if device == self.device and not force:
                 return
             # Open the replacement before interrupting the working endpoint.
             candidate = self._factory(device)
@@ -412,6 +329,7 @@ class OutputRenderer:
         self.native = NativeRender(mixer.native, rate)
 
     def render(self, count):
+        import numpy as np
         out = np.empty((count, 2), dtype=np.float32)
         self.native.render_into(out)
         return out
@@ -420,36 +338,11 @@ class OutputRenderer:
 class AudioOutput(SwitchableStream):
     @on_audio_thread
     def __init__(self, mixer, output_device=None):
-        import sounddevice as sd
-        from .realtime import PlaybackStream
+        from .audio_device import context
         self.mixer = mixer
 
         def create(device):
-            resolved = resolve_endpoint(device, "output")
-            endpoint = sd.query_devices(resolved, "output")
-            wasapi = "WASAPI" in sd.query_hostapis()[endpoint["hostapi"]]["name"]
-            # Prefer Windows shared-mode conversion. Drivers that reject it
-            # use the preallocated native SpeexDSP renderer at their own rate.
-            extra = sd.WasapiSettings(auto_convert=True) if wasapi else None
-            rate = mixer.rate
-            try:
-                sd.check_output_settings(device=resolved, samplerate=rate, channels=2, dtype="float32",
-                                         extra_settings=extra)
-            except sd.PortAudioError:
-                rate = int(endpoint["default_samplerate"])
-                extra = None
-
-            def open_stream(rate, extra):
-                return PlaybackStream(mixer, rate, resolved, extra)
-
-            try:
-                return open_stream(rate, extra)
-            except sd.PortAudioError:
-                if extra is None:
-                    raise
-                # Some drivers pass format probing but reject auto-conversion
-                # at stream creation. Preserve the existing native-rate path.
-                return open_stream(int(endpoint["default_samplerate"]), None)
+            return context().create_output(mixer, resolve_endpoint(device, "output"))
         super().__init__(create, output_device, "output")
 
     @property

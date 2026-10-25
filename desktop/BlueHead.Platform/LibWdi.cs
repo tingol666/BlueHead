@@ -31,7 +31,7 @@ internal static class LibWdi
             for (var pointer = list; pointer != IntPtr.Zero;)
             {
                 var device = Marshal.PtrToStructure<Device>(pointer);
-                if (Marshal.PtrToStringUTF8(device.DeviceId)?.Equals(instanceId, StringComparison.OrdinalIgnoreCase) == true)
+                if (FrameworkCompat.PtrToStringUtf8(device.DeviceId)?.Equals(instanceId, StringComparison.OrdinalIgnoreCase) == true)
                 {
                     var prepare = new PrepareOptions { Type = 0 };
                     Check(wdi_prepare_driver(pointer, folder, "bluehead.inf", ref prepare));
@@ -47,6 +47,6 @@ internal static class LibWdi
     }
     private static void Check(int code)
     {
-        if (code != 0) throw new Win32Exception($"驱动准备失败：{Marshal.PtrToStringUTF8(wdi_strerror(code))} ({code})");
+        if (code != 0) throw new Win32Exception($"驱动准备失败：{FrameworkCompat.PtrToStringUtf8(wdi_strerror(code))} ({code})");
     }
 }

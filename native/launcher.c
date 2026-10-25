@@ -5,6 +5,19 @@
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR arguments, int show) {
     (void)instance; (void)previous;
+    DWORD framework = 0, bytes = sizeof(framework), type = 0;
+    HKEY key = NULL;
+    LSTATUS status = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\NET Framework Setup\\NDP\\v4\\Full",
+                                   0, KEY_QUERY_VALUE | KEY_WOW64_64KEY, &key);
+    if (status == ERROR_SUCCESS) {
+        status = RegQueryValueExW(key, L"Release", NULL, &type, (BYTE *)&framework, &bytes);
+        RegCloseKey(key);
+    }
+    if (status != ERROR_SUCCESS || type != REG_DWORD || bytes != sizeof(framework) || framework < 528040) {
+        MessageBoxW(NULL, L"BlueHead 需要 .NET Framework 4.8 或更高版本。Windows 10 22H2 和 Windows 11 已自带该组件；请完成 Windows 更新后重试。",
+                    L"BlueHead", MB_OK | MB_ICONINFORMATION);
+        return 3;
+    }
     wchar_t path[32768];
     if (!GetModuleFileNameW(NULL, path, 32768)) return 2;
     wchar_t *last = wcsrchr(path, L'\\');

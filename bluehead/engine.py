@@ -26,15 +26,8 @@ def validate_gain(value):
 
 @on_audio_thread
 def inventory():
-    import sounddevice as sd
-    apis = sd.query_hostapis()
-    audio = []
-    for i, endpoint in enumerate(sd.query_devices()):
-        api = apis[endpoint["hostapi"]]["name"]
-        if "WASAPI" in api:
-            from .endpoints import portaudio_id
-            audio.append(dict(endpoint, index=i, api=api, endpoint_id=portaudio_id(i)))
-    return {"adapters": usb_adapters(), "audio": audio}
+    from .endpoints import audio_inventory
+    return {"adapters": usb_adapters(), "audio": audio_inventory()}
 
 
 def validate_settings(values):
@@ -109,7 +102,7 @@ class Engine:
                 self.output.flush()
             except (BrokenPipeError, OSError):
                 self.runner.stop()
-        if event not in ("inventory", "telemetry", "gain", "master_gain"):
+        if event not in ("inventory", "telemetry", "gain", "master_gain", "avrcp"):
             logging.getLogger(__name__).info("%s %s", event, values)
         if event == "audio_device" and values.get("success"):
             setattr(self.settings, values["direction"] + "_device", values["device"])
@@ -170,7 +163,8 @@ class Engine:
             if running and receiver:
                 mapped, errors = asyncio.run_coroutine_threadsafe(receiver.refresh_audio(), self.runner.loop).result(20)
             else:
-                mapped, errors = refresh_devices({"output": self.settings.output_device, "input": self.settings.input_device})
+                mapped, errors = refresh_devices({"output": self.settings.output_device, "input": self.settings.input_device}, {
+                    "output": self.settings.output_endpoint_id, "input": self.settings.input_endpoint_id})
             self.settings.output_device, self.settings.input_device = mapped["output"], mapped["input"]
             self.save()
             self.emit("audio_refreshed", success=not errors, output_device=mapped["output"], input_device=mapped["input"],
@@ -269,7 +263,8 @@ class Engine:
                 self.emit("media_mode", success=True, mode=mode)
         elif action == "device_action":
             operation = message.get("action")
-            if operation not in ("answer", "hangup", "call_audio", "select_call", "disconnect", "select_media"):
+            if operation not in ("answer", "hangup", "call_audio", "select_call", "disconnect", "select_media",
+                                  "play", "pause", "play_pause", "stop", "next", "previous"):
                 raise ValueError("不支持的设备操作")
             self.runner.action(operation, str(message.get("key", ""))[:200])
         elif action == "gain":

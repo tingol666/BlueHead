@@ -10,7 +10,8 @@ from bumble import hci, hfp
 import usb1
 
 from bluehead.audio import Mixer
-from bluehead.calls import CallManager, Msbc
+from bluehead.calls import CallManager
+from .voice_reference import Msbc
 from bluehead import windows_usb as usb
 from .test_protocols import Network
 

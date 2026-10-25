@@ -1,4 +1,4 @@
-"""Native Core Audio identity snapshots, independent of PortAudio's cached list."""
+"""Native Core Audio identity snapshots, independent of a cached audio backend."""
 import ctypes as c
 import uuid
 
@@ -77,28 +77,32 @@ def snapshot():
             release(enumerator)
 
 
+_catalog = {}
+
+
+@on_audio_thread
+def audio_inventory():
+    from .audio_device import inventory
+    global _catalog
+    records = inventory()
+    _catalog = {item["index"]: item for item in records}
+    return [dict(item, api="Windows WASAPI") for item in records]
+
+
 @on_audio_thread
 def portaudio_id(index):
+    """Legacy control field name; indices now refer to native WASAPI snapshots."""
     if index is None:
         return None
-    import sounddevice as sd
-    library = c.CDLL(sd._libname)
-    function = library.PaWasapi_GetIMMDevice
-    function.argtypes = [c.c_int, c.POINTER(c.c_void_p)]
-    function.restype = c.c_int
-    pointer = c.c_void_p()
-    if function(int(index), c.byref(pointer)) < 0 or not pointer:
-        return None
-    # PortAudio owns this reference. GetId returns a separately allocated string.
-    return identifier(pointer)
+    if not _catalog:
+        audio_inventory()
+    item = _catalog.get(index)
+    return item["endpoint_id"] if item else None
 
 
 @on_audio_thread
 def find_endpoint(identity, direction):
-    import sounddevice as sd
-    apis = sd.query_hostapis()
-    for index, info in enumerate(sd.query_devices()):
-        if (info["max_" + direction + "_channels"] and "WASAPI" in apis[info["hostapi"]]["name"]
-                and portaudio_id(index) == identity):
-            return index
+    for item in audio_inventory():
+        if item["direction"] == direction and item["endpoint_id"] == identity:
+            return item["index"]
     raise ValueError("所选音频设备已断开，请重新选择")

@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/freeswitch/spandsp",
+  "version": "3.1.1",
+  "commit": "8f1e1646bdec99eac5fd2cd92c35563f736b9b89",
+  "license": "LGPL-2.1-only",
+  "archive_sha256": "1cb9a0ee3a68a20e84db9702cb82ac643b27e15820e74eb5a69511952dfa27b2",
+  "files_sha256": {
+    "AUTHORS": "28609255546bb070e0e3e64b0efeebfb1af38786f6b25904762a446ada9a15ec",
+    "COPYING": "366576cb0b869cd9e95a4882878607314650488ac635e5df0692180382e9666a",
+    "README": "8d19e44b90a0d1ada2b29ef4c9e602480a2895811df71fd9e9842bd513025acd",
+    "src/plc.c": "1bb788cb6bec60207ee55ecc16f63bfcf6a679b42289b2fba09d646b396022b9",
+    "src/spandsp/plc.h": "a066bb9f6cd67ce8239c8c8326596a4a1f13d5291a73eb3f14a272e0af0a872b",
+    "src/spandsp/private/plc.h": "3a8774da1e09b0cb5e84a8170b3f78ea905ed7058d58fd9634b235e8153751f2"
+  },
+  "build_adaptation": "tools/build_voice.py substitutes the include section with plc_port.h in a temporary translation unit; algorithm source remains unchanged. The replacement port header supplies portable scalar memcpy/memmove, malloc/free, saturating float conversion and Windows DLL exports. PLC is a separate replaceable dynamically linked DLL."
+}

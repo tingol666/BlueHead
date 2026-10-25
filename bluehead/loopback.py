@@ -5,7 +5,6 @@ from pathlib import Path
 import sys
 import threading
 
-import numpy as np
 from .realtime import NativeCapture
 
 _retired = []  # Keep handles/DLLs owned if an OS Stop has not returned yet.
@@ -41,6 +40,7 @@ class ProcessCapture:
             raise OSError(f"Windows 电脑声音采集不可用（0x{error.value:08X}），麦克风仍可使用")
 
     def read(self, output):
+        import numpy as np  # Independent offline array facade.
         if (not isinstance(output, np.ndarray) or output.dtype != np.float32 or output.ndim != 1 or
                 not output.flags.c_contiguous or not output.flags.writeable or len(output) > 4800):
             raise ValueError("Loopback output must be contiguous mono float32, at most 4800 frames")
@@ -52,6 +52,19 @@ class ProcessCapture:
                 error = self.api.bh_loop_error(self.handle)
                 raise OSError(f"电脑声音采集已停止（0x{error:08X}）")
             return count
+
+    def read_bytes(self, maximum=480):
+        if not 0 < maximum <= 4800:
+            raise ValueError("Invalid loopback capacity")
+        output = (ctypes.c_float * maximum)()
+        with self.lock:
+            if not self.handle:
+                return b""
+            count = self.api.bh_loop_read(self.handle, output, maximum)
+            if count < 0:
+                error = self.api.bh_loop_error(self.handle)
+                raise OSError(f"电脑声音采集已停止（0x{error:08X}）")
+            return ctypes.string_at(output, count * 4)
 
     def close(self):
         with self.lock:
@@ -82,16 +95,14 @@ class SystemCapture:
             raise
 
     def run(self):
-        buffer = np.empty(480, np.float32)
-        output = np.empty(1024, np.int16)
         try:
             while not self.stop.is_set():
-                count = self.raw.read(buffer)
-                if count:
-                    self.converter.push(buffer[:count])
-                    while (produced := self.converter.read_into(output)):
-                        self.route.write_system(self.key, output[:produced].tobytes())
-                    self.frames += count
+                data = self.raw.read_bytes()
+                if data:
+                    self.converter.push_float_bytes(data)
+                    while (pcm := self.converter.read_pcm()):
+                        self.route.write_system(self.key, pcm)
+                    self.frames += len(data) // 4
                 else:
                     self.stop.wait(.005)
         except Exception as error:

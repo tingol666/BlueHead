@@ -1,4 +1,4 @@
-"""One COM-initialized control thread owns PortAudio. Callbacks never enter it."""
+"""One COM-initialized thread serializes audio route transactions. Callbacks never enter it."""
 from concurrent.futures import Future
 from functools import wraps
 import queue
@@ -104,76 +104,35 @@ def retry_retired():
 
 
 @on_audio_thread
-def refresh_devices(selections):
-    """Close every owned stream before rebuilding PortAudio's static device list."""
-    import sounddevice as sd
-    from .endpoints import portaudio_id
+def refresh_devices(selections, identities=None):
+    """Reopen changed native endpoints without invalidating any backend context.
+
+    A successful candidate is opened before the old consumer is stopped. A
+    failed candidate leaves the previous stream available for rollback.
+    """
+    from .endpoints import portaudio_id, audio_inventory
     retry_retired()
-    if _retired:
-        raise RuntimeError("音频设备仍在释放中，将稍后重试")
-    live = [s for s in _instances if not s.closed]
-    desired = {direction: portaudio_id(index) if index is not None else None
+    desired = {direction: (identities or {}).get(direction) or portaudio_id(index)
                for direction, index in selections.items()}
-    records = [(s, s.device, portaudio_id(s.stream.device) if s.device is not None else None, s.running)
+    live = [s for s in _instances if not s.closed]
+    records = [(s, s.device, getattr(s.stream, "endpoint_id", None) or portaudio_id(s.device))
                for s in live]
-    # If a close fails, do not invalidate the runtime underneath a live callback.
-    closed = []
-    commit_change()
-    try:
-        for record in records:
-            close_raw(record[0].stream)
-            closed.append(record)
-    except Exception:
-        # Roll back streams already closed; never terminate under a live one.
-        for stream, selection, _, was_running in closed:
-            stream.stream = stream._factory(selection)
-            if was_running:
-                stream.stream.start()
-        raise
-    sd._terminate()
-    sd._initialize()
-    apis = sd.query_hostapis()
-    endpoints = {}
-    for i, info in enumerate(sd.query_devices()):
-        if "WASAPI" in apis[info["hostapi"]]["name"]:
-            identity = portaudio_id(i)
-            if identity:
-                endpoints[identity] = i
+    endpoints = {item["endpoint_id"]: item["index"] for item in audio_inventory()}
     mapped = {direction: endpoints.get(identity) if identity else None for direction, identity in desired.items()}
     errors = []
-    for stream, old_selection, identity, was_running in records:
+    commit_change()
+    for stream, old_selection, identity in records:
         selected = endpoints.get(identity) if old_selection is not None else None
-        candidate = None
         try:
-            candidate = stream._factory(selected)
-            stream.stream = candidate
-            if was_running:
-                stream.stream.start()
-            stream.device = selected
+            stream.switch_device(selected, force=True)
         except Exception as error:
             errors.append(str(error))
-            if candidate is not None:
-                try:
-                    close_raw(candidate)
-                except Exception as cleanup:
-                    errors.append(str(cleanup))
-            fallback_stream = None
+            # Replaced devices may have vanished. Default capture/render is a
+            # separate transaction; failed starts still cannot leak callbacks.
             try:
-                # An explicitly selected endpoint may have disappeared mid-scan.
-                fallback_stream = stream._factory(None)
-                stream.stream = fallback_stream
-                if was_running:
-                    stream.stream.start()
-                stream.device = None
+                stream.switch_device(None, force=True)
             except Exception as fallback:
                 errors.append(str(fallback))
-                if fallback_stream is not None:
-                    try:
-                        close_raw(fallback_stream)
-                    except Exception as cleanup:
-                        errors.append(str(cleanup))
-                # Keep the object registered for a later device-change retry.
-                stream.device = None
         if getattr(stream, "direction", None) in mapped:
             mapped[stream.direction] = stream.device
     return mapped, errors

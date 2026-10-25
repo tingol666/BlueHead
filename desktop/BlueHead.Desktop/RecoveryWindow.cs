@@ -36,7 +36,7 @@ internal sealed class RecoveryWindow : Window
         {
             var path = Path.Combine(AppContext.BaseDirectory, "BlueHead.DriverHelper.exe");
             var start = new ProcessStartInfo(path) { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden };
-            start.ArgumentList.Add("--restore"); start.ArgumentList.Add(device.InstanceId);
+            start.AddArgument("--restore"); start.AddArgument(device.InstanceId);
             using var process = Process.Start(start) ?? throw new IOException("恢复工具未能启动。");
             await process.WaitForExitAsync();
             await Refresh(); status.Text = process.ExitCode == 0 ? "恢复操作完成。" : "恢复未完成，请查看管理员窗口中的原因。";

@@ -2,8 +2,6 @@
 import ctypes
 from pathlib import Path
 
-import numpy as np
-
 
 class NativeMixer:
     def __init__(self):
@@ -18,6 +16,7 @@ class NativeMixer:
         api.bh_mix_gate.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
         api.bh_mix_gain.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_float]
         api.bh_mix_write.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint]
+        api.bh_mix_write_s16_mono.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint]
         api.bh_mix_render.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_float]
         api.bh_mix_master.argtypes = [ctypes.c_void_p, ctypes.c_float]
         api.bh_mix_value.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
@@ -33,6 +32,7 @@ class NativeMixer:
         return NativeInput(self, index)
 
     def render_into(self, output, master):
+        import numpy as np  # Offline array facade; device callback calls C directly.
         if (not isinstance(output, np.ndarray) or output.dtype != np.float32 or
                 output.ndim != 2 or output.shape[1] != 2 or
                 not output.flags.c_contiguous or not output.flags.writeable):
@@ -64,6 +64,7 @@ class NativeInput:
         return self.mixer.library.bh_mix_value(self.mixer.handle, self.index, 1)
 
     def write(self, samples):
+        import numpy as np  # Offline array facade; native decoder writes directly.
         owned = np.ascontiguousarray(samples, dtype=np.float32)
         if owned.ndim != 2 or owned.shape[1] != 2:
             raise ValueError("PCM input must have two channels")

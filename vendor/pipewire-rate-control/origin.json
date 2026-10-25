@@ -1,0 +1,11 @@
+{
+  "project": "PipeWire Bluetooth rate control",
+  "url": "https://github.com/PipeWire/pipewire",
+  "revision": "73974598fafeea9491f0f36a31bdaef2352dbd4f",
+  "original_path": "spa/plugins/bluez5/rate-control.h",
+  "license": "MIT",
+  "files_sha256": {
+    "rate-control.h": "57655eef7015802bf30bc86686ad67b93c77d39d3d8d7bfd9eaf19fcdfe10895",
+    "LICENSE": "8909c319a7e27dbb33a15b9035f89ab3b7b2f6a12f8bcddc755206a8db1ada44"
+  }
+}

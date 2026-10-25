@@ -17,6 +17,10 @@ import subprocess
 import sys
 import tarfile
 
+native_only = "--native-only" in sys.argv[1:]
+if any(argument != "--native-only" for argument in sys.argv[1:]):
+    raise SystemExit("Usage: build_ffmpeg.py [--native-only]")
+
 root = Path(__file__).resolve().parents[1]
 build = root / "work/ffmpeg-audio"
 build.mkdir(parents=True, exist_ok=True)
@@ -67,6 +71,26 @@ if not (build / "install/bin/avcodec-63.dll").exists() or not configuration.exis
         print(log.read_text("utf-8", errors="replace")[-5000:])
         raise SystemExit(result.returncode)
     configuration.write_text(json.dumps(flags), "utf-8")
+
+# The release engine uses the native API directly. Test environments can also
+# adapt PyAV as an independent codec oracle with the same pinned FFmpeg ABI.
+if native_only:
+    assets = root / "bluehead/assets"
+    for name in ("avcodec-63.dll", "avutil-61.dll", "swresample-7.dll"):
+        shutil.copy2(build / "install/bin" / name, assets / name)
+    shutil.copy2(msys / "ucrt64/bin/libwinpthread-1.dll", assets / "libwinpthread-1.dll")
+    licenses = root / "licenses/ffmpeg"
+    licenses.mkdir(parents=True, exist_ok=True)
+    for name in ("COPYING.LGPLv2.1", "COPYING.LGPLv3", "LICENSE.md"):
+        shutil.copy2(build / "ffmpeg-9.0.2" / name, licenses / name)
+    report = {"version": "9.0.2", "source_sha256": metadata["sha256"], "patches": [], "configure": flags,
+              "libraries": {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                            for p in assets.glob("*.dll") if p.name in {
+                                "avcodec-63.dll", "avutil-61.dll", "swresample-7.dll", "libwinpthread-1.dll"}},
+              "scope": "Native audio-only LGPL libraries; no PyAV runtime"}
+    (root / "vendor/ffmpeg/build.json").write_text(json.dumps(report, indent=2) + "\n", "utf-8")
+    print(json.dumps(report))
+    raise SystemExit(0)
 
 # Avoid importing av before its DLLs are adapted in this process.
 av_package = Path(importlib.util.find_spec("av").origin).parent

@@ -5,7 +5,8 @@ import pytest
 from bumble import hci, hfp
 
 from bluehead.audio import Mixer
-from bluehead.calls import CallManager, Msbc
+from bluehead.calls import CallManager
+from .voice_reference import Msbc
 from .test_protocols import Network
 from .vectors import signal
 

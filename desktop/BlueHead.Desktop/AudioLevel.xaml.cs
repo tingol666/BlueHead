@@ -1,3 +1,4 @@
+using BlueHead.Platform;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -11,7 +12,7 @@ public partial class AudioLevel : UserControl
     public static readonly DependencyProperty IsSilentProperty = IsSilentPropertyKey.DependencyProperty;
     public bool IsSilent => (bool)GetValue(IsSilentProperty);
     public static readonly DependencyProperty ValueProperty = DependencyProperty.Register(nameof(Value), typeof(double), typeof(AudioLevel),
-        new FrameworkPropertyMetadata(100d, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault, OnValueChanged, (_, value) => double.IsFinite((double)value) ? Math.Clamp((double)value, 0, 200) : 100d));
+        new FrameworkPropertyMetadata(100d, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault, OnValueChanged, (_, value) => FrameworkCompat.IsFinite((double)value) ? FrameworkCompat.Clamp((double)value, 0, 200) : 100d));
     public static readonly DependencyProperty LabelProperty = DependencyProperty.Register(nameof(Label), typeof(string), typeof(AudioLevel), new PropertyMetadata("音量"));
     public static readonly DependencyProperty SecondaryProperty = DependencyProperty.Register(nameof(Secondary), typeof(string), typeof(AudioLevel), new PropertyMetadata(""));
     public static readonly DependencyProperty HintProperty = DependencyProperty.Register(nameof(Hint), typeof(string), typeof(AudioLevel), new PropertyMetadata(""));

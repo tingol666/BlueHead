@@ -1,130 +1,104 @@
-"""The real C callback with fake PortAudio endpoints: no physical devices opened."""
-from types import SimpleNamespace
-import sys
+"""Real native output callbacks behind virtual WASAPI endpoint selection."""
 
 import numpy as np
 import pytest
-import sounddevice as real_sd
 
 from bluehead.audio import AudioOutput, Mixer
-
-
-def audio_device(monkeypatch, rates, *, wasapi=True, reject=None):
-    opened, active = [], set()
-
-    class AudioError(Exception):
-        pass
-
-    def info(device=None, direction=None):
-        return {"hostapi": 0, "default_samplerate": rates[device or 0]}
-
-    def check(**options):
-        if reject == "probe" and options["extra_settings"]:
-            raise AudioError("Driver does not support automatic conversion")
-        if not wasapi and options["samplerate"] != rates[options["device"]]:
-            raise AudioError("Native sample rate required")
-
-    class Stream:
-        def __init__(self, **options):
-            if options["extra_settings"] and reject == "open":
-                raise AudioError("Format probe passed, but stream creation failed")
-            self.options = options
-            self.device = options["device"]
-            self.active = self.closed = False
-            opened.append(self)
-
-        def start(self):
-            assert not active, "Two output callbacks could drain the same mixer"
-            self.active = True
-            active.add(self)
-
-        def stop(self, ignore_errors=False):
-            self.active = False
-            active.discard(self)
-
-        def close(self, ignore_errors=False):
-            self.stop()
-            self.closed = True
-
-        def render(self, block, status=0):
-            ffi = real_sd._ffi
-            result = self.options["callback"](ffi.NULL, ffi.cast("void*", block.ctypes.data), len(block),
-                                               ffi.NULL, status, self.options["userdata"])
-            assert result == 0
-
-    api = {"name": "Windows WASAPI" if wasapi else "Other API", "default_output_device": 0}
-    sd = SimpleNamespace(query_devices=info, query_hostapis=lambda: [api],
-                         WasapiSettings=lambda **options: options, check_output_settings=check,
-                         _StreamBase=Stream, _ffi=real_sd._ffi, PortAudioError=AudioError)
-    monkeypatch.setitem(sys.modules, "sounddevice", sd)
-    return opened, active
+from bluehead.audio_device import PLAYBACK
+from .offline_audio import OfflineEndpoints
 
 
 @pytest.mark.parametrize("native_rate", [44100, 96000])
-def test_wasapi_uses_native_pcm_callback_at_non_48khz_endpoint(monkeypatch, native_rate):
-    opened, _ = audio_device(monkeypatch, [native_rate])
-
+def test_shared_wasapi_path_keeps_one_48khz_pcm_timeline(monkeypatch, native_rate):
+    endpoints = OfflineEndpoints(monkeypatch, [native_rate])
     mixer = Mixer(buffer_ms=0)
     mixer.add("source")
-    mixer.write("source", np.full((4800, 2), .125, np.float32))
-    monkeypatch.setattr(mixer, "render", lambda _: pytest.fail("Python callback"))
-    monkeypatch.setattr(mixer, "render_into", lambda _: pytest.fail("Python callback"))
+    mixer.write("source", np.full((4800, 2), 0.125, np.float32))
+    monkeypatch.setattr(mixer, "render", lambda _: pytest.fail("Python audio callback"))
+    monkeypatch.setattr(mixer, "render_into", lambda _: pytest.fail("Python audio callback"))
     output = AudioOutput(mixer, 0)
     try:
-        stream = opened[-1]
-        assert stream.options["samplerate"] == 48000
-        assert stream.options["extra_settings"] == {"auto_convert": True}
+        output.start()
+        raw = endpoints.opened[-1]
+        assert raw.snapshot()["sample_rate"] == 48000
+        assert raw.snapshot()["conversion_mode"] == "Windows shared SRC"
         block = np.empty((480, 2), np.float32)
-        stream.render(block)
-        np.testing.assert_array_equal(block, .125)
+        endpoints.process(raw, output=block)
+        np.testing.assert_array_equal(block, 0.125)
+        assert raw.snapshot()["callbacks"] == 1
+        assert mixer.inputs["source"].frames == 4320
     finally:
         output.close()
+        endpoints.close()
 
 
-@pytest.mark.parametrize("reject", ["probe", "open"])
-def test_wasapi_driver_rejection_falls_back_to_native_format(monkeypatch, reject):
-    opened, _ = audio_device(monkeypatch, [96000], reject=reject)
+@pytest.mark.parametrize("native_rate", [44100, 96000])
+def test_native_format_fallback_uses_real_speex_conversion(monkeypatch, native_rate):
+    endpoints = OfflineEndpoints(monkeypatch, [native_rate], shared=False)
     mixer = Mixer(buffer_ms=0)
     mixer.add("source")
-    mixer.write("source", np.full((3000, 2), .1, np.float32))
+    mixer.write("source", np.full((6000, 2), 0.1, np.float32))
     output = AudioOutput(mixer, 0)
     try:
-        stream = opened[-1]
-        assert stream.options["samplerate"] == 96000
-        assert stream.options["extra_settings"] is None
-        block = np.empty((960, 2), np.float32)
-        stream.render(block)
-        assert np.isfinite(block).all() and np.mean(block) > .09
+        output.start()
+        raw = endpoints.opened[-1]
+        assert raw.snapshot()["sample_rate"] == native_rate
+        assert raw.snapshot()["conversion_mode"] == "SpeexDSP fallback"
+        block = np.empty((native_rate // 10, 2), np.float32)
+        endpoints.process(raw, output=block)
+        assert np.isfinite(block).all()
+        np.testing.assert_allclose(block[native_rate // 50 :], 0.1, atol=2e-5)
+        assert raw.snapshot()["conversion_errors"] == 0
+        assert 0 < mixer.inputs["source"].frames < 1201
     finally:
         output.close()
+        endpoints.close()
 
 
-def test_non_wasapi_device_keeps_existing_native_format_path(monkeypatch):
-    opened, _ = audio_device(monkeypatch, [44100], wasapi=False)
-    output = AudioOutput(Mixer(buffer_ms=0), 0)
-    try:
-        assert opened[-1].options["samplerate"] == 44100
-        assert opened[-1].options["extra_settings"] is None
-    finally:
-        output.close()
-
-
-def test_hot_switch_between_different_mix_formats_keeps_one_48khz_consumer(monkeypatch):
-    opened, active = audio_device(monkeypatch, [96000, 44100])
+def test_hot_switch_between_mix_formats_preserves_exactly_one_consumer(monkeypatch):
+    endpoints = OfflineEndpoints(monkeypatch, [96000, 44100])
     mixer = Mixer(buffer_ms=0)
     mixer.add("call:source")
-    mixer.write("call:source", np.full((3000, 2), .2, np.float32))
+    mixer.write("call:source", np.full((3000, 2), 0.2, np.float32))
     output = AudioOutput(mixer, 0)
     output.start()
     try:
+        old = output.stream
         output.switch_device(1)
-        assert opened[0].closed and active == {opened[1]}
-        assert all(s.options["samplerate"] == 48000 for s in opened)
-        assert all(s.options["extra_settings"] == {"auto_convert": True} for s in opened)
+        current = output.stream
+        assert old.closed and endpoints.active[PLAYBACK] == {current}
         block = np.empty((480, 2), np.float32)
-        opened[1].render(block)
-        np.testing.assert_allclose(block, .2)
+        endpoints.process(current, output=block)
+        np.testing.assert_allclose(block, 0.2)
         assert mixer.inputs["call:source"].frames == 2520
+        assert all(s.snapshot()["sample_rate"] == 48000 for s in endpoints.opened)
     finally:
         output.close()
-    assert not active
+        endpoints.close()
+    assert not endpoints.active[PLAYBACK]
+
+
+@pytest.mark.parametrize("failure", ["open", "start"])
+def test_failed_native_replacement_rolls_back_without_losing_mixer_pcm(monkeypatch, failure):
+    endpoints = OfflineEndpoints(monkeypatch, [48000, 96000])
+    mixer = Mixer(buffer_ms=0)
+    mixer.add("source")
+    mixer.write("source", np.full((3000, 2), 0.15, np.float32))
+    output = AudioOutput(mixer, 0)
+    output.start()
+    try:
+        old = output.stream
+        getattr(endpoints, "fail_" + failure).add(1)
+        with pytest.raises(OSError, match="endpoint"):
+            output.switch_device(1)
+        assert output.stream is old and not old.closed and old.active
+        assert endpoints.active[PLAYBACK] == {old}
+        assert mixer.inputs["source"].frames == 3000
+        if failure == "start":
+            assert endpoints.opened[-1].closed
+        block = np.empty((480, 2), np.float32)
+        endpoints.process(old, output=block)
+        np.testing.assert_allclose(block, 0.15)
+    finally:
+        output.close()
+        endpoints.close()

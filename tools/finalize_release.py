@@ -1,7 +1,7 @@
 """Create public archives, exact-file uninstaller and checksums from a clean build."""
 import argparse
 import hashlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import subprocess
 import zipfile
 import tomllib
@@ -9,11 +9,14 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text("utf-8"))["project"]["version"]
 FILES = {".gitignore", "README.md", "README.txt", "LICENSE", "THIRD_PARTY_NOTICES.txt", "CHANGELOG.md",
-         "CONTRIBUTING.md", "pyproject.toml", "requirements.lock.txt", "dependencies.json", "ffmpeg-build.json",
+         "CONTRIBUTING.md", "pyproject.toml", "requirements.lock.txt", "requirements-runtime.lock.txt", "dependencies.json", "ffmpeg-build.json",
          "global.json", "NuGet.Config", "launch.py", "engine_launch.py"}
 FOLDERS = {".github", "bluehead", "desktop", "docs", "installer", "licenses", "native", "tests", "tools", "vendor"}
-EXCLUDED = {"bin", "obj", "__pycache__", ".git", ".pytest_cache", ".ruff_cache", "legacy"}
+EXCLUDED = {"bin", "obj", "__pycache__", ".git", ".pytest_cache", ".ruff_cache", "legacy",
+            "data", "work", "local", ".venv", "archive", "build", "dist", "outputs"}
 PRIVATE = {"pairing.json", "settings.json", "recovery.json", "desktop.json"}
+PRIVATE_SUFFIXES = {".pyc", ".pdb", ".log", ".dmp", ".user", ".suo", ".bak", ".tmp",
+                    ".key", ".pem", ".pfx", ".p12"}
 
 
 def digest(path):
@@ -21,20 +24,88 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def private_path(relative):
+    """Windows names are case-insensitive, including in archives reviewed elsewhere."""
+    parts = tuple(part.casefold() for part in relative.parts)
+    return (any(part in EXCLUDED or part in PRIVATE for part in parts) or
+            relative.suffix.casefold() in PRIVATE_SUFFIXES)
+
+
+def checked_location(path, boundary):
+    # Never traverse a link/junction, even when its current target is internal.
+    # This also avoids packaging a different target after an operator changes it.
+    if path.is_symlink() or path.is_junction():
+        raise RuntimeError("Linked material is not publishable: " + str(path))
+    resolved = path.resolve(strict=True)
+    if not resolved.is_relative_to(boundary):
+        raise RuntimeError("Publish material escapes its root: " + str(path))
+
+
+def tree_files(directory, boundary, *, source):
+    checked_location(directory, boundary)
+    for path in sorted(directory.iterdir()):
+        relative = path.relative_to(boundary)
+        if private_path(relative):
+            if source:
+                continue
+            raise RuntimeError("Private or build material in assembled release: " + str(relative))
+        checked_location(path, boundary)
+        if path.is_dir():
+            yield from tree_files(path, boundary, source=source)
+        elif path.is_file():
+            yield path
+        else:
+            raise RuntimeError("Unsupported publish material: " + str(path))
+
+
 def public_sources():
-    candidates = [ROOT / name for name in FILES if (ROOT / name).is_file()]
-    for folder in sorted(FOLDERS):
-        candidates.extend((ROOT / folder).rglob("*"))
-    for file in sorted(candidates):
-        relative = file.relative_to(ROOT)
-        # Traverse only allowed trees. Never package a whole working directory.
-        if relative.parts[0] not in FOLDERS and relative.as_posix() not in FILES:
-            continue
-        if not file.is_file() or any(part in EXCLUDED for part in relative.parts):
-            continue
-        if file.name in PRIVATE or file.suffix.lower() in {".pyc", ".pdb", ".log", ".dmp", ".user", ".suo"}:
-            continue
-        yield file, relative
+    boundary = ROOT.resolve(strict=True)
+    # Inspect only the allowed roots, and prune private/cache directories before
+    # descending. No whole-checkout recursion or dependence on .gitignore.
+    for name in sorted(FILES):
+        file = ROOT / name
+        if file.exists() or file.is_symlink():
+            checked_location(file, boundary)
+            if not file.is_file():
+                raise RuntimeError("Expected a source file: " + str(file))
+            yield file, file.relative_to(boundary)
+    for name in sorted(FOLDERS):
+        folder = ROOT / name
+        if folder.exists() or folder.is_symlink():
+            if not folder.is_dir():
+                raise RuntimeError("Expected a source directory: " + str(folder))
+            for file in tree_files(folder, boundary, source=True):
+                yield file, file.relative_to(boundary)
+
+
+def preflight(release):
+    """Validate all inputs before writing manifests, invoking NSIS or creating ZIPs."""
+    portable = release / "BlueHead"
+    checked_location(portable, release)
+    if not portable.is_dir():
+        raise RuntimeError("Missing assembled release directory")
+    if not (portable / "app/engine/BlueHead.Engine.exe").is_file():
+        raise RuntimeError("Missing assembled engine executable")
+    report = release / "VALIDATION.md"
+    if not report.is_file():
+        raise RuntimeError("Write actual VALIDATION.md status before releasing")
+    checked_location(report, release)
+    public = list(tree_files(portable, portable.resolve(strict=True), source=False))
+    if any(file.relative_to(portable).as_posix().casefold() == "portable.flag" for file in public):
+        raise RuntimeError("Assembled installer tree must not contain a portable marker")
+    sources = list(public_sources())
+    return portable, public, sources
+
+
+def validate_archive(path):
+    with zipfile.ZipFile(path) as archive:
+        if archive.testzip() is not None:
+            raise RuntimeError("Archive CRC validation failed: " + str(path))
+        for name in archive.namelist():
+            relative = PurePosixPath(name.replace("\\", "/"))
+            if (relative.is_absolute() or not relative.parts or relative.parts[0] != "BlueHead" or
+                    any(part in {".", ".."} or ":" in part for part in relative.parts) or private_path(relative)):
+                raise RuntimeError("Unsafe member in archive: " + str(path) + ": " + name)
 
 
 def nsis_literal(text):
@@ -47,17 +118,10 @@ def main():
     parser.add_argument("--nsis", type=Path, required=True)
     args = parser.parse_args()
     release = args.release.resolve()
-    portable = release / "BlueHead"
-    assert (portable / "app/engine/BlueHead.Engine.exe").is_file()
-    assert (release / "VALIDATION.md").is_file(), "Write actual validation status before releasing"
-    if (portable / "data").exists() or (portable / "work").exists() or (portable / "portable.flag").exists():
-        raise SystemExit("Assembled installer tree must contain neither private state nor a portable marker")
-    public = sorted(file for file in portable.rglob("*") if file.is_file())
-    for file in public:
-        if file.name in PRIVATE or file.suffix.lower() in {".log", ".dmp"}:
-            raise RuntimeError("Private data in assembled release")
+    portable, public, sources = preflight(release)
     (portable / "VALIDATION.md").write_bytes((release / "VALIDATION.md").read_bytes())
-    public = sorted(file for file in portable.rglob("*") if file.is_file() and file.name != "manifest.sha256")
+    public = sorted(file for file in tree_files(portable, portable.resolve(strict=True), source=False)
+                    if file.name != "manifest.sha256")
     (portable / "manifest.sha256").write_text("".join(digest(file) + "  " + file.relative_to(portable).as_posix() + "\n" for file in public), "utf-8")
     public.append(portable / "manifest.sha256")
     build = ROOT / "work/release-finalize"
@@ -78,18 +142,13 @@ def main():
         archive.writestr("BlueHead/portable.flag", "BlueHead portable mode; settings and pairing are stored in data/.\n")
     source_zip = release / f"BlueHead-{VERSION}-Source.zip"
     with zipfile.ZipFile(source_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for file, relative in public_sources():
+        for file, relative in sources:
             archive.write(file, "BlueHead/" + relative.as_posix())
     artifacts = [installer, portable_zip, source_zip, release / "VALIDATION.md"]
-    (release / "SHA256SUMS.txt").write_text("".join(digest(file) + "  " + file.name + "\n" for file in artifacts), "utf-8")
     # Read every compressed member to verify CRC, then enforce public boundaries.
     for path in (portable_zip, source_zip):
-        with zipfile.ZipFile(path) as archive:
-            assert archive.testzip() is None
-            for name in archive.namelist():
-                parts = Path(name).parts
-                assert not PRIVATE.intersection(parts)
-                assert not {"local", "data", "work", ".venv", "archive", ".git"}.intersection(parts)
+        validate_archive(path)
+    (release / "SHA256SUMS.txt").write_text("".join(digest(file) + "  " + file.name + "\n" for file in artifacts), "utf-8")
     print("\n".join(str(file) for file in artifacts))
 
 

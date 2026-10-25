@@ -7,7 +7,8 @@
       "Documentation, https://altgraph.readthedocs.io/en/latest/",
       "Issue tracker, https://github.com/ronaldoussoren/altgraph/issues",
       "Repository, https://github.com/ronaldoussoren/altgraph"
-    ]
+    ],
+    "scope": "development"
   },
   {
     "name": "av",
@@ -17,7 +18,8 @@
       "Bug Tracker, https://github.com/PyAV-Org/PyAV/issues",
       "Source Code, https://github.com/PyAV-Org/PyAV",
       "homepage, https://pyav.basswood.io"
-    ]
+    ],
+    "scope": "development"
   },
   {
     "name": "bumble",
@@ -25,7 +27,8 @@
     "license": "Apache-2.0",
     "project_urls": [
       "Homepage, https://github.com/google/bumble"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "cffi",
@@ -38,7 +41,8 @@
       "Contact, https://groups.google.com/forum/#!forum/python-cffi",
       "Source Code, https://github.com/python-cffi/cffi",
       "Issue Tracker, https://github.com/python-cffi/cffi/issues"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "click",
@@ -50,7 +54,8 @@
       "Documentation, https://click.palletsprojects.com/",
       "Donate, https://palletsprojects.com/donate",
       "Source, https://github.com/pallets/click/"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "colorama",
@@ -58,7 +63,8 @@
     "license": "See bundled license text",
     "project_urls": [
       "Homepage, https://github.com/tartley/colorama"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "cryptography",
@@ -70,7 +76,8 @@
       "homepage, https://github.com/pyca/cryptography",
       "issues, https://github.com/pyca/cryptography/issues",
       "source, https://github.com/pyca/cryptography/"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "importlib_resources",
@@ -78,7 +85,8 @@
     "license": "Apache-2.0",
     "project_urls": [
       "Source, https://github.com/python/importlib_resources"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "iniconfig",
@@ -86,7 +94,8 @@
     "license": "MIT",
     "project_urls": [
       "Homepage, https://github.com/pytest-dev/iniconfig"
-    ]
+    ],
+    "scope": "development"
   },
   {
     "name": "libusb-package",
@@ -96,13 +105,15 @@
       "Bug Tracker, https://github.com/pyocd/libusb-package/issues",
       "Discussions, https://github.com/pyocd/libusb-package/discussions",
       "Changelog, https://github.com/pyocd/libusb-package/releases"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "libusb1",
     "version": "3.4.0",
     "license": "LGPL-2.1-or-later",
-    "project_urls": []
+    "project_urls": [],
+    "scope": "runtime"
   },
   {
     "name": "numpy",
@@ -115,7 +126,8 @@
       "download, https://pypi.org/project/numpy/#files",
       "tracker, https://github.com/numpy/numpy/issues",
       "release notes, https://numpy.org/doc/stable/release"
-    ]
+    ],
+    "scope": "development"
   },
   {
     "name": "packaging",
@@ -124,13 +136,15 @@
     "project_urls": [
       "Documentation, https://packaging.pypa.io/",
       "Source, https://github.com/pypa/packaging"
-    ]
+    ],
+    "scope": "development"
   },
   {
     "name": "pefile",
     "version": "2024.8.26",
     "license": "MIT",
-    "project_urls": []
+    "project_urls": [],
+    "scope": "development"
   },
   {
     "name": "platformdirs",
@@ -142,7 +156,8 @@
       "Homepage, https://github.com/tox-dev/platformdirs",
       "Source, https://github.com/tox-dev/platformdirs",
       "Tracker, https://github.com/tox-dev/platformdirs/issues"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "pluggy",
@@ -155,7 +170,8 @@
       "Repository, https://github.com/pytest-dev/pluggy",
       "Issues, https://github.com/pytest-dev/pluggy/issues",
       "Funding, https://tidelift.com/subscription/pkg/pypi-pluggy"
-    ]
+    ],
+    "scope": "development"
   },
   {
     "name": "prompt_toolkit",
@@ -164,7 +180,8 @@
     "project_urls": [
       "Homepage, https://github.com/prompt-toolkit/python-prompt-toolkit",
       "Documentation, https://python-prompt-toolkit.readthedocs.io/en/stable/"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "pycparser",
@@ -172,7 +189,8 @@
     "license": "BSD-3-Clause",
     "project_urls": [
       "Homepage, https://github.com/eliben/pycparser"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "pyee",
@@ -181,7 +199,8 @@
     "project_urls": [
       "Repository, https://github.com/jfhbrook/pyee",
       "Documentation, https://pyee.readthedocs.io"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "Pygments",
@@ -193,7 +212,8 @@
       "Source, https://github.com/pygments/pygments",
       "Bug Tracker, https://github.com/pygments/pygments/issues",
       "Changelog, https://github.com/pygments/pygments/blob/master/CHANGES"
-    ]
+    ],
+    "scope": "development"
   },
   {
     "name": "pyinstaller",
@@ -204,25 +224,29 @@
       "Documentation, https://pyinstaller.org",
       "Source Code, https://github.com/pyinstaller/pyinstaller",
       "Release Notes, https://pyinstaller.org/en/stable/CHANGES.html"
-    ]
+    ],
+    "scope": "development"
   },
   {
     "name": "pyinstaller-hooks-contrib",
     "version": "2026.9",
     "license": "See bundled license text",
-    "project_urls": []
+    "project_urls": [],
+    "scope": "development"
   },
   {
     "name": "pyserial",
     "version": "3.5",
     "license": "BSD",
-    "project_urls": []
+    "project_urls": [],
+    "scope": "runtime"
   },
   {
     "name": "pyserial-asyncio",
     "version": "0.6",
     "license": "BSD",
-    "project_urls": []
+    "project_urls": [],
+    "scope": "runtime"
   },
   {
     "name": "pytest",
@@ -235,7 +259,8 @@
       "Homepage, https://docs.pytest.org/en/latest/",
       "Source, https://github.com/pytest-dev/pytest",
       "Tracker, https://github.com/pytest-dev/pytest/issues"
-    ]
+    ],
+    "scope": "development"
   },
   {
     "name": "pytest-asyncio",
@@ -247,7 +272,8 @@
       "Documentation, https://pytest-asyncio.readthedocs.io",
       "Homepage, https://github.com/pytest-dev/pytest-asyncio",
       "Source Code, https://github.com/pytest-dev/pytest-asyncio"
-    ]
+    ],
+    "scope": "development"
   },
   {
     "name": "pyusb",
@@ -257,13 +283,15 @@
       "docs/Tutorial, https://github.com/pyusb/pyusb/blob/master/docs/tutorial.rst",
       "docs/FAQ, https://github.com/pyusb/pyusb/blob/master/docs/faq.rst",
       "Source, https://github.com/pyusb/pyusb"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "pywin32-ctypes",
     "version": "0.2.3",
     "license": "BSD-3-Clause",
-    "project_urls": []
+    "project_urls": [],
+    "scope": "development"
   },
   {
     "name": "ruff",
@@ -273,7 +301,8 @@
       "Changelog, https://github.com/astral-sh/ruff/blob/main/CHANGELOG.md",
       "Documentation, https://docs.astral.sh/ruff/",
       "Repository, https://github.com/astral-sh/ruff"
-    ]
+    ],
+    "scope": "development"
   },
   {
     "name": "setuptools",
@@ -283,7 +312,8 @@
       "Source, https://github.com/pypa/setuptools",
       "Documentation, https://setuptools.pypa.io/",
       "Changelog, https://setuptools.pypa.io/en/stable/history.html"
-    ]
+    ],
+    "scope": "development"
   },
   {
     "name": "sounddevice",
@@ -293,7 +323,8 @@
       "Documentation, https://python-sounddevice.readthedocs.io/",
       "Repository, https://github.com/spatialaudio/python-sounddevice/",
       "Issues, https://github.com/spatialaudio/python-sounddevice/issues"
-    ]
+    ],
+    "scope": "development"
   },
   {
     "name": "typing_extensions",
@@ -306,7 +337,8 @@
       "Home, https://github.com/python/typing_extensions",
       "Q & A, https://github.com/python/typing/discussions",
       "Repository, https://github.com/python/typing_extensions"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "wcwidth",
@@ -314,7 +346,8 @@
     "license": "See bundled license text",
     "project_urls": [
       "Homepage, https://github.com/jquast/wcwidth"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "websockets",
@@ -326,7 +359,8 @@
       "Documentation, https://websockets.readthedocs.io/",
       "Funding, https://tidelift.com/subscription/pkg/pypi-websockets?utm_source=pypi-websockets&utm_medium=referral&utm_campaign=readme",
       "Tracker, https://github.com/python-websockets/websockets/issues"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "winrt-runtime",
@@ -336,7 +370,8 @@
       "Documentation, https://pywinrt.readthedocs.io",
       "Repository, https://github.com/pywinrt/pywinrt",
       "Changelog, https://github.com/pywinrt/pywinrt/blob/main/runtime/CHANGELOG.md"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "winrt-Windows.Devices.Enumeration",
@@ -346,7 +381,8 @@
       "Documentation, https://pywinrt.readthedocs.io",
       "Repository, https://github.com/pywinrt/pywinrt",
       "Changelog, https://github.com/pywinrt/pywinrt/blob/main/projection/winrt/CHANGELOG.md"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "winrt-Windows.Foundation",
@@ -356,7 +392,8 @@
       "Documentation, https://pywinrt.readthedocs.io",
       "Repository, https://github.com/pywinrt/pywinrt",
       "Changelog, https://github.com/pywinrt/pywinrt/blob/main/projection/winrt/CHANGELOG.md"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "winrt-Windows.Foundation.Collections",
@@ -366,7 +403,8 @@
       "Documentation, https://pywinrt.readthedocs.io",
       "Repository, https://github.com/pywinrt/pywinrt",
       "Changelog, https://github.com/pywinrt/pywinrt/blob/main/projection/winrt/CHANGELOG.md"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "winrt-Windows.Media.Audio",
@@ -376,7 +414,8 @@
       "Documentation, https://pywinrt.readthedocs.io",
       "Repository, https://github.com/pywinrt/pywinrt",
       "Changelog, https://github.com/pywinrt/pywinrt/blob/main/projection/winrt/CHANGELOG.md"
-    ]
+    ],
+    "scope": "runtime"
   },
   {
     "name": "winrt-Windows.Storage.Streams",
@@ -386,6 +425,7 @@
       "Documentation, https://pywinrt.readthedocs.io",
       "Repository, https://github.com/pywinrt/pywinrt",
       "Changelog, https://github.com/pywinrt/pywinrt/blob/main/projection/winrt/CHANGELOG.md"
-    ]
+    ],
+    "scope": "runtime"
   }
 ]

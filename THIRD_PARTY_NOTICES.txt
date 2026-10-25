@@ -1,66 +1,89 @@
-BlueHead third-party notices
+BlueHead 2.0.0 third-party notices
 
-Original BlueHead Python, C, C++ and C# code: Apache License 2.0 (LICENSE).
-Bumble: Apache-2.0, Google LLC. Pinned commit e1fe43c9b44be0d974a6fd533ac6d494fc50510a.
-https://github.com/google/bumble
-backend.py and calls.py adapt Bumble's A2DP sink / HFP hands-free examples.
-windows_usb.py vendors the USB transport with BlueHead changes: owned-buffer ISO
-reads, descriptor reset, bounded cancellation barriers, transfer retirement and
-native event-thread shutdown. This source is included, not patched only in a venv.
+Original BlueHead code is Apache-2.0 (LICENSE), except files explicitly marked
+otherwise. The original native voice ABI/engine files are MIT. Upstream sources
+retain their own notices and licenses.
 
-Native libusb 1.0.30: LGPL-2.1-or-later, https://github.com/libusb/libusb.
-The application loads bluehead/assets/libusb-1.0.dll (official VS2022 MS64 build).
-Exact source tarball, license, binary/source hashes and original download URLs
-are included in vendor/libusb. The native library remains replaceable.
+Bumble: Apache-2.0, Google LLC. https://github.com/google/bumble
+Pinned commit e1fe43c9b44be0d974a6fd533ac6d494fc50510a. The application adapts
+its A2DP/HFP examples. windows_usb.py includes the USB transport with identified
+BlueHead owned-buffer, cancellation, and lifetime fixes. No venv-only patches.
 
-SpeexDSP 1.2.1 resampler: BSD-3-Clause, https://gitlab.xiph.org/xiph/speexdsp.
-Pinned commit 1b28a0f61bc31162979e1f26f3981fc3637095c8; original standalone
-float/SSE2 source and file hashes are in vendor/speexdsp. Statically linked
-into bluehead_audio.dll with BlueHead-prefixed symbols; upstream code unchanged.
-Native callback integration follows sounddevice's library-author interface,
-also used by spatialaudio/python-rtmixer; no rtmixer code is copied.
+FFmpeg 9.0.2: LGPL-2.1-or-later. https://ffmpeg.org/
+Unmodified audio-only build without GPL codecs. Runtime uses replaceable
+avcodec-63.dll, avutil-61.dll and swresample-7.dll in app/engine/_internal.
+The release engine does not use PyAV. Exact release source, hashes, license and
+configuration are in vendor/ffmpeg; tools/build_ffmpeg.py --native-only rebuilds
+the libraries. Source archives include corresponding source/build materials.
 
-libldacdec: MIT. Pinned commit 7f3bd6cc1586b764b02f2e4f20b16c7ff18758b9.
-https://github.com/hegdi/libldacdec
-BlueHead changes are clearly identified in tools/build_ldac.py: bounds checks,
-stereo-only negotiation, float output bridge, and process isolation.
-Modified source and original license are included in vendor/libldacdec.
+SpeexDSP 1.2.1: BSD-3-Clause. https://gitlab.xiph.org/xiph/speexdsp
+Pinned commit 1b28a0f61bc31162979e1f26f3981fc3637095c8. Original source/license
+and hashes are in vendor/speexdsp. The unchanged resampler is statically linked
+with separately prefixed symbols into native audio, voice and LDAC media modules.
 
-AOSP libldac encoder: Apache-2.0; test fixture generation only, not used by the app.
-Pinned commit e8ff0f96f26b84b47711c549e0d60baa425cd70e.
+miniaudio 0.11.25: MIT No Attribution, David Reid.
+https://github.com/mackron/miniaudio
+Pinned header/license/hashes are in vendor/miniaudio. WASAPI-only device build;
+unrelated decoders, engine/graph, resource managers and backends are disabled.
+
+Google liblc3 1.1.3: Apache-2.0, Google LLC. https://github.com/google/liblc3
+Pinned commit 96a3af0beb5487aca3b98a4b992a539a1f6d80d1. Original sources, license
+and hashes are in vendor/liblc3. Statically linked for HFP LC3-SWB; LC3plus/HR off.
+
+SpanDSP PLC 3.1.1: LGPL-2.1-only, Steve Underwood.
+https://github.com/freeswitch/spandsp
+Pinned commit 8f1e1646bdec99eac5fd2cd92c35563f736b9b89. The original PLC algorithm
+is a separate, replaceable bluehead_plc.dll dynamically linked by the voice module.
+Original sources/headers, COPYING, AUTHORS, portable include adapter and exact
+build patch are in vendor/spandsp-plc and tools/build_voice.py. Rebuild/replacement
+does not require replacing the BlueHead executable. This component remains LGPL.
+
+PipeWire Bluetooth rate control: MIT, Copyright 2022 Pauli Virtanen.
+https://github.com/PipeWire/pipewire
+Pinned commit 73974598fafeea9491f0f36a31bdaef2352dbd4f. Native clock control
+adapts its rate-control equations. Source, MIT license and hashes are included in
+vendor/pipewire-rate-control.
+
+libldacdec: MIT. https://github.com/hegdi/libldacdec
+Pinned commit 7f3bd6cc1586b764b02f2e4f20b16c7ff18758b9. Modified bounded,
+stereo-only float bridge and original license are in vendor/libldacdec. Decoder
+is experimental, opt-in, isolated in a child process, and not Sony certified.
+
+AOSP libldac encoder: Apache-2.0; development fixture generation only.
 https://android.googlesource.com/platform/external/libldac
-Source for the test encoder is in vendor/libldac_encoder, copyright notices retained.
+Pinned commit e8ff0f96f26b84b47711c549e0d60baa425cd70e. Source/notices are in
+vendor/libldac_encoder. The runtime does not ship an LDAC encoder.
 
-PyAV: BSD-3-Clause. https://github.com/PyAV-Org/PyAV
-FFmpeg 9.0.2: LGPL-2.1-or-later, https://ffmpeg.org/.
-BlueHead rebuilds the unmodified official release with only its required audio
-codecs and filters. No external GPL video codecs are included. Exact source,
-SHA256 and configure/build details are in vendor/ffmpeg and tools/build_ffmpeg.py.
-PyAV PE import names are adapted to the replaceable canonical FFmpeg DLLs.
-The DLLs are distributed separately in app/engine/_internal/av.libs.
-The MIT/BSD winpthreads runtime license is in licenses/winpthreads.
+Native libusb 1.0.30: LGPL-2.1-or-later. https://github.com/libusb/libusb
+Official verified MS64 DLL remains replaceable in bluehead/assets. Exact source,
+source/binary hashes, licenses and original URLs are in vendor/libusb.
 
-libwdi 1.5.1: LGPL-3.0-or-later, https://github.com/pbatard/libwdi.
-Original source and COPYING texts are in vendor/libwdi. BlueHead's reproducible
-build patch and modern inbox-WinUSB INF are in tools/build_wdi.py and native/.
-It generates a catalog and device INF; BlueHead binds an exact device instance
-using Windows SetupAPI. No Microsoft coinstaller or third-party kernel binary
-is redistributed. libwdi.dll remains a replaceable shared library.
+libwdi 1.5.1: LGPL-3.0-or-later. https://github.com/pbatard/libwdi
+Original source/COPYING are in vendor/libwdi; reproducible patch/inbox-WinUSB INF
+in tools/build_wdi.py/native. libwdi.dll remains replaceable. No third-party
+kernel driver or Microsoft coinstaller redistributed.
 
-GCC runtime libraries (libgcc/libstdc++): GPL with GCC Runtime Library Exception.
-The process-capture DLL statically links the MinGW-w64 GCC runtime; matching
-COPYING3, COPYING.LIB and COPYING.RUNTIME texts are in licenses/gcc-runtime.
+GCC runtime: GPL with GCC Runtime Library Exception. Process capture statically
+links matching MinGW-w64 runtimes. Licenses are in licenses/gcc-runtime.
 https://www.gnu.org/licenses/gcc-exception-3.1.html
+winpthreads is separate; its license is in licenses/winpthreads.
 
-WPF UI 4.3.0 / WPF UI Abstractions: MIT, https://github.com/lepoco/wpfui.
-.NET 10 runtime: MIT, https://github.com/dotnet/runtime.
-Their license and third-party notice files are included in licenses/.
+WPF UI / Abstractions 4.3.0: MIT. https://github.com/lepoco/wpfui
+System.Text.Json and supporting System.* NuGet libraries: MIT, .NET Foundation.
+Versions/hashes are locked in desktop/**/packages.lock.json; notices are in
+licenses/wpf-ui, licenses/wpf-ui-abstractions and licenses/dotnet.
+Windows .NET Framework 4.8 is a system prerequisite, not bundled.
 
+Python 3.13.3 runtime: PSF license and bundled component notices are retained in
+licenses/python/LICENSE.txt. PyInstaller 6.22.3 bootloader/runtime hook terms and
+bootloader exception are retained in licenses/pyinstaller/COPYING.txt.
 
-sounddevice / PortAudio: MIT-style licenses, see licenses/sounddevice.
-https://github.com/spatialaudio/python-sounddevice
-Python, NumPy, cryptography, libusb, PyWinRT and all other package versions and
-their upstream license texts are included in dependencies.json and licenses/.
-PyInstaller's bootloader exception permits redistribution of frozen programs.
+cryptography, PyWinRT, python-libusb1 and other control dependencies keep
+their licenses. dependencies.json distinguishes runtime/development packages;
+requirements-runtime.lock.txt lists installed control dependencies. Development
+PyAV, NumPy, sounddevice and build/test tools remain documented in source; they
+are absent from release audio processing. PyInstaller bootloader exception allows
+redistribution of frozen applications.
 
-There is no affiliation or certification by Google, Microsoft, Sony or Qualcomm.
+No affiliation or certification by Apple, Google, Microsoft, Sony, Qualcomm,
+Bluetooth SIG, or the upstream projects listed above is claimed.

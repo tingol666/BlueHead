@@ -40,4 +40,4 @@ subprocess.run([str(windres), str(build / 'launcher.rc'), str(build / 'launcher.
 output = Path(sys.argv[1]).resolve()
 output.parent.mkdir(parents=True, exist_ok=True)
 subprocess.run([str(gcc), '-municode', '-mwindows', '-Os', '-static-libgcc', '-Wl,--no-insert-timestamp',
-                '-o', str(output), str(root / 'native/launcher.c'), str(build / 'launcher.o')], check=True)
+                '-o', str(output), str(root / 'native/launcher.c'), str(build / 'launcher.o'), '-ladvapi32'], check=True)

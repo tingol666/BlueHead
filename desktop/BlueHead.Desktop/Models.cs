@@ -51,6 +51,66 @@ public sealed class DeviceCard : INotifyPropertyChanged
     public bool CanAnswer { get => answer; set { answer = value; Changed(); Changed(nameof(CallVisible)); } }
     public bool CanHangup { get => hangup; set { hangup = value; Changed(); Changed(nameof(CallVisible)); } }
     public bool CanMix { get => mixing; set { mixing = value; Changed(); } }
+    private bool remoteConnected;
+    private string trackTitle = "", trackArtist = "", trackAlbum = "", playbackStatus = "unknown";
+    private double? durationMs, positionMs, standardVolume;
+    private readonly HashSet<string> remoteControls = new(StringComparer.Ordinal);
+    public bool HasRemoteMedia => remoteConnected;
+    public string TrackDescription => string.Join(" · ", new[] { trackTitle, trackArtist }.Where(value => value.Length > 0)) is { Length: > 0 } text ? text : "此设备的媒体控制";
+    public string PlaybackAction => playbackStatus == "playing" ? "pause" : playbackStatus is "paused" or "stopped" ? "play" : "";
+    public bool CanPrevious => remoteConnected && remoteControls.Contains("previous");
+    public bool CanNext => remoteConnected && remoteControls.Contains("next");
+    public bool CanPlayPause => remoteConnected && PlaybackAction.Length > 0 && remoteControls.Contains(PlaybackAction);
+    public string PlaybackIcon => playbackStatus == "playing" ? "\uE769" : "\uE768";
+    public string PlaybackHint => !remoteConnected ? "媒体控制未连接" : PlaybackAction.Length == 0 ? "等待设备播放状态" : !CanPlayPause ? "此设备不支持该媒体操作" : PlaybackAction == "pause" ? "暂停此设备上的媒体" : "播放此设备上的媒体";
+    private static string Clock(double? milliseconds)
+    {
+        if (milliseconds is null) return "—";
+        var time = TimeSpan.FromSeconds(Math.Min(31536000, milliseconds.Value / 1000));
+        return $"{(long)time.TotalMinutes}:{time.Seconds:00}";
+    }
+    public string RemoteDetails => $"{TrackDescription}{(trackAlbum.Length > 0 ? "\n专辑：" + trackAlbum : "")}\n播放位置：{Clock(positionMs)} / {Clock(durationMs)}\n设备标准音量：{(standardVolume is { } volume ? $"{volume * 100:0}%" : "未知")}（AVRCP，独立于接收增益）";
+    private static string MetadataText(string value)
+    {
+        var text = value.Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' ').Trim();
+        var length = Math.Min(512, text.Length);
+        if (length < text.Length && length > 0 && char.IsHighSurrogate(text[length-1])) length--;
+        return text.Substring(0, length);
+    }
+    private static double? RemoteNumber(JsonElement message, string name)
+    {
+        if (!message.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Number || !value.TryGetDouble(out var number) || !BlueHead.Platform.FrameworkCompat.IsFinite(number) || number < 0) return null;
+        return number;
+    }
+    public void ApplyRemoteMedia(JsonElement message)
+    {
+        if (message.TryGetProperty("connected", out var connected)) remoteConnected = connected.ValueKind == JsonValueKind.True;
+        if (message.TryGetProperty("title", out _)) trackTitle = MetadataText(message.Text("title"));
+        if (message.TryGetProperty("artist", out _)) trackArtist = MetadataText(message.Text("artist"));
+        if (message.TryGetProperty("album", out _)) trackAlbum = MetadataText(message.Text("album"));
+        if (message.TryGetProperty("playback_status", out _)) playbackStatus = message.Text("playback_status", "unknown");
+        if (message.TryGetProperty("duration_ms", out _)) durationMs = RemoteNumber(message, "duration_ms");
+        if (message.TryGetProperty("position_ms", out _)) positionMs = RemoteNumber(message, "position_ms");
+        if (message.TryGetProperty("volume", out _) || message.TryGetProperty("standard_volume", out _))
+        {
+            var volume = RemoteNumber(message, "volume") ?? RemoteNumber(message, "standard_volume");
+            standardVolume = volume is { } gain ? BlueHead.Platform.FrameworkCompat.Clamp(gain, 0, 1) : null;
+        }
+        if (message.TryGetProperty("controls", out var controls))
+        {
+            remoteControls.Clear();
+            if (controls.ValueKind == JsonValueKind.True) remoteControls.UnionWith(new[] { "play", "pause", "previous", "next", "stop" });
+            else if (controls.ValueKind == JsonValueKind.Array)
+                foreach (var control in controls.EnumerateArray())
+                    if (control.ValueKind == JsonValueKind.String && control.GetString() is { } action) remoteControls.Add(action);
+        }
+        if (!remoteConnected)
+        {
+            trackTitle = trackArtist = trackAlbum = ""; playbackStatus = "unknown"; remoteControls.Clear();
+            durationMs = positionMs = standardVolume = null;
+        }
+        foreach (var name in new[] { nameof(HasRemoteMedia), nameof(TrackDescription), nameof(RemoteDetails), nameof(PlaybackAction), nameof(CanPrevious), nameof(CanNext), nameof(CanPlayPause), nameof(PlaybackIcon), nameof(PlaybackHint) }) Changed(name);
+    }
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Changed([CallerMemberName] string? property = null) => PropertyChanged?.Invoke(this, new(property));
 }

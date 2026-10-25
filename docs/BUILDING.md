@@ -1,39 +1,88 @@
-# Windows x64 构建
+# 构建2.0.0待验收候选
 
-使用 Windows 11 x64、Python 3.13、.NET SDK 10.0.402 和 MSYS2 UCRT64 GCC/G++。MSYS2 还需要 bash、make、diffutils；安装包使用 NSIS 3。源码不要求安装 Visual Studio。构建本身不更换蓝牙驱动。
+目标：Windows 10 22H2 / Windows 11 x64。构建不会自动更换驱动、连接移动设备或发布GitHub Release。2.0.0包在用户验收后才可上传；目前公开最新版仍为1.2.4。
+
+## 安装目录与1.x迁移限制
+
+本候选安装器仅支持新建或已经为空的目标目录，默认`%LocalAppData%\Programs\BlueHead-2`。目录页离开时及真正写入前都会检查，已有文件、子目录、不可检查或重解析目标均拒绝，不递归清理，不按旧manifest删除文件。这样避免1.x现代.NET、PyAV/NumPy等组件残留进2.0。**覆盖升级、修复安装及后续2.x原地升级目前均不支持。**
+
+使用1.x安装版时，先备份`%LocalAppData%\BlueHead\data`、从托盘退出，并在安装2.0前完成旧版卸载。旧卸载器会按提示恢复系统蓝牙，因此由使用者安排该真实驱动步骤；不要安装2.0后再运行旧卸载器。安装版的配对/设置仍使用原全局目录和格式，不因换程序目录而自动迁移或删除。已有便携1.2.4无需卸载，可原样保留回退；绿色2.0同样解压到新空目录，在两版均完全退出后再备份/复制原`data`，不同时运行。后续更换候选安装版也应先退出、备份并卸载旧安装，再选新空目录。
+
+安装注册键、卸载键和开始菜单使用独立`BlueHead2`名称，系统显示为`BlueHead 2`。新卸载器不清理1.x的注册/快捷方式，且只有共享`Run\BlueHead`值精确指向当前安装的已知`--tray`命令时才删除它。未知或另一目录拥有的自启值保留。卸载仅删除该版本生成的确切程序文件，用户目录和驱动恢复状态按既有保护流程处理。
+
+## 工具链
+
+- Python3.13及虚拟环境。
+- `global.json`选择的.NET SDK10.0.402，用于现代C#编译；产物目标为.NET Framework4.8 x64。
+- MSYS2 UCRT64 GCC/G++、bash、make和构建FFmpeg所需工具。
+- NSIS3用于安装包。
+
+首次恢复依赖需要联网。上游源码/摘要保存在vendor，NuGet各项目使用packages.lock.json。开发锁文件中PyAV、NumPy和sounddevice可用于历史回归与离线对照，不等于发布包运行时需要它们。
 
 ```powershell
 py -3.13 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.lock.txt
 $env:PATH = 'C:\msys64\ucrt64\bin;C:\msys64\usr\bin;' + $env:PATH
-.venv\Scripts\python.exe tools/build_release.py --output ..\releases\1.2.4
 ```
 
-`gcc`、`dotnet` 和 NSIS 必须来自可信工具链。`global.json` 固定 .NET SDK；NuGet 包用各项目 `packages.lock.json` 固定。首次构建下载 Python/NuGet 依赖，需要联网；程序运行不需要联网。完整构建依次构建 LDAC、原生混音、进程排除音频采集、libwdi、音频专用 FFmpeg，再发布 C# 和冻结后台。输出目录必须为空，避免覆盖运行中的文件。
+## 原生模块
 
-`bluehead/assets/libusb-1.0.dll` 是 libusb 官方 1.0.30 x64 发布 DLL，未修改。其来源、SHA256 和对应源码位于 `vendor/libusb`。可替换为同 ABI 的自编译 DLL。
+主要顺序如下；完整发布脚本还会处理进程排除采集、驱动库、启动器等模块。只从固定源码构建，不能用来源不明的DLL替换。
 
-FFmpeg 对应源码为 `vendor/ffmpeg/ffmpeg-9.0.2.tar.xz`，脚本先校验 SHA256，再构建音频组件。PyAV 19.0.2 使用同一 FFmpeg ABI，`build_ffmpeg.py` 把其 PE 导入名适配为可替换的标准 DLL 名称，原 wheel 保存在 `work/pyav-original-wheel`。不要在 PyAV 正在运行时执行此脚本。实际配置和 DLL 摘要保存在 `vendor/ffmpeg/build.json`；本机路径只用于记录构建位置。FFmpeg 源码无需修改。
+```powershell
+.venv\Scripts\python.exe tools/build_ffmpeg.py --native-only
+.venv\Scripts\python.exe tools/build_audio.py
+.venv\Scripts\python.exe tools/build_voice.py
+.venv\Scripts\python.exe tools/build_device.py
+.venv\Scripts\python.exe tools/build_ldac_media.py
+```
 
-libwdi 对应固定提交保存在 `vendor/libwdi`，修改由 `build_wdi.py` 应用到构建副本。Windows 10+ 模板引用系统自带 WinUSB，不包含旧版 coinstaller。确切设备的驱动绑定在 C# 中完成。
+FFmpeg直接供原生媒体/语音模块调用，发布只保留avcodec、avutil和swresample。`--native-only`不需要修改PyAV wheel；开发对照环境与发布依赖分离。对应源码、构建配置和许可必须随可再分发源码材料保留。
+
+SpeexDSP固定版本及摘要用于有状态SRC；miniaudio0.11.25仅编译WASAPI；liblc3固定v1.1.3；SpanDSP PLC作为独立可替换动态库。不要为减少文件数把有许可证边界的库随意静态合并。libusb/libwdi继续保留其源码、修改及替换条件。
+
+## 桌面与驱动工具
+
+```powershell
+$env:DOTNET_CLI_HOME = Join-Path $PWD 'work/dotnet-home'
+$env:NUGET_PACKAGES = Join-Path $PWD 'work/nuget'
+dotnet restore desktop/BlueHead.Desktop/BlueHead.Desktop.csproj --locked-mode
+dotnet restore desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj --locked-mode
+dotnet publish desktop/BlueHead.Desktop/BlueHead.Desktop.csproj -c Release --no-restore -o work/publish-desktop-200
+dotnet publish desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj -c Release --no-restore -o work/publish-helper-200
+```
+
+不能传`--self-contained`、现代.NET运行时RID或trimming参数。所有项目固定x64/Prefer32Bit=false；保留生成的exe.config、所需NuGet依赖及native DLL。官方net48 reference assemblies仅用于编译，不进入运行包。WPF/WinForms/COM使用目标Windows自带的Framework，不通过手工删DLL瘦身。
+
+桌面publish目录本身不包含完整蓝牙后台，不能直接当作用户安装包。调试时设置`BLUEHEAD_SOURCE_ROOT`为源码绝对路径，界面会用`.venv/Scripts/python.exe launch.py --engine`。`BLUEHEAD_DATA_DIR`可指定独立测试数据，避免接触日常配对配置。
+
+## 检查与本地打包
 
 ```powershell
 .venv\Scripts\python.exe -m pytest tests -q --tb=short
 .venv\Scripts\python.exe -m ruff check bluehead tools tests launch.py engine_launch.py
-.venv\Scripts\python.exe tools/finalize_release.py ..\releases\1.2.4 --nsis 'C:\Program Files (x86)\NSIS\makensis.exe'
+.venv\Scripts\python.exe tools/build_release.py --output ..\releases\2.0.0
 ```
 
-最后一步生成安装 EXE、Portable ZIP、Source ZIP 和 SHA256SUMS。公开文件使用允许列表生成，不包含 `local`、`data`、`.venv`、`work`、`archive` 或日志。Portable ZIP 自带 `portable.flag`；安装包没有该标记，使用 LocalAppData 保存数据。
+构建输出需使用新目录，不能覆盖运行中的日常程序。原生时钟长测、频率/幅度门槛和逐用例JSON的复现命令见[AUDIO_AUDIT_2.0.md](AUDIO_AUDIT_2.0.md)；它们使用虚拟时间及真实DLL，不打开声卡或蓝牙。依赖清点、离线后台自检、微基准与需使用者安排的硬件探针，其运行范围见[DIAGNOSTICS.md](DIAGNOSTICS.md)。完整验收矩阵见[TESTING.md](TESTING.md)。
 
-调试界面时可设置 `BLUEHEAD_SOURCE_ROOT` 为源码绝对路径，随后 `dotnet run --project desktop/BlueHead.Desktop`。界面会使用 `.venv/Scripts/python.exe launch.py --engine`，无需反复冻结 Python。`BLUEHEAD_DATA_DIR` 可以指定独立测试数据目录，优先于绿色版或安装版的默认目录。
+### 必须先写同版本VALIDATION
 
-公开 GitHub 时上传 Source ZIP 解压后的内容；创建 `v1.2.4` 正式 Release 并附上同版本安装包、Portable ZIP、Source ZIP、SHA256SUMS 和 VALIDATION.md。不要上传本机 `source` 目录里被 Git 忽略的构建缓存或私有数据。
+`build_release.py`生成程序目录后、运行`finalize_release.py`前，必须在同版本发布目录创建`VALIDATION.md`，本例为`..\releases\2.0.0\VALIDATION.md`。它必须记录此次实际执行的结果，不能复制历史通过数量，也不能把待做的实机检查写成通过：
 
+- 候选版本、源码修订/工作区状态、构建时间、目标系统和实际工具链版本。
+- 完整回归、Ruff、Framework兼容层、纯UI、独立helper只读检查，以及冻结后台离线检查的命令、结果和报告位置；未运行项明确标注。
+- 时钟长测、音频质量门槛与关键生命周期/隔离检查的结果；软件缓冲或处理耗时不得当作端到端延迟。
+- 程序目录的版本、文件与依赖清单、体积及检查摘要；缺陷、已知限制、用户待验收项目和1.2.4回退方式。最终归档校验和由下一步另写`SHA256SUMS.txt`，不要求把归档自身的摘要写进其内含文档。
 
-## 原生回调与包体积
+对完整包运行适用的离线检查，确认验证记录与该包一致，再执行最终归档：
 
-`tools/build_audio.py` 先校验 `vendor/speexdsp/origin.json` 中的固定文件摘要，再将原生混音、PortAudio 回调和 SpeexDSP 1.2.1 编入 `bluehead_audio.dll`。Windows x64 使用 SSE/SSE2 基线指令，不要求 AVX；上游源码不改动，使用 BSD-3-Clause 许可。质量级别固定为 10，格式状态在音频流启动前创建。
+```powershell
+.venv\Scripts\python.exe tools/finalize_release.py ..\releases\2.0.0 --nsis 'C:\Program Files (x86)\NSIS\makensis.exe'
+```
 
-发布使用 self-contained WPF 和冻结后台。只收集运行所需的模块，排除 Bumble 示例/工具和 PyAV 开发数据；保留原生媒体/语音编解码器、WinRT 和驱动恢复依赖。.NET 保留中英文资源及完整运行库，不启用与 WPF/COM 不兼容的程序集裁剪。源码中的原生 DLL 为构建/测试所需；发布包只装载实际使用的 DLL。ZIP 使用标准 Deflate，Windows 解压兼容。
+最终打包生成安装EXE、Portable ZIP、Source ZIP、`SHA256SUMS.txt`与验证说明；`finalize_release.py`检查`VALIDATION.md`存在，并把它放进绿色版。更改程序或验证记录后须重新归档，保持内外记录及摘要一致。存在记录本身不表示已经验收或可以上传。最终大小、校验和和检查数量以对应产物和报告为准，2.0.0仍须等待用户验收后发布。
 
-版本以 pyproject、Python 包与桌面元数据的自动一致性检查保护；启动器和安装包读取项目版本，界面、帮助及诊断从程序集元数据读取。Release 前先运行所有自动检查，编写实际验证范围，再生成归档和校验和。不要把工作目录或私人状态当成源码上传。
+发布工具必须确认冻结后台不收集av/NumPy/OpenBLAS/sounddevice/PortAudio，不携带现代.NET自包含运行库；同时保留所有实际使用的codec、Framework依赖、WinRT、驱动恢复与许可证。不要为减包删COM/WPF组件或恢复工具。
+
+公开源码使用允许列表，不包含data、local、work、.venv、bin/obj、私钥、日志或驱动恢复备份。测试程序和演示截图不能冒充真实连接结果。上传前审阅README、第三方说明、同版本VALIDATION及归档内容；2.0.0等待用户验收，1.2.4保留为回退。

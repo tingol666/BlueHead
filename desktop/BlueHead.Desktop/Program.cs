@@ -1,3 +1,4 @@
+using BlueHead.Platform;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
@@ -18,8 +19,8 @@ internal static class Program
         app.Resources.MergedDictionaries.Add((ResourceDictionary)Application.LoadComponent(new Uri("/BlueHead;component/Styles.xaml", UriKind.Relative)));
         Wpf.Ui.Appearance.ApplicationThemeManager.Apply(Wpf.Ui.Appearance.ApplicationTheme.Light, Wpf.Ui.Controls.WindowBackdropType.None);
         Wpf.Ui.Appearance.ApplicationAccentColorManager.Apply(Color.FromRgb(7, 139, 78), Wpf.Ui.Appearance.ApplicationTheme.Light);
-        if (arguments is ["--self-test", var folder]) return SelfTest(app, folder);
-        if (arguments is ["--engine-smoke", var report]) return EngineSmoke(app, report);
+        if (arguments.Length == 2 && arguments[0] == "--self-test") return SelfTest(app, arguments[1]);
+        if (arguments.Length == 2 && arguments[0] == "--engine-smoke") return EngineSmoke(app, arguments[1]);
         if (arguments.Contains("--recovery")) { app.Run(new RecoveryWindow()); return 0; }
         using var mutex = new Mutex(true, "Local\\BlueHead.Desktop." + Environment.UserName, out var first);
         if (!first) { MessageBox.Show("BlueHead 已在运行，可从系统托盘打开。", "BlueHead"); return 0; }
@@ -304,6 +305,47 @@ internal static class Program
         window.ShowPage("adapters"); Pump();
         checks["driver_restore_remains_available_in_shared_mode"] = window.RestoreDriverButton.IsVisible && window.RestoreDriverButton.IsEnabled && !window.InstallDriverButton.IsVisible;
         Capture(window, Path.Combine(folder, "shared-mode.png"));
+        Event("""{"event":"stopped"}""");
+        window.ModePicker.SelectedIndex = 0;
+        Event("""{"event":"starting"}""");
+        Event("""{"event":"status","message":"已就绪：在移动设备蓝牙列表连接 BlueHead PC"}""");
+        Event("""{"event":"device","key":"remote-demo","state":"已连接"}""");
+        Event("""{"event":"name","key":"remote-demo","name":"平板（媒体控制示例）"}""");
+        window.ShowPage("home");
+        Event("""{"event":"format","key":"remote-demo","codec":"aac","rate":48000,"channels":2}""");
+        var remote = window.State.Devices.Single(); remote.Volume = 175; remote.UplinkVolume = 130;
+        Event("""{"event":"avrcp","key":"remote-demo","connected":true,"controls":true,"title":"示例曲目","artist":"示例演出者","album":"示例专辑","duration_ms":245000,"position_ms":62000,"playback_status":"playing","volume":0.35}"""); Pump();
+        var remoteRow = Visuals<System.Windows.Controls.Grid>(window.DeviceCards).Single(item => item.Name == "RemoteMediaLine");
+        var remoteNext = Visuals<Wpf.Ui.Controls.Button>(window.DeviceCards).Single(item => item.Name == "RemoteNext");
+        var remotePrevious = Visuals<Wpf.Ui.Controls.Button>(window.DeviceCards).Single(item => item.Name == "RemotePrevious");
+        var remotePlay = Visuals<Wpf.Ui.Controls.Button>(window.DeviceCards).Single(item => item.Name == "RemotePlayPause");
+        checks["avrcp_metadata_and_controls_use_one_compact_line"] = remoteRow.IsVisible && remoteRow.ActualHeight <= 22 && remoteNext.ActualHeight <= 22 && remoteNext.ActualWidth <= 24 && remote.TrackDescription == "示例曲目 · 示例演出者";
+        checks["avrcp_accessible_action_follows_reported_playback_state"] = remotePlay.IsEnabled && Equals(remotePlay.Tag, "pause") && System.Windows.Automation.AutomationProperties.GetName(remotePlay).Contains("暂停") && remote.RemoteDetails.Contains("1:02 / 4:05");
+        remoteNext.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        checks["avrcp_next_routes_to_the_matching_device"] = window.SelfTestCommands.Last(command => command.Text("command") == "device_action").Text("action") == "next" && window.SelfTestCommands.Last(command => command.Text("command") == "device_action").Text("key") == "remote-demo";
+        remotePlay.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        checks["avrcp_pause_sends_explicit_action_without_toggling_gain"] = window.SelfTestCommands.Last(command => command.Text("command") == "device_action").Text("action") == "pause" && remote.Volume == 175 && remote.UplinkVolume == 130;
+        Capture(window, Path.Combine(folder, "home-avrcp-demo.png"));
+        Event("""{"event":"avrcp","key":"remote-demo","connected":true,"controls":true,"playback_status":"paused"}"""); Pump();
+        checks["avrcp_paused_state_exposes_play"] = remotePlay.IsEnabled && Equals(remotePlay.Tag, "play");
+        Event("""{"event":"avrcp","key":"remote-demo","connected":true,"controls":true,"playback_status":"unknown"}"""); Pump();
+        var actionCount = window.SelfTestCommands.Count;
+        remotePlay.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        checks["avrcp_unknown_state_never_guesses_play_pause"] = !remotePlay.IsEnabled && remoteNext.IsEnabled && remote.PlaybackHint.Contains("等待") && window.SelfTestCommands.Count == actionCount;
+        Event("""{"event":"avrcp","key":"remote-demo","connected":true,"controls":["next"],"playback_status":"paused"}"""); Pump();
+        checks["avrcp_unsupported_operations_are_disabled"] = remoteNext.IsEnabled && !remotePrevious.IsEnabled && !remotePlay.IsEnabled;
+        Event("""{"event":"avrcp","key":"remote-demo","connected":true,"controls":false,"standard_volume":0.4}"""); Pump();
+        checks["avrcp_standard_volume_fallback_is_separate_from_receive_gain"] = remote.RemoteDetails.Contains("40%") && remote.Volume == 175 && !remoteNext.IsEnabled;
+        Event("""{"event":"avrcp","key":"remote-demo","connected":true,"controls":true,"playback_status":"playing","volume":0.6,"standard_volume":0.1}""");
+        checks["avrcp_volume_field_takes_precedence"] = remote.RemoteDetails.Contains("60%") && remote.Volume == 175 && remote.UplinkVolume == 130;
+        Event("""{"event":"telemetry","audio":{},"devices":[{"key":"remote-demo","media":{},"call":{"active":true,"codec":"lc3_swb","rate":32000,"rx_bitrate":64000,"tx_bitrate":64000,"microphone_active":true}}]}"""); Pump();
+        checks["hfp_lc3_swb_uses_correct_codec_label_and_32khz"] = remote.MediaDescription.Contains("HFP / LC3-SWB · 32 kHz");
+        checks["version_is_200_pending_acceptance"] = AppVersion.Number == "2.0.0" && window.Title == AppVersion.Title && AppVersion.Label.Contains("待验收");
+        Event("""{"event":"avrcp","key":"remote-demo","connected":false,"controls":false}"""); Pump();
+        checks["avrcp_disconnect_clears_metadata_and_reclaims_row"] = !remoteRow.IsVisible && !remote.HasRemoteMedia && !remote.TrackDescription.Contains("示例曲目");
+        Event("""{"event":"device","key":"remote-demo","state":"已断开"}""");
+        Event("""{"event":"avrcp","key":"remote-demo","connected":true,"controls":true,"title":"late"}""");
+        checks["late_avrcp_events_cannot_recreate_disconnected_devices"] = window.State.Devices.Count == 0;
         var passed = checks.Values.All(value => value);
         File.WriteAllText(Path.Combine(folder, "desktop-self-test.json"), JsonSerializer.Serialize(new { passed, checks, scope = "WPF UI state and rendering; no radio links or driver changes" }, new JsonSerializerOptions { WriteIndented = true }));
         window.Close(); return passed ? 0 : 1;
@@ -315,22 +357,41 @@ internal static class Program
         app.Dispatcher.BeginInvoke(async () =>
         {
             using var client = new EngineClient();
-            var hello = new TaskCompletionSource(); var inventory = new TaskCompletionSource<int>();
+            var phase = "prepare";
+            var hello = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var inventory = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
             client.Message += message =>
             {
-                if (message.Text("event") == "hello") hello.TrySetResult();
+                if (message.Text("event") == "hello") hello.TrySetResult(true);
                 if (message.Text("event") == "inventory") inventory.TrySetResult(message.GetProperty("audio").GetArrayLength());
+            };
+            client.Failed += message =>
+            {
+                var failure = new IOException(message);
+                hello.TrySetException(failure);
+                inventory.TrySetException(failure);
             };
             try
             {
-                await client.StartAsync(Environment.GetEnvironmentVariable("BLUEHEAD_DATA_DIR") ?? Path.Combine(Path.GetDirectoryName(report)!, "engine-smoke-data"));
+                report = Path.GetFullPath(report);
+                Directory.CreateDirectory(Path.GetDirectoryName(report)!);
+                var data = Environment.GetEnvironmentVariable("BLUEHEAD_DATA_DIR");
+                if (string.IsNullOrWhiteSpace(data)) data = Path.Combine(Path.GetDirectoryName(report)!, Path.GetFileNameWithoutExtension(report) + "-data");
+                phase = "start_engine";
+                await client.StartAsync(data!);
+                phase = "hello";
                 await hello.Task.WaitAsync(TimeSpan.FromSeconds(20));
+                phase = "request_inventory";
                 await client.SendAsync(new { command = "inventory" });
+                phase = "inventory";
                 var endpoints = await inventory.Task.WaitAsync(TimeSpan.FromSeconds(20));
-                await client.ShutdownAsync(); passed = true;
-                File.WriteAllText(report, JsonSerializer.Serialize(new { passed, audio_endpoints = endpoints, protocol = 1, clean_shutdown = true, scope = "Packaged desktop-engine handshake and readonly inventory" }));
+                phase = "shutdown";
+                await client.ShutdownAsync();
+                phase = "complete";
+                File.WriteAllText(report, JsonSerializer.Serialize(new { passed = true, phase, audio_endpoints = endpoints, protocol = 1, clean_shutdown = true, scope = "Packaged desktop-engine handshake and readonly inventory" }));
+                passed = true;
             }
-            catch (Exception error) { File.WriteAllText(report, JsonSerializer.Serialize(new { passed = false, error = error.ToString() })); }
+            catch (Exception error) { File.WriteAllText(report, JsonSerializer.Serialize(new { passed = false, phase, error = error.ToString() })); }
             finally { app.Shutdown(); }
         });
         app.Run(); return passed ? 0 : 1;

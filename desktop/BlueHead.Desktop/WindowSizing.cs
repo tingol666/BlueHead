@@ -1,3 +1,4 @@
+using BlueHead.Platform;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
@@ -22,8 +23,8 @@ internal static class WindowSizing
     {
         var availableWidth = Math.Max(1, work.Width - Math.Min(48, work.Width * .08));
         var availableHeight = Math.Max(1, work.Height - Math.Min(48, work.Height * .08));
-        return new(Math.Min(availableWidth, Math.Clamp(work.Width * .58, 860, 980)),
-                   Math.Min(availableHeight, Math.Clamp(work.Height * .67, 500, 620)));
+        return new(Math.Min(availableWidth, FrameworkCompat.Clamp(work.Width * .58, 860, 980)),
+                   Math.Min(availableHeight, FrameworkCompat.Clamp(work.Height * .67, 500, 620)));
     }
     internal static void Track(Window window)
     {
@@ -34,7 +35,7 @@ internal static class WindowSizing
                 {
                     if (message is 0x02e0 or 0x007e or 0x001a)
                         window.Dispatcher.BeginInvoke(() => Apply(window, false));
-                    return 0;
+                    return IntPtr.Zero;
                 });
         };
         window.Loaded += (_, _) => Apply(window, true);
@@ -43,7 +44,7 @@ internal static class WindowSizing
     {
         if (window.WindowState != WindowState.Normal) return;
         var handle = new WindowInteropHelper(window).Handle;
-        if (handle == 0) return;
+        if (handle == IntPtr.Zero) return;
         var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
         if (!GetMonitorInfo(MonitorFromWindow(handle, 2), ref info)) return;
         var dpi = Math.Max(96, GetDpiForWindow(handle)) / 96.0;
@@ -56,8 +57,8 @@ internal static class WindowSizing
         var pixelWidth = (int)Math.Round(window.Width * dpi);
         var pixelHeight = (int)Math.Round(window.Height * dpi);
         if (!GetWindowRect(handle, out var current)) return;
-        var x = initial ? info.Work.Left + (info.Work.Right - info.Work.Left - pixelWidth) / 2 : Math.Clamp(current.Left, info.Work.Left, Math.Max(info.Work.Left, info.Work.Right - pixelWidth));
-        var y = initial ? info.Work.Top + (info.Work.Bottom - info.Work.Top - pixelHeight) / 2 : Math.Clamp(current.Top, info.Work.Top, Math.Max(info.Work.Top, info.Work.Bottom - pixelHeight));
+        var x = initial ? info.Work.Left + (info.Work.Right - info.Work.Left - pixelWidth) / 2 : FrameworkCompat.Clamp(current.Left, info.Work.Left, Math.Max(info.Work.Left, info.Work.Right - pixelWidth));
+        var y = initial ? info.Work.Top + (info.Work.Bottom - info.Work.Top - pixelHeight) / 2 : FrameworkCompat.Clamp(current.Top, info.Work.Top, Math.Max(info.Work.Top, info.Work.Bottom - pixelHeight));
         SetWindowPos(handle, 0, x, y, pixelWidth, pixelHeight, 0x0014); // NOZORDER | NOACTIVATE
     }
     internal static bool FitsCurrentWorkArea(Window window)

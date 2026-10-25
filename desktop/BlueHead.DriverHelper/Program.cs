@@ -11,30 +11,31 @@ internal static class Program
     {
         try
         {
-            if (args is ["--desktop-running"]) return Drivers.DesktopRunning() ? 10 : 0;
-            if (args is ["--needs-restore"]) return ManagedAdapters().Count > 0 ? 10 : 0;
-            if (args is ["--restore-all-elevate"])
+            if (args.Length == 1 && args[0] == "--desktop-running") return Drivers.DesktopRunning() ? 10 : 0;
+            if (args.Length == 1 && args[0] == "--needs-restore") return ManagedAdapters().Count > 0 ? 10 : 0;
+            if (args.Length == 1 && args[0] == "--restore-all-elevate")
             {
                 if (ManagedAdapters().Count == 0) return 0;
-                var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden };
-                start.ArgumentList.Add("--restore-all");
+                var start = new ProcessStartInfo(FrameworkCompat.ProcessPath) { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden };
+                start.AddArgument("--restore-all");
                 using var child = Process.Start(start) ?? throw new IOException("无法启动驱动恢复。");
                 child.WaitForExit(); return child.ExitCode;
             }
-            if (args is ["--restore-all"])
+            if (args.Length == 1 && args[0] == "--restore-all")
             {
                 foreach (var device in ManagedAdapters()) Drivers.RestoreAsync(device.InstanceId).GetAwaiter().GetResult();
                 return ManagedAdapters().Count == 0 ? 0 : 1;
             }
-            if (args is ["--list"]) { Console.WriteLine(JsonSerializer.Serialize(Drivers.Enumerate())); return 0; }
-            if (args is ["--compatible", var id]) { Console.WriteLine(JsonSerializer.Serialize(Drivers.CompatibleDrivers(id).Select(item => new { item.Inf, item.Description, item.Provider }))); return 0; }
-            if (args is ["--self-test"])
+            if (args.Length == 1 && args[0] == "--list") { Console.WriteLine(JsonSerializer.Serialize(Drivers.Enumerate())); return 0; }
+            if (args.Length == 2 && args[0] == "--compatible") { Console.WriteLine(JsonSerializer.Serialize(Drivers.CompatibleDrivers(args[1]).Select(item => new { item.Inf, item.Description, item.Provider }))); return 0; }
+            if (args.Length == 1 && args[0] == "--self-test")
             {
                 var devices = Drivers.Enumerate();
                 Console.WriteLine(JsonSerializer.Serialize(new { passed = true, device_count = devices.Count, readonly_inventory = true, device_struct_size = System.Runtime.InteropServices.Marshal.SizeOf<DeviceNativeProbe>() })); return 0;
             }
-            if (args is [var operation, var instance] && operation is "--install" or "--restore" or "--backup")
+            if (args.Length == 2 && args[0] is "--install" or "--restore" or "--backup")
             {
+                var operation = args[0]; var instance = args[1];
                 // Wait without pumping a second arbitrary IPC command: this process performs one exact operation.
                 var task = operation == "--install" ? Drivers.InstallAsync(instance) : operation == "--restore" ? Drivers.RestoreAsync(instance) : Drivers.BackupAsync(instance);
                 var record = task.GetAwaiter().GetResult(); Console.WriteLine(JsonSerializer.Serialize(record)); return 0;

@@ -4,7 +4,7 @@
 
  xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml" xmlns:local="clr-namespace:BlueHead.Desktop"
 
- Title="BlueHead" Width="940" Height="580" MinWidth="860" MinHeight="480" WindowStartupLocation="CenterScreen"
+ Title="{x:Static local:AppVersion.Title}" Width="940" Height="580" MinWidth="860" MinHeight="480" WindowStartupLocation="CenterScreen"
 
  Background="#F7FAFB" Foreground="#26303C" ExtendsContentIntoTitleBar="True" WindowBackdropType="Mica">
 
@@ -12,7 +12,7 @@
 
   <Grid.RowDefinitions><RowDefinition Height="38"/><RowDefinition Height="*"/></Grid.RowDefinitions>
 
-  <ui:TitleBar Title="BlueHead" Grid.Row="0" Padding="16,0" />
+  <ui:TitleBar Title="{x:Static local:AppVersion.Title}" Grid.Row="0" Padding="16,0" />
 
   <Grid Grid.Row="1">
 
@@ -112,7 +112,7 @@
 
           <Border Style="{StaticResource Card}" Padding="12,7" Margin="0,0,0,5">
 
-           <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+           <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><Grid.ColumnDefinitions><ColumnDefinition Width="34"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
 
             <Border Grid.RowSpan="2" Width="24" Height="28" CornerRadius="6" Background="#F0F2F6" VerticalAlignment="Center" HorizontalAlignment="Left"><TextBlock Text="&#xE8EA;" FontFamily="Segoe Fluent Icons" Foreground="#7C8797" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
 
@@ -139,10 +139,19 @@
              <TextBlock Grid.Column="2" Text="&#xEA39;" FontFamily="Segoe Fluent Icons" Foreground="#AA713C" FontSize="12" Margin="7,0,0,0" VerticalAlignment="Center" ToolTip="{Binding PlaybackNotice}" Visibility="{Binding HasPlaybackNotice, Converter={StaticResource Visible}}"/>
              <Popup x:Name="DeviceDetailsPopup" PlacementTarget="{Binding ElementName=DetailsAnchor}" Placement="Bottom" VerticalOffset="5" AllowsTransparency="True" StaysOpen="False" IsOpen="{Binding DetailsOpen, Mode=TwoWay}" Tag="{Binding}" Opened="DeviceDetailsOpened">
 
-              <Border Background="White" BorderBrush="#DDE3ED" BorderThickness="1" CornerRadius="8" Padding="13,10" MaxWidth="410"><StackPanel><TextBlock Text="实时音频详情" FontSize="12" FontWeight="SemiBold"/><TextBlock Text="{Binding LiveDetails}" Style="{StaticResource Caption}" Margin="0,6,0,0"/></StackPanel></Border>
+              <Border Background="White" BorderBrush="#DDE3ED" BorderThickness="1" CornerRadius="8" Padding="13,10" MaxWidth="410"><StackPanel><TextBlock Text="实时音频详情" FontSize="12" FontWeight="SemiBold"/><TextBlock Text="{Binding LiveDetails}" Style="{StaticResource Caption}" Margin="0,6,0,0"/><TextBlock Text="{Binding RemoteDetails}" Style="{StaticResource Caption}" Margin="0,6,0,0" Visibility="{Binding HasRemoteMedia, Converter={StaticResource Visible}}"/></StackPanel></Border>
 
              </Popup>
 
+            </Grid>
+
+            <Grid x:Name="RemoteMediaLine" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Height="22" Visibility="{Binding HasRemoteMedia, Converter={StaticResource Visible}}"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+             <TextBlock Text="{Binding TrackDescription}" FontSize="11" Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" VerticalAlignment="Center" ToolTip="{Binding RemoteDetails}"/>
+             <StackPanel x:Name="RemoteControls" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="6,0,0,0">
+              <ui:Button x:Name="RemotePrevious" Style="{StaticResource MediaRemoteButton}" Tag="previous" IsEnabled="{Binding CanPrevious}" Click="RemoteMediaClick" ToolTip="上一曲（控制此设备的播放器）" AutomationProperties.Name="上一曲，控制此设备的播放器"><TextBlock Text="&#xE892;" FontFamily="Segoe Fluent Icons" FontSize="12"/></ui:Button>
+              <ui:Button x:Name="RemotePlayPause" Style="{StaticResource MediaRemoteButton}" Tag="{Binding PlaybackAction}" IsEnabled="{Binding CanPlayPause}" Click="RemoteMediaClick" ToolTip="{Binding PlaybackHint}" AutomationProperties.Name="{Binding PlaybackHint}"><TextBlock Text="{Binding PlaybackIcon}" FontFamily="Segoe Fluent Icons" FontSize="12"/></ui:Button>
+              <ui:Button x:Name="RemoteNext" Style="{StaticResource MediaRemoteButton}" Tag="next" IsEnabled="{Binding CanNext}" Click="RemoteMediaClick" ToolTip="下一曲（控制此设备的播放器）" AutomationProperties.Name="下一曲，控制此设备的播放器"><TextBlock Text="&#xE893;" FontFamily="Segoe Fluent Icons" FontSize="12"/></ui:Button>
+             </StackPanel>
             </Grid>
 
            </Grid>

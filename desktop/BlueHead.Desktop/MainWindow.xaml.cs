@@ -322,6 +322,7 @@ public partial class MainWindow
                     card.LiveDetails = card.CallDescription;
                     break;
                 case "microphone": if (message.Flag("active")) card.LiveDetails = "语音通道已连接 · 麦克风已启用"; break;
+                case "avrcp": card.ApplyRemoteMedia(message); break;
             }
             UpdateDevices();
         }
@@ -368,8 +369,8 @@ public partial class MainWindow
         if (NeedsBluetoothSetup) { DriverResult.Text = "请先启用专用接收，或选择“仅接收声音”。"; return; }
         if (await SaveSettings()) ShowPage("home");
     }
-    private static string CodecName(string codec) => codec switch
-    { "aptx" => "aptX", "aptx_hd" => "aptX HD", "msbc" => "mSBC", "cvsd" => "CVSD", _ => codec.ToUpperInvariant() };
+    private static string CodecName(string codec) => codec.ToLowerInvariant() switch
+    { "aptx" => "aptX", "aptx_hd" => "aptX HD", "msbc" => "mSBC", "cvsd" => "CVSD", "lc3_swb" or "lc3-swb" => "LC3-SWB", _ => codec.ToUpperInvariant() };
     private static string Bitrate(double bits) => bits >= 1000000 ? $"{bits / 1000000:0.##} Mb/s" : $"{bits / 1000:0.#} kb/s";
     private void ApplyLiveAudio(DeviceCard card, JsonElement stream)
     {
@@ -548,7 +549,7 @@ public partial class MainWindow
             Directory.CreateDirectory(dataDirectory);
             File.WriteAllText(Path.Combine(dataDirectory, "desktop.json"), JsonSerializer.Serialize(preferences));
             using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-            if (preferences.AutoStart) key.SetValue("BlueHead", $"\"{Environment.ProcessPath}\" --tray"); else key.DeleteValue("BlueHead", false);
+            if (preferences.AutoStart) key.SetValue("BlueHead", $"{FrameworkCompat.QuoteArgument(FrameworkCompat.ProcessPath)} --tray"); else key.DeleteValue("BlueHead", false);
         }
         return true;
     }
@@ -567,7 +568,7 @@ public partial class MainWindow
     private void DeviceGain(object sender, double value, string direction)
     {
         if (applying || Card(sender) is not { } card) return;
-        var gain = Math.Clamp(value / 100, 0, 2);
+        var gain = FrameworkCompat.Clamp(value / 100, 0, 2);
         if (!settings.device_volumes.TryGetValue(card.Key, out var volumes)) settings.device_volumes[card.Key] = volumes = new();
         if (direction == "down") volumes.down = gain; else volumes.up = gain;
         QueueGain(card.Key + direction, new { command = "gain", key = card.Key, direction, gain });
@@ -577,7 +578,7 @@ public partial class MainWindow
     private void MasterGainChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (applying || sender is not AudioLevel level) return;
-        var bus = level.Tag?.ToString(); var gain = Math.Clamp(e.NewValue / 100, 0, 2);
+        var bus = level.Tag?.ToString(); var gain = FrameworkCompat.Clamp(e.NewValue / 100, 0, 2);
         if (bus == "playback") settings.playback_gain = gain;
         else if (bus == "microphone") settings.microphone_gain = gain;
         else if (bus == "system") settings.system_gain = gain;
@@ -591,6 +592,13 @@ public partial class MainWindow
     private async void SelectCallClick(object sender, RoutedEventArgs e) => await Act(sender, "select_call");
     private async void CallAudioClick(object sender, RoutedEventArgs e) => await Act(sender, "call_audio");
     private async void DisconnectClick(object sender, RoutedEventArgs e) => await Act(sender, "disconnect");
+    private async void RemoteMediaClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string action } element || Card(element) is not { } card) return;
+        if (!devices.TryGetValue(card.Key, out var current) || !ReferenceEquals(card, current)) return;
+        var allowed = action switch { "previous" => card.CanPrevious, "next" => card.CanNext, "play" or "pause" => card.CanPlayPause && action == card.PlaybackAction, _ => false };
+        if (allowed) await Act(sender, action);
+    }
     private async Task RefreshDrivers()
     {
         if (offline || driverBusy) return;
@@ -630,7 +638,7 @@ public partial class MainWindow
         {
             var path = Path.Combine(AppContext.BaseDirectory, "BlueHead.DriverHelper.exe");
             var start = new ProcessStartInfo(path) { UseShellExecute = true, Verb = "runas", WorkingDirectory = Path.GetDirectoryName(path), WindowStyle = ProcessWindowStyle.Hidden };
-            start.ArgumentList.Add("--" + operation); start.ArgumentList.Add(device.InstanceId);
+            start.AddArgument("--" + operation); start.AddArgument(device.InstanceId);
             using var helper = Process.Start(start) ?? throw new IOException("恢复工具未能启动。");
             await helper.WaitForExitAsync();
             var record = Drivers.ReadRecord(device.InstanceId);
@@ -648,7 +656,7 @@ public partial class MainWindow
     private async void RestoreDriverClick(object sender, RoutedEventArgs e) => await DriverOperation("restore");
     private void RecoveryClick(object sender, RoutedEventArgs e)
     {
-        try { Process.Start(new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = true, ArgumentList = { "--recovery" } }); }
+        try { var start = new ProcessStartInfo(FrameworkCompat.ProcessPath) { UseShellExecute = true }; start.AddArgument("--recovery"); Process.Start(start); }
         catch (Exception error) { ShowNotice(error.Message); }
     }
     private async void TelemetryClick(object sender, RoutedEventArgs e) => await Send(new { command = "telemetry" });

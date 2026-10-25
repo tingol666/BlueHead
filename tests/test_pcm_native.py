@@ -26,7 +26,7 @@ def test_native_mixer_matches_reference_under_mixing_and_peak_limiting():
         np.testing.assert_allclose(native.render(480), reference.render(480), atol=5e-7)
 
 
-def test_call_prefills_in_thirty_ms_without_waiting_for_media_buffer():
+def test_call_prefills_at_thirty_ms_centre_with_half_quantum_reserve():
     mixer = Mixer(buffer_ms=60, call_buffer_ms=30)
     mixer.master = 1
     mixer.add('call:phone')
@@ -35,6 +35,10 @@ def test_call_prefills_in_thirty_ms_without_waiting_for_media_buffer():
     mixer.write('call:phone', pcm)
     mixer.write('phone', pcm)
     mixer.call_source, mixer.call_active = 'call:phone', True
+    # A 10ms render quantum measures the 30ms voice target at its centre,
+    # requiring a 5ms pre-render reserve. Media still waits for its own 60ms.
+    np.testing.assert_array_equal(mixer.render(480), 0)
+    mixer.write('call:phone', np.full((240, 2), .1, dtype=np.float32))
     np.testing.assert_allclose(mixer.render(480), .1, atol=1e-6)
     assert mixer.inputs['phone'].frames == 1440
     assert mixer.snapshot()['call_buffer_ms'] == 30

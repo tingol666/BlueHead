@@ -92,9 +92,17 @@ public:
       prepared_ldac = std::make_unique<LdacWorker>(core.assets, hz, ch);
       prepared_pcm = std::make_unique<float[]>(48064 * 2);
     } else {
-      prepared.reset(core.api.bh_media_create(code, hz, ch, 48000));
+      prepared.reset(core.api.bh_media_create(code, hz, ch, hz));
       require(prepared != nullptr, "Native media codec unavailable");
       core.api.bh_media_continuity(prepared.get(), core.enhance_audio);
+    }
+    {
+      std::lock_guard<std::mutex> commit(commit_mutex);
+      bool was_paused = paused.exchange(true);
+      if (core.api.bh_mix_format(core.mixer, input, hz) < 0) {
+        paused = was_paused;
+        throw std::runtime_error("Cannot prepare native media PCM format");
+      }
     }
     retire();
     codec = code;
@@ -140,7 +148,7 @@ public:
       guard.reset();
     bool competing = allowed && core.competing(input, ticks());
     protected_audio = guard.observe(arrival / static_cast<double>(frequency()), frames, 1, missing,
-                                    failed, competing);
+                                    failed, competing, rate);
     core.api.bh_mix_gate(core.mixer, input, allowed && !protected_audio);
   }
   bool past_deadline(const Packet &p) {

@@ -21,6 +21,9 @@ def test_native_stream_guard_matches_existing_hysteresis_and_single_source_rule(
     assert any(expected) and not expected[-1]
     with NativeClient(spawn=True) as client:
         assert client.request("test_stream_guard", events=events) == expected
+        for rate in (16000, 96000, 192000):
+            scaled = [dict(event, frames=round(event['frames']*rate/48000)) for event in events]
+            assert client.request("test_stream_guard", events=scaled, pcm_rate=rate) == expected
 
 
 def test_damaged_competing_stream_is_gated_and_sole_remaining_stream_is_released():

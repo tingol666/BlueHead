@@ -8,11 +8,11 @@
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
-#define BHC_HISTORY 2048u
-#define BHC_PERIOD 960u
+#define BHC_HISTORY 16384u
+#define BHC_PERIOD 7680u
 typedef struct {
   float history[BHC_HISTORY * 2], period[BHC_PERIOD * 2];
-  uint32_t cursor, count, lag, gap, merge, merge_length;
+  uint32_t cursor, count, lag, gap, merge, merge_length, rate;
   float confidence;
   uint64_t concealed, silent, merged;
 } BhContinuity;
@@ -20,28 +20,38 @@ static void bhc_reset(BhContinuity *c) {
   memset(c, 0, sizeof(*c));
   c->merge_length = 192;
 }
+static inline uint32_t bhc_frames(const BhContinuity *c, uint32_t frames) {
+  return (uint32_t)(((uint64_t)frames * (c->rate ? c->rate : 48000) + 47999) / 48000);
+}
+static inline void bhc_rate(BhContinuity *c, uint32_t rate) {
+  c->rate = rate;
+  c->merge_length = bhc_frames(c, 192);
+}
 static float bhc_at(const BhContinuity *c, uint32_t ago, int channel) {
   return c->history[((c->cursor + BHC_HISTORY - ago) % BHC_HISTORY) * 2 + channel];
 }
 static uint32_t bhc_period(BhContinuity *c, uint32_t maximum) {
-  if (c->count < 192) {
+  uint32_t step = (c->rate ? c->rate : 48000) / 48000;
+  if (!step)
+    step = 1;
+  if (c->count < 128 * step + bhc_frames(c, 64)) {
     c->confidence = 0;
     return 0;
   }
-  uint32_t limit = c->count - 128;
+  uint32_t limit = c->count - 128 * step;
   if (limit > maximum)
     limit = maximum;
   if (limit > BHC_PERIOD)
     limit = BHC_PERIOD;
   double best = -1;
   uint32_t lag = 0;
-  for (uint32_t candidate = 32; candidate <= limit; candidate += 2) {
+  for (uint32_t candidate = bhc_frames(c, 32); candidate <= limit; candidate += 2 * step) {
     double correlation = 1;
     int informative = 0;
     for (int ch = 0; ch < 2; ch++) {
       double xy = 0, xx = 0, yy = 0, sx = 0, sy = 0;
       for (uint32_t j = 1; j <= 128; j++) {
-        double a = bhc_at(c, j, ch), b = bhc_at(c, j + candidate, ch);
+        double a = bhc_at(c, j * step, ch), b = bhc_at(c, j * step + candidate, ch);
         xy += a * b;
         xx += a * a;
         yy += b * b;
@@ -81,7 +91,7 @@ static uint32_t bhc_period(BhContinuity *c, uint32_t maximum) {
       c->period[i * 2 + ch] = bhc_at(c, lag - i, ch);
   return lag;
 }
-static float bhc_gain(uint32_t elapsed, int periodic) {
+static float bhc_gain(double elapsed, int periodic) {
   if (!periodic)
     return elapsed < 48 ? 1 - (float)elapsed / 48 : 0;
   if (elapsed <= 240)
@@ -91,7 +101,7 @@ static float bhc_gain(uint32_t elapsed, int periodic) {
   return .5f + .5f * cosf((float)(elapsed - 240) * (3.14159265358979323846f / 720));
 }
 static void bhc_prediction(const BhContinuity *c, uint32_t offset, float out[2]) {
-  float gain = bhc_gain(offset, c->lag != 0);
+  float gain = bhc_gain((double)offset * 48000 / (c->rate ? c->rate : 48000), c->lag != 0);
   for (int ch = 0; ch < 2; ch++)
     out[ch] = (c->lag     ? c->period[(offset % c->lag) * 2 + ch]
                : c->count ? bhc_at(c, 1, ch)
@@ -100,7 +110,7 @@ static void bhc_prediction(const BhContinuity *c, uint32_t offset, float out[2])
 }
 static void bhc_missing(BhContinuity *c, float out[2]) {
   if (!c->gap)
-    c->lag = bhc_period(c, BHC_PERIOD);
+    c->lag = bhc_period(c, bhc_frames(c, 960));
   bhc_prediction(c, c->gap, out);
   c->gap++;
   c->concealed++;
@@ -109,7 +119,7 @@ static void bhc_missing(BhContinuity *c, float out[2]) {
 }
 static void bhc_real(BhContinuity *c, const float in[2], float out[2]) {
   if (c->gap && !c->merge)
-    c->merge = c->merge_length = 192;
+    c->merge = c->merge_length = bhc_frames(c, 192);
   if (c->merge) {
     float prediction[2];
     bhc_prediction(c, c->gap, prediction);

@@ -9,8 +9,9 @@
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
-#define BHQ_LOOKAHEAD 72u /* 1.5ms at the native 48kHz graph clock. */
-#define BHQ_WINDOW (BHQ_LOOKAHEAD + 1u)
+#define BHQ_LOOKAHEAD 72u      /* Public diagnostics use the canonical 48k clock. */
+#define BHQ_MAX_LOOKAHEAD 576u /* 1.5ms at the maximum 384k PCM rate. */
+#define BHQ_WINDOW (BHQ_MAX_LOOKAHEAD + 1u)
 #define BHQ_GAIN_RAMP 240u /* 5ms; true zero/mute remains immediate. */
 
 typedef struct {
@@ -20,28 +21,29 @@ typedef struct {
 } BhGainRamp;
 typedef struct {
   BhGainRamp gain;
-  float delay[BHQ_LOOKAHEAD * 2];
-  uint32_t at;
+  float delay[BHQ_MAX_LOOKAHEAD * 2];
+  uint32_t at, rate, lookahead, ramp;
 } BhSourceQuality;
 typedef struct {
   BhGainRamp master;
-  float master_delay[BHQ_LOOKAHEAD], peak[BHQ_WINDOW];
+  float master_delay[BHQ_MAX_LOOKAHEAD], peak[BHQ_WINDOW];
   /* A float envelope stalls ~1e-4 below unity during its slow release.
    * Keep control precision separate from float PCM so release is transparent. */
   double gain;
   uint64_t sequence[BHQ_WINDOW], frame, limited;
-  uint32_t at, head, size;
+  uint32_t at, head, size, rate, lookahead, ramp;
+  double attack, release;
 } BhMixQuality;
 
-static void bhq_target(BhGainRamp *r, float target) {
+static void bhq_target(BhGainRamp *r, float target, uint32_t ramp) {
   if (!r->initialized || target == 0) {
     r->value = r->target = target;
     r->remaining = 0;
     r->initialized = 1;
   } else if (target != r->target) {
     r->target = target;
-    r->step = (target - r->value) / BHQ_GAIN_RAMP;
-    r->remaining = BHQ_GAIN_RAMP;
+    r->step = (target - r->value) / ramp;
+    r->remaining = ramp;
   }
 }
 static float bhq_gain(BhGainRamp *r) {
@@ -60,7 +62,7 @@ static void bhq_source(BhSourceQuality *s, const float *input, float *raw, float
                        uint32_t count, float target) {
   if (target == 0 && s->gain.value != 0)
     bhq_source_clear(s);
-  bhq_target(&s->gain, target);
+  bhq_target(&s->gain, target, s->ramp ? s->ramp : BHQ_GAIN_RAMP);
   for (uint32_t j = 0; j < count; j++) {
     float gain = bhq_gain(&s->gain);
     for (int ch = 0; ch < 2; ch++) {
@@ -74,7 +76,7 @@ static void bhq_source(BhSourceQuality *s, const float *input, float *raw, float
       delayed[j * 2 + ch] += s->delay[s->at * 2 + ch];
       s->delay[s->at * 2 + ch] = value;
     }
-    if (++s->at == BHQ_LOOKAHEAD)
+    if (++s->at == (s->lookahead ? s->lookahead : BHQ_LOOKAHEAD))
       s->at = 0;
   }
 }
@@ -86,18 +88,19 @@ static void bhq_reset_envelope(BhMixQuality *q) {
 }
 static void bhq_process(BhMixQuality *q, const float *delayed, float *raw, uint32_t count,
                         float master) {
-  bhq_target(&q->master, master);
+  uint32_t lookahead = q->lookahead ? q->lookahead : BHQ_LOOKAHEAD;
+  bhq_target(&q->master, master, q->ramp ? q->ramp : BHQ_GAIN_RAMP);
   for (uint32_t j = 0; j < count; j++, q->frame++) {
     float gain = bhq_gain(&q->master), peak = 0;
     float old_master = q->master_delay[q->at];
     q->master_delay[q->at] = gain;
-    if (++q->at == BHQ_LOOKAHEAD)
+    if (++q->at == lookahead)
       q->at = 0;
     for (int ch = 0; ch < 2; ch++)
       peak = fmaxf(peak, fabsf(raw[j * 2 + ch] * gain));
     /* Monotonic deque: amortized O(1), inclusive [n-72,n] lookahead for
      * output sample n-72, with the same envelope across callback boundaries. */
-    while (q->size && q->frame - q->sequence[q->head] > BHQ_LOOKAHEAD) {
+    while (q->size && q->frame - q->sequence[q->head] > lookahead) {
       q->head = (q->head + 1) % BHQ_WINDOW;
       q->size--;
     }
@@ -111,7 +114,8 @@ static void bhq_process(BhMixQuality *q, const float *delayed, float *raw, uint3
     float wanted = future_peak > 1 ? 1 / future_peak : 1;
     /* 0.15ms attack, 70ms release. Lookahead provides ten attack time
      * constants before the peak reaches output. No normal-level compression. */
-    float coefficient = wanted < q->gain ? .870324726f : .999702425f;
+    double coefficient =
+        wanted < q->gain ? (q->rate ? q->attack : .870324726) : (q->rate ? q->release : .999702425);
     q->gain = wanted + coefficient * (q->gain - wanted);
     float out[2] = {delayed[j * 2] * old_master, delayed[j * 2 + 1] * old_master};
     float present_peak = fmaxf(fabsf(out[0]), fabsf(out[1]));

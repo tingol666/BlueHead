@@ -284,7 +284,7 @@ static int create_state(BhAudioDevice *stream, void *mixer) {
 static BhAudioDevice *open_device(BhDeviceContext *context, uint32_t direction, void *mixer,
                                   const wchar_t *endpoint, uint32_t output_rate, int *error) {
   set_error(error, MA_INVALID_ARGS);
-  if (!context || (direction == BH_PLAYBACK && !mixer) || output_rate < 8000 ||
+  if (!context || (direction == BH_PLAYBACK && !mixer) || (output_rate && output_rate < 8000) ||
       output_rate > 384000)
     return NULL;
   ma_device_id id;
@@ -310,7 +310,7 @@ static BhAudioDevice *open_device(BhDeviceContext *context, uint32_t direction, 
   for (uint32_t mode = 0; mode < 2; mode++) {
     ma_device_config config = ma_device_config_init(
         direction == BH_PLAYBACK ? ma_device_type_playback : ma_device_type_capture);
-    config.sampleRate = mode == 0 ? 48000 : 0;
+    config.sampleRate = mode == 0 ? 0 : 48000;
     config.periodSizeInMilliseconds = 10;
     config.noFixedSizedCallback = MA_TRUE;
     config.dataCallback = on_data;
@@ -318,9 +318,9 @@ static BhAudioDevice *open_device(BhDeviceContext *context, uint32_t direction, 
     config.pUserData = stream;
     config.wasapi.usage = ma_wasapi_usage_pro_audio;
     config.wasapi.noHardwareOffloading = MA_TRUE;
-    config.wasapi.noAutoConvertSRC = mode != 0;
+    config.wasapi.noAutoConvertSRC = mode == 0;
     /* The control owner follows defaults transactionally. Hidden reroutes
-     * cannot change the rate underneath our already initialized Speex state. */
+     * cannot change the rate underneath the prepared native conversion route. */
     config.wasapi.noAutoStreamRouting = MA_TRUE;
     if (direction == BH_PLAYBACK) {
       config.playback.pDeviceID = endpoint && *endpoint ? &id : NULL;
@@ -334,10 +334,9 @@ static BhAudioDevice *open_device(BhDeviceContext *context, uint32_t direction, 
     result = ma_device_init(&context->context, &config, &stream->device);
     if (result != MA_SUCCESS)
       continue;
-    /* Some endpoints reject Windows automatic SRC and miniaudio can then
-     * negotiate a different internal rate. Do not silently activate its
-     * generic converter: reopen at the native clock and use our stateful
-     * SpeexDSP path, preserving the 1.2.4 discontinuity fix. */
+    /* Prefer the actual shared endpoint clock. A 48k automatic-SRC fallback
+     * remains for endpoints that reject native negotiation; miniaudio generic
+     * SRC is never silently enabled (the 1.2.4 continuity constraint). */
     uint32_t internal_rate = direction == BH_PLAYBACK ? stream->device.playback.internalSampleRate
                                                       : stream->device.capture.internalSampleRate;
     if (internal_rate != stream->device.sampleRate) {
@@ -347,6 +346,7 @@ static BhAudioDevice *open_device(BhDeviceContext *context, uint32_t direction, 
     }
     stream->initialized = 1;
     stream->rate = stream->device.sampleRate;
+    stream->output_rate = direction == BH_PLAYBACK || !output_rate ? stream->rate : output_rate;
     stream->conversion = mode;
     result = create_state(stream, mixer);
     if (result == MA_SUCCESS) {
@@ -364,7 +364,7 @@ static BhAudioDevice *open_device(BhDeviceContext *context, uint32_t direction, 
 }
 BH_DEVICE_API BhAudioDevice *bh_device_open_output(BhDeviceContext *context, void *mixer,
                                                    const wchar_t *endpoint, int *error) {
-  return open_device(context, BH_PLAYBACK, mixer, endpoint, 48000, error);
+  return open_device(context, BH_PLAYBACK, mixer, endpoint, 0, error);
 }
 BH_DEVICE_API BhAudioDevice *bh_device_open_capture(BhDeviceContext *context,
                                                     const wchar_t *endpoint, uint32_t output_rate,

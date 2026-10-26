@@ -1,7 +1,8 @@
 /* Common software audio clock and presentation contract. Apache-2.0.
  * Rate controller adapted from PipeWire rate-control.h, MIT, Copyright (c)
  * 2022 Pauli Virtanen. Pinned source/license: vendor/pipewire-rate-control.
- * All positions are 64-bit frames on the 48k graph clock, never byte counts.
+ * Positions are 64-bit frames on the canonical 48k timebase. PCM rates are
+ * independent; rate-control queue/duration/period must share source-frame units.
  */
 #ifndef BLUEHEAD_AUDIO_TIMELINE_H
 #define BLUEHEAD_AUDIO_TIMELINE_H
@@ -29,7 +30,7 @@ static inline void bht_clock_reset(BhAudioClock *c, double target) {
   c->average = target;
   c->ratio = 1;
 }
-static inline double bht_clock_update(BhAudioClock *c, double available, uint32_t duration,
+static inline double bht_clock_update(BhAudioClock *c, double available, double duration,
                                       double target, double period, double limit) {
   double beta = fmin(.5, duration / period);
   double old = c->average;

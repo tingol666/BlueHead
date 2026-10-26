@@ -11,7 +11,7 @@ struct StreamGuard {
   unsigned bad = 0, good = 0;
   void reset() { *this = StreamGuard{}; }
   bool observe(double now, uint64_t decoded, uint64_t received, uint64_t missing, uint64_t failed,
-               bool competing) {
+               bool competing, uint32_t pcm_rate = 48000) {
     if (!competing) {
       reset();
       return false;
@@ -27,7 +27,7 @@ struct StreamGuard {
     double elapsed = now - since;
     if (elapsed < .5)
       return protected_audio;
-    double supply = frames / (48000 * elapsed);
+    double supply = frames / (pcm_rate * elapsed);
     bool damaged = ((errors >= 3 || lost >= 3) && supply < .8) || (packets >= 10 && supply < .55);
     bool clean = supply >= .9 && !lost && !errors;
     bad = damaged ? bad + 1 : 0;

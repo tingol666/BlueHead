@@ -102,7 +102,7 @@ inline int ldac_worker(HANDLE mapping, HANDLE request, HANDLE done, const fs::pa
     auto feed = library.get<int (*)(void *, const uint8_t *, uint32_t)>("bh_ldac_media_feed");
     auto read = library.get<uint32_t (*)(void *, float *, uint32_t)>("bh_ldac_media_read");
     auto value = library.get<uint64_t (*)(void *, int)>("bh_ldac_media_value");
-    decoder = create(s->rate, s->channels, 48000);
+    decoder = create(s->rate, s->channels, s->rate);
     require(decoder, "LDAC codec unavailable");
     s->result = 0;
     MemoryBarrier();

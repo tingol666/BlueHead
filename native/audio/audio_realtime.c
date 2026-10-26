@@ -24,12 +24,16 @@
 typedef struct Mixer Mixer;
 int bh_mix_render(Mixer *, float *, uint32_t, float);
 float bh_mix_master_value(Mixer *);
+typedef struct MixRoute MixRoute;
+MixRoute *bh_mix_route_create(Mixer *, uint32_t);
+void bh_mix_route_free(MixRoute *);
+uint32_t bh_mix_route_latency(MixRoute *);
+int bh_mix_render_route(MixRoute *, float *, uint32_t, float);
 
 typedef struct {
   Mixer *mixer;
-  SpeexResamplerState *resampler;
-  uint32_t rate, offset, remaining;
-  float source[BLOCK * 2];
+  MixRoute *route;
+  uint32_t rate;
   atomic_int halted;
   int muted;
   atomic_ullong calls, frames, statuses, errors, max_ticks;
@@ -60,16 +64,10 @@ API Render *bh_render_create(Mixer *mixer, uint32_t rate) {
   atomic_init(&r->errors, 0);
   atomic_init(&r->max_ticks, 0);
   QueryPerformanceFrequency(&r->frequency);
-  if (rate != 48000) {
-    int error = 0;
-    r->resampler = speex_resampler_init(2, 48000, rate, 10, &error);
-    if (!r->resampler || error) {
-      if (r->resampler)
-        speex_resampler_destroy(r->resampler);
-      free(r);
-      return NULL;
-    }
-    speex_resampler_skip_zeros(r->resampler);
+  r->route = bh_mix_route_create(mixer, rate);
+  if (!r->route) {
+    free(r);
+    return NULL;
   }
   return r;
 }
@@ -85,8 +83,7 @@ API void bh_render_resume(Render *r) {
 API void bh_render_free(Render *r) {
   if (!r)
     return;
-  if (r->resampler)
-    speex_resampler_destroy(r->resampler);
+  bh_mix_route_free(r->route);
   free(r);
 }
 API uint64_t bh_render_value(Render *r, int field) {
@@ -105,7 +102,7 @@ API uint64_t bh_render_value(Render *r, int field) {
     return atomic_load_explicit(&r->max_ticks, memory_order_relaxed) * 1000000 /
            r->frequency.QuadPart;
   case 5:
-    return r->resampler ? speex_resampler_get_output_latency(r->resampler) : 0;
+    return bh_mix_route_latency(r->route);
   default:
     return 0;
   }
@@ -117,39 +114,7 @@ static int render_process(Render *r, float *output, uint32_t frames) {
     memset(output, 0, frames * 2 * sizeof(float));
     return 0;
   }
-  float master = bh_mix_master_value(r->mixer);
-  if (!r->resampler)
-    return bh_mix_render(r->mixer, output, frames, master);
-  if (master == 0 && !r->muted) {
-    /* Discard already rendered, unmuted conversion input and filter tail.
-     * A true mute must also cover the native-format fallback's lookahead. */
-    r->offset = r->remaining = 0;
-    speex_resampler_reset_mem(r->resampler);
-    speex_resampler_skip_zeros(r->resampler);
-  }
-  r->muted = master == 0;
-  uint32_t produced = 0;
-  while (produced < frames) {
-    if (!r->remaining) {
-      bh_mix_render(r->mixer, r->source, BLOCK, master);
-      r->offset = 0;
-      r->remaining = BLOCK;
-    }
-    spx_uint32_t input = r->remaining, available = frames - produced;
-    int error = speex_resampler_process_interleaved_float(
-        r->resampler, r->source + r->offset * 2, &input, output + produced * 2, &available);
-    if (error || (!input && !available) || input > r->remaining || available > frames - produced) {
-      memset(output + produced * 2, 0, (frames - produced) * 2 * sizeof(float));
-      atomic_fetch_add_explicit(&r->errors, 1, memory_order_relaxed);
-      return -1;
-    }
-    r->offset += input;
-    r->remaining -= input;
-    produced += available;
-  }
-  if (master == 0)
-    memset(output, 0, frames * 2 * sizeof(float));
-  return 1;
+  return bh_mix_render_route(r->route, output, frames, bh_mix_master_value(r->mixer));
 }
 
 API int bh_render_process(Render *r, float *output, uint32_t frames) {

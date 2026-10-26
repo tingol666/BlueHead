@@ -90,6 +90,7 @@ BH_MEDIA_API BhMedia *bh_media_create(int codec, int rate, int channels, int out
   m->channels = channels;
   m->output_rate = output_rate;
   bhc_reset(&m->continuity);
+  bhc_rate(&m->continuity, m->output_rate);
   m->frame = av_frame_alloc();
   m->packet = av_packet_alloc();
   if (codec == 1)
@@ -116,6 +117,7 @@ BH_MEDIA_API int bh_media_restart(BhMedia *m) {
   m->packet_position = m->raw_position = 0;
   m->mixer_reset = 1;
   bhc_reset(&m->continuity);
+  bhc_rate(&m->continuity, m->output_rate);
   reset_swr(m);
   if (m->parser) {
     av_parser_close(m->parser);
@@ -154,6 +156,7 @@ BH_MEDIA_API int bh_media_continuity(BhMedia *m, int enabled) {
     return -1;
   m->continuity_enabled = !!enabled;
   bhc_reset(&m->continuity);
+  bhc_rate(&m->continuity, m->output_rate);
   m->have_timestamp = 0;
   m->source_expected = m->source_decoded = 0;
   m->pending_gap = 0;

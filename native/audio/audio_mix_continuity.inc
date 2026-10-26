@@ -2,9 +2,14 @@
  * The unchanged legacy renderer remains an offline comparison oracle.
  */
 API int bh_mix_continuity(Mixer *m, int index, int enabled, uint32_t minimum, uint32_t maximum) {
-  if (!m || index < 0 || index >= INPUTS || minimum > maximum || maximum > m->input[index].maximum)
+  if (!m || index < 0 || index >= INPUTS || minimum > maximum ||
+      (uint64_t)maximum * atomic_load(&m->input[index].source_rate) >
+          (uint64_t)m->input[index].maximum * BHT_RATE)
     return -1;
   Input *s = &m->input[index];
+  uint32_t rate = atomic_load(&s->source_rate);
+  minimum = (uint32_t)bht_scale(minimum, BHT_RATE, rate);
+  maximum = (uint32_t)bht_scale(maximum, BHT_RATE, rate);
   atomic_store(&s->continuity_min, minimum);
   atomic_store(&s->continuity_max, maximum);
   atomic_store_explicit(&s->continuity_mode, !!enabled, memory_order_release);
@@ -21,16 +26,23 @@ API int bh_mix_continuity(Mixer *m, int index, int enabled, uint32_t minimum, ui
 }
 static float continuity_gate(Input *s, float target) {
   if (s->gate < target)
-    s->gate = fminf(target, s->gate + 1.0f / 480);
+    s->gate = fminf(target, s->gate + 100.0f / (s->render_rate ? s->render_rate : 48000));
   else if (s->gate > target)
-    s->gate = fmaxf(target, s->gate - 1.0f / 480);
+    s->gate = fmaxf(target, s->gate - 100.0f / (s->render_rate ? s->render_rate : 48000));
   return s->gate;
 }
-static int render_continuity(Mixer *m, float *output, uint32_t count, float master) {
+static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t count,
+                             float master) {
   if (!m || !output || count > CAPACITY || !isfinite(master))
     return -1;
-  if (!atomic_load(&m->enhanced))
-    return render_legacy(m, output, count, master);
+  if (m->quality.rate != route->rate) {
+    m->quality.rate = route->rate;
+    m->quality.lookahead = route->lookahead;
+    m->quality.ramp = route->ramp;
+    m->quality.attack = route->attack;
+    m->quality.release = route->release;
+    bhq_reset_envelope(&m->quality);
+  }
   memset(output, 0, count * 2 * sizeof(float));
   memset(m->delayed, 0, count * 2 * sizeof(float));
   int flush_muted = master == 0 && m->quality.master.value != 0;
@@ -46,6 +58,22 @@ static int render_continuity(Mixer *m, float *output, uint32_t count, float mast
       atomic_fetch_sub(&s->readers, 1);
       continue;
     }
+    BhRateKernel *kernel = route->kernel[i];
+    uint32_t source_rate = atomic_load(&s->source_rate);
+    double native_count = count * kernel->ratio;
+    double canonical_count = (double)count * BHT_RATE / route->rate;
+    if (s->render_rate != route->rate) {
+      s->render_rate = route->rate;
+      s->quality.rate = route->rate;
+      s->quality.lookahead = route->lookahead;
+      s->quality.ramp = route->ramp;
+      bhq_source_clear(&s->quality);
+      bhc_reset(&s->continuity);
+      bhc_rate(&s->continuity, route->rate);
+    }
+    s->presentation_fraction += canonical_count;
+    uint64_t presented = (uint64_t)s->presentation_fraction;
+    s->presentation_fraction -= presented;
     memset(m->scratch, 0, count * 2 * sizeof(float));
     if (flush_muted)
       bhq_source_clear(&s->quality);
@@ -75,6 +103,7 @@ static int render_continuity(Mixer *m, float *output, uint32_t count, float mast
       uint64_t concealed = s->continuity.concealed, silent = s->continuity.silent,
                merged = s->continuity.merged;
       bhc_reset(&s->continuity);
+      bhc_rate(&s->continuity, route->rate);
       bhq_source_clear(&s->quality);
       s->continuity.concealed = concealed;
       s->continuity.silent = silent;
@@ -99,7 +128,8 @@ static int render_continuity(Mixer *m, float *output, uint32_t count, float mast
     uint32_t target = s->target;
     if (enhanced) {
       uint32_t floor = atomic_load(&s->continuity_min), ceiling = atomic_load(&s->continuity_max);
-      uint64_t desired = (uint64_t)floor + atomic_load(&s->jitter_view) + count / 2;
+      uint64_t desired =
+          (uint64_t)floor + atomic_load(&s->jitter_view) + (uint64_t)ceil(native_count / 2);
       if (desired > ceiling)
         desired = ceiling;
       if (!s->adaptive_target)
@@ -109,9 +139,9 @@ static int render_continuity(Mixer *m, float *output, uint32_t count, float mast
       else if (s->rendered > 240000 && s->adaptive_target > desired) {
         /* Decay per rendered frame, not per callback. Small/irregular device
          * quanta must not shrink the safety buffer several times faster. */
-        s->adaptive_decay += count;
-        uint32_t step = s->adaptive_decay / 480;
-        s->adaptive_decay %= 480;
+        s->adaptive_decay += native_count;
+        uint32_t step = (uint32_t)(s->adaptive_decay / 480);
+        s->adaptive_decay -= step * 480;
         s->adaptive_target =
             s->adaptive_target - desired > step ? s->adaptive_target - step : (uint32_t)desired;
       }
@@ -121,19 +151,19 @@ static int render_continuity(Mixer *m, float *output, uint32_t count, float mast
     int smooth = target && (enhanced || period > 0 || call == i);
     uint32_t observed_target = target;
     if (smooth) {
-      uint64_t centre = (uint64_t)target + count / 2;
+      uint64_t centre = (uint64_t)target + (uint64_t)ceil(native_count / 2);
       observed_target = (uint32_t)(centre > s->maximum ? s->maximum : centre);
     }
     if (s->buffering && s->available < observed_target) {
-      atomic_fetch_add(&s->prefill, count);
-      atomic_fetch_add(&s->presentation, count);
+      atomic_fetch_add(&s->prefill, presented);
+      atomic_fetch_add(&s->presentation, presented);
       atomic_store_explicit(&s->read, s->cursor, memory_order_release);
       bhq_source(&s->quality, m->scratch, output, m->delayed, count, gain);
       atomic_fetch_sub(&s->readers, 1);
       continue;
     }
     if (s->buffering) {
-      if (framed && s->recover_late && s->available > observed_target + count) {
+      if (framed && s->recover_late && s->available > observed_target + native_count) {
         uint64_t expired = s->available - observed_target;
         s->cursor += expired;
         s->available -= expired;
@@ -146,8 +176,8 @@ static int render_continuity(Mixer *m, float *output, uint32_t count, float mast
       bht_clock_reset(&s->clock, observed_target);
       s->drift = 0;
       if (enhanced && s->rendered) {
-        s->continuity.gap = 960;
-        s->continuity.merge = s->continuity.merge_length = 192;
+        s->continuity.gap = bhc_frames(&s->continuity, 960);
+        s->continuity.merge = s->continuity.merge_length = bhc_frames(&s->continuity, 192);
       }
     }
     s->buffering = 0;
@@ -163,10 +193,10 @@ static int render_continuity(Mixer *m, float *output, uint32_t count, float mast
       /* The supported +/-500ppm source mismatch needs correction headroom.
        * A clamp at the source limit rectifies jitter and slowly drains/fills
        * the queue even after the rate estimate converges to that limit. */
-      ratio = clock_update(s, count, observed_target, (period > 0 ? period : 3) * 48000,
-                           period > 0 ? limit : .001);
+      ratio = clock_update(s, native_count, observed_target,
+                           (period > 0 ? period : 3) * source_rate, period > 0 ? limit : .001);
     } else if (s->target && s->rendered > 96000) {
-      double wanted = ((double)s->available - s->target) / 48000 * .02;
+      double wanted = ((double)s->available - s->target) / source_rate * .02;
       if (wanted > .0005)
         wanted = .0005;
       if (wanted < -.0005)
@@ -174,15 +204,21 @@ static int render_continuity(Mixer *m, float *output, uint32_t count, float mast
       s->drift += .005 * (wanted - s->drift);
       ratio += s->drift;
     }
+    ratio *= kernel->ratio;
     uint32_t produced = prefix;
     double position = s->phase;
     for (; produced < count && (uint64_t)position < s->available; produced++, position += ratio) {
       int offset = (int)position;
-      float fraction = (float)(position - offset), in[2], value[2];
-      for (int ch = 0; ch < 2; ch++) {
-        in[ch] = fraction == 0 ? sample(s, offset, ch) : interpolate(m, s, offset, ch, fraction);
-        if (!isfinite(in[ch]))
-          in[ch] = 0;
+      double fraction = position - offset;
+      float in[2], value[2];
+      int filtered = kernel->ratio > 1 || fraction != 0;
+      if (filtered && (uint64_t)offset + kernel->taps - kernel->centre - 1 >= s->available)
+        break; /* Missing future support is a deadline gap, never a repeated edge sample. */
+      if (filtered)
+        interpolate_stereo(kernel, s, offset, fraction, in);
+      else {
+        in[0] = sample(s, offset, 0);
+        in[1] = sample(s, offset, 1);
       }
       if (enhanced)
         bhc_real(&s->continuity, in, value);
@@ -201,8 +237,8 @@ static int render_continuity(Mixer *m, float *output, uint32_t count, float mast
     s->cursor += consumed;
     s->available -= consumed;
     s->phase = (framed || s->available) ? position - consumed : 0;
-    s->rendered += count;
-    atomic_fetch_add(&s->presentation, count);
+    s->rendered += canonical_count;
+    atomic_fetch_add(&s->presentation, presented);
     if (produced < count) {
       atomic_fetch_add(&m->underruns, 1);
       atomic_fetch_add(&s->underruns, 1);
@@ -241,8 +277,8 @@ static int render_continuity(Mixer *m, float *output, uint32_t count, float mast
         atomic_store(&s->concealed, s->continuity.concealed);
         atomic_store(&s->concealed_silence, s->continuity.silent);
       }
-      if (!enhanced || s->starve_frames >= 960 || s->deficit_frames >= 960 ||
-          !s->continuity.count) {
+      if (!enhanced || s->starve_frames >= route->rate / 50 ||
+          s->deficit_frames >= route->rate / 50 || !s->continuity.count) {
         s->buffering = 1;
         s->recover_late = 1;
         s->deadline_debt = 0;
@@ -271,7 +307,22 @@ static int render_continuity(Mixer *m, float *output, uint32_t count, float mast
 }
 API int bh_mix_render(Mixer *m, float *output, uint32_t count, float master) {
   unsigned environment = bh_float_enter();
-  int result = render_continuity(m, output, count, master);
+  int result = m && (atomic_load(&m->enhanced) || atomic_load(&m->native_formats))
+                   ? render_continuity(m, m->default_route, output, count, master)
+                   : render_legacy(m, output, count, master);
+  bh_float_leave(environment);
+  return result;
+}
+
+API int bh_mix_render_route(MixRoute *route, float *output, uint32_t count, float master) {
+  if (!route)
+    return -1;
+  unsigned environment = bh_float_enter();
+  Mixer *m = route->owner;
+  int result =
+      route->rate == BHT_RATE && !atomic_load(&m->enhanced) && !atomic_load(&m->native_formats)
+          ? render_legacy(m, output, count, master)
+          : render_continuity(m, route, output, count, master);
   bh_float_leave(environment);
   return result;
 }

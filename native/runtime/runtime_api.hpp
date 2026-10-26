@@ -15,6 +15,7 @@ namespace bh {
   X( bh_mix_add, int, (void *, uint32_t, uint32_t)) \
   X(bh_mix_remove, void, (void *, int)) \
   X(bh_mix_clear, void, (void *, int)) \
+  X(bh_mix_format, int, (void *, int, uint32_t)) \
   X(bh_mix_gain, void, (void *, int, float)) \
   X( bh_mix_gate, void, (void *, int, int)) \
   X(bh_mix_call, void, (void *, int)) \

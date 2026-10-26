@@ -458,10 +458,12 @@ public:
       require(events.is_array() && events.size() <= 512, "Guard input too large");
       StreamGuard guard;
       json states = json::array();
+      auto rate = request.value("pcm_rate", 48000u);
+      require(rate >= 8000 && rate <= 384000, "Invalid guard PCM rate");
       for (const auto &event : events)
         states.push_back(guard.observe(event.at("time"), event.at("frames"), event.at("packets"),
-                                       event.at("lost"), event.at("errors"),
-                                       event.at("competing")));
+                                       event.at("lost"), event.at("errors"), event.at("competing"),
+                                       rate));
       return states;
     }
 
@@ -752,6 +754,7 @@ public:
     for (const auto &pair : keys) {
       int id = pair.second;
       sources[pair.first] = {
+          {"pcm_rate", api.bh_mix_value(mixer, id, 20)},
           {"queued_frames", api.bh_mix_value(mixer, id, 0)},
           {"dropped_frames", api.bh_mix_value(mixer, id, 1)},
           {"underruns", api.bh_mix_value(mixer, id, 3)},

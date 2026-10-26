@@ -24,7 +24,7 @@ BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free 
 
 ## 运行环境与两种接收方式
 
-支持目标为 **Windows 10 22H2 / Windows 11，x64**。发布包自带 Python 控制后台和原生音频库；桌面使用上述系统自带的 .NET Framework 4.8 或 4.8.1，无需另装 Python 或现代 .NET Desktop Runtime。请使用完整包，不要只复制 EXE。
+支持目标为 **Windows 11，x64**。发布包自带 Python 控制后台和原生音频库；桌面使用上述系统自带的 .NET Framework 4.8 或 4.8.1，无需另装 Python 或现代 .NET Desktop Runtime。请使用完整包，不要只复制 EXE。
 
 | 方式 | 用途 | 准备条件 |
 |---|---|---|

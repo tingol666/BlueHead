@@ -33,6 +33,8 @@ public:
   std::unique_ptr<LdacWorker> ldac;
   std::unique_ptr<float[]> ldac_pcm;
   double ldac_retry = 0;
+  std::array<uint64_t, 12> ldac_seen{};
+  bool ldac_pending_reset = false;
   Spsc<Packet, 16> queue;
   Handle wake{CreateEventW(nullptr, FALSE, FALSE, nullptr)};
   std::thread worker;
@@ -117,6 +119,8 @@ public:
     reset_observations();
     decoder = prepared.release();
     ldac = std::move(prepared_ldac);
+    ldac_seen.fill(0);
+    ldac_pending_reset = false;
     ldac_pcm = std::move(prepared_pcm);
     guard_reset = true;
     protected_audio = false;
@@ -199,14 +203,33 @@ public:
               if (seconds() < ldac_retry)
                 continue;
               ldac = std::make_unique<LdacWorker>(core.assets, rate, channels);
+              ldac_seen.fill(0);
             }
-            uint64_t stats[10]{};
+            uint64_t stats[12]{};
             uint32_t frames = ldac->feed(p.data.data(), p.size, ldac_pcm.get(), stats);
+            auto delta = [&](size_t field) {
+              return stats[field] >= ldac_seen[field] ? stats[field] - ldac_seen[field]
+                                                      : stats[field];
+            };
+            uint64_t genuine = delta(0), newly_lost = delta(5), failed = delta(3);
+            coded += delta(2);
+            lost += newly_lost;
+            recoveries += delta(4);
+            errors += failed;
+            malformed_packets += delta(9);
+            concealed += delta(10);
+            timeline_resets += delta(11);
+            ldac_pending_reset = ldac_pending_reset || delta(11) != 0;
+            std::copy(std::begin(stats), std::end(stats), ldac_seen.begin());
             core.pause(commit_stall);
             std::lock_guard<std::mutex> commit(commit_mutex);
             if (!paused && p.epoch == epoch && !past_deadline(p)) {
-              update_guard(p.arrival, frames, stats[5] >= lost ? stats[5] - lost.load() : 0,
-                           stats[3] >= errors ? stats[3] - errors.load() : 0);
+              update_guard(p.arrival, genuine, newly_lost, failed);
+              if (ldac_pending_reset) {
+                packet_clock = {};
+                core.api.bh_mix_clear(core.mixer, input);
+                ldac_pending_reset = false;
+              }
               if (frames) {
                 if (p.size >= 12 && (p.data[0] >> 6) == 2) {
                   uint32_t stamp = (uint32_t(p.data[4]) << 24) | (uint32_t(p.data[5]) << 16) |
@@ -215,15 +238,12 @@ public:
                                           p.arrival);
                 }
                 core.api.bh_mix_write(core.mixer, input, ldac_pcm.get(), frames);
-                decoded += frames;
-                last_decoded = ticks();
+                decoded += genuine;
+                if (genuine)
+                  last_decoded = ticks();
               }
             }
-            coded = stats[2];
             update_meter(p.arrival);
-            lost = stats[5];
-            recoveries = stats[4];
-            errors = stats[3];
           } catch (const std::exception &) {
             errors++;
             ldac.reset();

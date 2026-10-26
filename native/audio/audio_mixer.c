@@ -45,7 +45,7 @@ typedef struct {
   /* Render-only state. */
   uint32_t seen_epoch, history_count;
   uint64_t cursor, available;
-  double rendered, presentation_fraction;
+  double rendered, presentation_fraction, concealed_total, silent_total, merged_total;
   float history[BHR_HISTORY * 2], gate;
   const float *boundary;
   uint32_t render_rate;
@@ -70,12 +70,20 @@ typedef struct Mixer {
   atomic_uint native_formats;
   atomic_ullong limited;
   BhMixQuality quality;
+  double limited_total;
   MixRoute *routes, *default_route;
   float scratch[CAPACITY * 2], boundary[BHR_MAX_TAPS * 4];
   double accumulated[CAPACITY * 2], delayed[CAPACITY * 2];
   LARGE_INTEGER qpc_frequency;
   float sinc[PHASES + 1][TAPS];
 } Mixer;
+static void route_history(Mixer *m, int index) {
+  unsigned need = 32;
+  for (MixRoute *r = m->routes; r; r = r->next)
+    if (r->kernel[index] && r->kernel[index]->centre + 1 > need)
+      need = r->kernel[index]->centre + 1;
+  atomic_store(&m->input[index].history_need, need);
+}
 /* Control-only route registry. The source reader lease protects kernel/ring
  * replacement; all renderers still share exactly one source cursor consumer. */
 static BhRateKernel *route_kernel(MixRoute *route, uint32_t rate) {
@@ -115,12 +123,11 @@ API MixRoute *bh_mix_route_create(Mixer *m, uint32_t rate) {
       free(route);
       return NULL;
     }
-    unsigned need = route->kernel[i]->centre + 1;
-    if (need > atomic_load(&m->input[i].history_need))
-      atomic_store(&m->input[i].history_need, need);
   }
   route->next = m->routes;
   m->routes = route;
+  for (int i = 0; i < INPUTS; i++)
+    route_history(m, i);
   LeaveCriticalSection(&m->lifecycle);
   return route;
 }
@@ -135,8 +142,10 @@ API void bh_mix_route_free(MixRoute *route) {
     at = &(*at)->next;
   if (*at)
     *at = route->next;
-  for (int i = 0; i < INPUTS; i++)
+  for (int i = 0; i < INPUTS; i++) {
     release_kernel(route->kernel[i]);
+    route_history(m, i);
+  }
   LeaveCriticalSection(&m->lifecycle);
   free(route);
 }
@@ -331,10 +340,8 @@ API int bh_mix_format(Mixer *m, int index, uint32_t rate) {
   for (MixRoute *r = m->routes; r; r = r->next) {
     release_kernel(r->kernel[index]);
     r->kernel[index] = prepared[n++];
-    unsigned need = r->kernel[index]->centre + 1;
-    if (need > atomic_load(&s->history_need))
-      atomic_store(&s->history_need, need);
   }
+  route_history(m, index);
   free(prepared);
   free(s->pcm);
   s->pcm = pcm;
@@ -345,6 +352,11 @@ API int bh_mix_format(Mixer *m, int index, uint32_t rate) {
                (uint32_t)bht_scale(atomic_load(&s->continuity_min), old_rate, rate));
   atomic_store(&s->continuity_max,
                (uint32_t)bht_scale(atomic_load(&s->continuity_max), old_rate, rate));
+  atomic_store(&s->dropped, bht_scale(atomic_load(&s->dropped), old_rate, rate));
+  atomic_store(&s->expired, bht_scale(atomic_load(&s->expired), old_rate, rate));
+  atomic_store(&s->recovery_discarded,
+               bht_scale(atomic_load(&s->recovery_discarded), old_rate, rate));
+  atomic_store(&s->target_view, s->target);
   atomic_store(&s->read, 0);
   atomic_store(&s->write, 0);
   atomic_store(&s->trim, 0);
@@ -394,6 +406,7 @@ API int bh_mix_add(Mixer *m, uint32_t target, uint32_t maximum) {
       s->seen_epoch = s->history_count = 0;
       s->cursor = s->available = s->rendered = 0;
       s->presentation_fraction = 0;
+      s->concealed_total = s->silent_total = s->merged_total = 0;
       s->render_rate = 0;
       s->gate = 1;
       s->buffering = 1;

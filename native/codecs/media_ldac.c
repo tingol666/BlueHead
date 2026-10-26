@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "audio_continuity.h"
+#include "audio_float.h"
 
 #define QUEUE 48064u
 #define MAX_PACKET 65535u
@@ -24,7 +26,11 @@ struct BhLdacMedia {
   void *decoder;
   SpeexResamplerState *resampler;
   int rate, output_rate, have_sequence, recovering;
-  uint16_t sequence;
+  uint16_t sequence, successful_sequence;
+  int have_timestamp;
+  uint32_t expected_timestamp, last_timestamp, previous_source_frames, gap_fraction;
+  BhContinuity continuity;
+  uint64_t concealed, timeline_resets;
   uint32_t read, queued;
   uint64_t frames, bytes, coded, errors, recoveries, lost, dropped, malformed;
   float queue[QUEUE * 2], packet[MAX_OUTPUT * 2], decoded[512];
@@ -101,6 +107,8 @@ BH_LDAC_API BhLdacMedia *bh_ldac_media_create(int rate, int channels, int output
     return NULL;
   m->rate = rate;
   m->output_rate = output_rate;
+  bhc_reset(&m->continuity);
+  bhc_rate(&m->continuity, output_rate);
   if (load_decoder(m) < 0) {
     bh_ldac_media_destroy(m);
     return NULL;
@@ -120,7 +128,10 @@ BH_LDAC_API void bh_ldac_media_discard(BhLdacMedia *m) {
 BH_LDAC_API int bh_ldac_media_restart(BhLdacMedia *m) {
   if (!m)
     return -1;
-  m->read = m->queued = m->have_sequence = m->recovering = 0;
+  m->read = m->queued = m->have_sequence = m->recovering = m->have_timestamp = 0;
+  m->gap_fraction = 0;
+  bhc_reset(&m->continuity);
+  bhc_rate(&m->continuity, m->output_rate);
   return reset_decoder(m);
 }
 
@@ -129,9 +140,11 @@ static int invalid(BhLdacMedia *m) {
   return -1;
 }
 
-static void enqueue(BhLdacMedia *m, uint32_t frames) {
-  const float *data = m->packet;
-  m->frames += frames;
+static void enqueue(BhLdacMedia *m, const float *data, uint32_t frames, int genuine) {
+  if (genuine)
+    m->frames += frames;
+  else
+    m->concealed += frames;
   if (frames > QUEUE) {
     data += (frames - QUEUE) * 2;
     m->dropped += frames - QUEUE;
@@ -150,7 +163,7 @@ static void enqueue(BhLdacMedia *m, uint32_t frames) {
   m->queued += frames;
 }
 
-BH_LDAC_API int bh_ldac_media_feed(BhLdacMedia *m, const uint8_t *data, uint32_t size) {
+static int media_feed(BhLdacMedia *m, const uint8_t *data, uint32_t size) {
   static const int rates[] = {44100, 48000, 88200, 96000};
   if (!m || !data)
     return -1;
@@ -175,6 +188,8 @@ BH_LDAC_API int bh_ldac_media_feed(BhLdacMedia *m, const uint8_t *data, uint32_t
   }
   if (offset >= end)
     return invalid(m);
+  uint32_t timestamp =
+      ((uint32_t)data[4] << 24) | ((uint32_t)data[5] << 16) | ((uint32_t)data[6] << 8) | data[7];
   uint16_t sequence = (uint16_t)((data[2] << 8) | data[3]);
   if (m->have_sequence) {
     uint16_t distance = (uint16_t)(sequence - m->sequence);
@@ -205,6 +220,25 @@ BH_LDAC_API int bh_ldac_media_feed(BhLdacMedia *m, const uint8_t *data, uint32_t
   }
   if (at != size)
     return invalid(m);
+  uint32_t source_frames = count * (m->rate >= 88200 ? 256u : 128u);
+  int32_t missing = m->have_timestamp ? (int32_t)(timestamp - m->expected_timestamp) : 0;
+  /* Timestamp is authoritative. Some sources send a constant timestamp; only
+   * that explicit case uses the preceding packet duration as a bounded estimate.
+   * Successful sequence, rather than last-seen sequence, includes corrupt packets. */
+  if (m->have_timestamp && timestamp == m->last_timestamp) {
+    uint16_t distance = (uint16_t)(sequence - m->successful_sequence);
+    if (distance > 1 && distance < 0x8000)
+      missing = (int32_t)fmin((double)(distance - 1) * m->previous_source_frames, m->rate);
+  }
+  if (missing > m->rate / 5 || missing < -m->rate / 5) {
+    if (reset_decoder(m) < 0)
+      return -3;
+    m->read = m->queued = m->gap_fraction = 0;
+    bhc_reset(&m->continuity);
+    bhc_rate(&m->continuity, m->output_rate);
+    m->timeline_resets++;
+    missing = 0;
+  }
   m->coded += size - 1;
   uint32_t produced = 0;
   for (uint32_t i = 0; i < count; i++) {
@@ -212,7 +246,7 @@ BH_LDAC_API int bh_ldac_media_feed(BhLdacMedia *m, const uint8_t *data, uint32_t
     if (frames != (m->rate >= 88200 ? 256 : 128))
       goto damaged;
     for (int sample = 0; sample < frames * 2; sample++)
-      if (!isfinite(m->decoded[sample]))
+      if (!isfinite(m->decoded[sample]) || fabsf(m->decoded[sample]) > 16)
         goto damaged;
     if (m->resampler) {
       spx_uint32_t input = (spx_uint32_t)frames, output = MAX_OUTPUT - produced;
@@ -229,9 +263,34 @@ BH_LDAC_API int bh_ldac_media_feed(BhLdacMedia *m, const uint8_t *data, uint32_t
     }
   }
   for (uint32_t i = 0; i < produced * 2; i++)
-    if (!isfinite(m->packet[i]))
+    if (!isfinite(m->packet[i]) || fabsf(m->packet[i]) > 16)
       goto damaged;
-  enqueue(m, produced);
+  /* Validate/decode the complete packet before publishing either its gap or
+   * PCM. Normal, non-event PCM passes through bhc_real unchanged. */
+  if (missing > 0) {
+    uint64_t scaled = (uint64_t)(uint32_t)missing * m->output_rate + m->gap_fraction;
+    uint32_t gap = (uint32_t)(scaled / m->rate);
+    m->gap_fraction = (uint32_t)(scaled % m->rate);
+    while (gap) {
+      uint32_t take = gap < 256 ? gap : 256;
+      for (uint32_t i = 0; i < take; i++)
+        bhc_missing(&m->continuity, m->decoded + i * 2);
+      enqueue(m, m->decoded, take, 0);
+      gap -= take;
+    }
+  }
+  for (uint32_t i = 0; i < produced; i++) {
+    float merged[2];
+    bhc_real(&m->continuity, m->packet + i * 2, merged);
+    m->packet[i * 2] = merged[0];
+    m->packet[i * 2 + 1] = merged[1];
+  }
+  enqueue(m, m->packet, produced, 1);
+  m->have_timestamp = 1;
+  m->last_timestamp = timestamp;
+  m->expected_timestamp = timestamp + source_frames;
+  m->successful_sequence = sequence;
+  m->previous_source_frames = source_frames;
   if (m->recovering) {
     m->recoveries++;
     m->recovering = 0;
@@ -243,6 +302,13 @@ damaged:
   if (reset_decoder(m) < 0)
     return -3;
   return -2;
+}
+
+BH_LDAC_API int bh_ldac_media_feed(BhLdacMedia *m, const uint8_t *data, uint32_t size) {
+  unsigned environment = bh_float_enter();
+  int result = media_feed(m, data, size);
+  bh_float_leave(environment);
+  return result;
 }
 
 BH_LDAC_API uint32_t bh_ldac_media_read(BhLdacMedia *m, float *output, uint32_t frames) {
@@ -282,6 +348,10 @@ BH_LDAC_API uint64_t bh_ldac_media_value(BhLdacMedia *m, int field) {
     return m->dropped;
   case 9:
     return m->malformed;
+  case 10:
+    return m->concealed;
+  case 11:
+    return m->timeline_resets;
   default:
     return 0;
   }

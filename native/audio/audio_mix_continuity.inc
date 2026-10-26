@@ -110,6 +110,8 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
       s->continuity.silent = silent;
       s->continuity.merged = merged;
     }
+    uint64_t before_concealed = s->continuity.concealed, before_silent = s->continuity.silent,
+             before_merged = s->continuity.merged;
     s->available = w - s->cursor;
     if (framed && s->deadline_debt > 0) {
       uint64_t expired = (uint64_t)s->deadline_debt;
@@ -283,8 +285,6 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
           m->scratch[j * 2] = value[0] * g;
           m->scratch[j * 2 + 1] = value[1] * g;
         }
-        atomic_store(&s->concealed, s->continuity.concealed);
-        atomic_store(&s->concealed_silence, s->continuity.silent);
       }
       if (!enhanced || s->starve_frames >= route->rate / 50 ||
           s->deficit_frames >= route->rate / 50 || !s->continuity.count) {
@@ -298,7 +298,13 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
       uint32_t recovery = count / 20 + 1;
       s->deficit_frames = s->deficit_frames > recovery ? s->deficit_frames - recovery : 0;
     }
-    atomic_store(&s->merged, s->continuity.merged);
+    s->concealed_total +=
+        (s->continuity.concealed - before_concealed) * (double)BHT_RATE / route->rate;
+    s->silent_total += (s->continuity.silent - before_silent) * (double)BHT_RATE / route->rate;
+    s->merged_total += (s->continuity.merged - before_merged) * (double)BHT_RATE / route->rate;
+    atomic_store(&s->concealed, (uint64_t)s->concealed_total);
+    atomic_store(&s->concealed_silence, (uint64_t)s->silent_total);
+    atomic_store(&s->merged, (uint64_t)s->merged_total);
     double ppm = s->drift * 1000000;
     if (ppm < -1000)
       ppm = -1000;
@@ -311,7 +317,8 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
   }
   uint64_t before = m->quality.limited;
   bhq_process(&m->quality, m->delayed, m->accumulated, output, count, master);
-  atomic_fetch_add(&m->limited, m->quality.limited - before);
+  m->limited_total += (m->quality.limited - before) * (double)BHT_RATE / route->rate;
+  atomic_store(&m->limited, (uint64_t)m->limited_total);
   return 1;
 }
 API int bh_mix_render(Mixer *m, float *output, uint32_t count, float master) {

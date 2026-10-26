@@ -6,7 +6,7 @@ struct LdacShared {
   uint32_t magic = 0x42484c44, operation = 0, size = 0, frames = 0;
   int32_t result = 0;
   uint32_t rate = 48000, channels = 2;
-  std::array<uint64_t, 10> stats{};
+  std::array<uint64_t, 12> stats{};
   std::array<uint8_t, 65535> packet{};
   std::array<float, 48064 * 2> pcm{};
 };
@@ -113,7 +113,7 @@ inline int ldac_worker(HANDLE mapping, HANDLE request, HANDLE done, const fs::pa
         break;
       s->result = feed(decoder, s->packet.data(), s->size);
       s->frames = read(decoder, s->pcm.data(), 48064);
-      for (int i = 0; i < 10; i++)
+      for (int i = 0; i < 12; i++)
         s->stats[i] = value(decoder, i);
       MemoryBarrier();
       SetEvent(done);

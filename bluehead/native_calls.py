@@ -213,17 +213,23 @@ class NativeCallManager(CallManager):
 
     def snapshot(self, key):
         link = self.links.get(key)
-        if link is None:
+        codec_context = self.voice_codecs.get(key)
+        epoch = self.native_epochs.get(key)
+        statistics = dict(self.statistics.get(key, {}))
+        if link is None or codec_context is None or epoch is None:
             return {}
+        codec = codec_context.codec
         native = self.client.request("snapshot")
         voice = native["voice"]
+        if (self.links.get(key) is not link or self.native_epochs.get(key) != epoch or
+                voice.get('epoch', epoch) != epoch):
+            return {}
         now = time.monotonic()
         previous, rx, tx = self.native_meters.get(key, (now, 0, 0))
         elapsed = max(.001, now - previous)
-        codec = self.voice_codecs[key].codec
         ratio = {1: .5, 2: 57 / 60, 3: 58 / 60}[codec]
         self.native_meters[key] = (now, voice["rx_bytes"], voice["tx_bytes"])
-        result = {"active": voice["active"], **self.statistics[key],
+        result = {"active": voice["active"], **statistics,
                   "rx_bitrate": max(0, int((voice["rx_bytes"] - rx) * 8 * ratio / elapsed)),
                   "tx_bitrate": max(0, int((voice["tx_bytes"] - tx) * 8 * ratio / elapsed)),
                   "rx_packets": voice["rx_packets"], "decode_errors": voice["decode_errors"],
@@ -231,3 +237,14 @@ class NativeCallManager(CallManager):
                   "microphone_active": native.get("microphone_active", False),
                   "system_audio_active": native.get("system_active", False)}
         return result if self.links.get(key) is link else {}
+
+    def audio_closed(self, key, link=None):
+        if link is not None and self.links.get(key) is not link:
+            return
+        epoch = self.native_epochs.get(key)
+        try:
+            super().audio_closed(key, link)
+        finally:
+            if self.links.get(key) is None and self.native_epochs.get(key) == epoch:
+                self.native_epochs.pop(key, None)
+                self.native_meters.pop(key, None)

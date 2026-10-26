@@ -96,6 +96,14 @@ public:
           stopping = true;
         } else
           reply = {{"ok", true}, {"result", execute(request)}};
+      } catch (const SourceExpired &e) {
+        reply = {{"ok", false}, {"error", e.what()}, {"category", "source_expired"}};
+      } catch (const AudioFailure &e) {
+        reply = {{"ok", false},
+                 {"error", e.what()},
+                 {"category", fault_name(e.category)},
+                 {"native_code", e.code},
+                 {"retryable", false}};
       } catch (const std::exception &e) {
         reply = {{"ok", false}, {"error", e.what()}};
       }

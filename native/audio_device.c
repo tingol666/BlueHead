@@ -76,6 +76,38 @@ static int ensure_context(BhDeviceContext *context) {
   return result;
 }
 BH_DEVICE_API uint32_t bh_device_abi(void) { return BH_DEVICE_ABI; }
+BH_DEVICE_API int bh_device_error_category(int code) {
+  switch (code) {
+  case MA_ACCESS_DENIED:
+    return BH_FAILURE_PERMISSION;
+  case MA_BUSY:
+  case MA_ALREADY_IN_USE:
+    return BH_FAILURE_BUSY;
+  case MA_OUT_OF_MEMORY:
+  case MA_TOO_MANY_OPEN_FILES:
+    return BH_FAILURE_MEMORY;
+  case MA_TIMEOUT:
+    return BH_FAILURE_TIMEOUT;
+  case MA_FORMAT_NOT_SUPPORTED:
+  case MA_DEVICE_TYPE_NOT_SUPPORTED:
+  case MA_SHARE_MODE_NOT_SUPPORTED:
+  case MA_INVALID_DEVICE_CONFIG:
+  case MA_NO_BACKEND:
+  case MA_API_NOT_FOUND:
+  case MA_BACKEND_NOT_ENABLED:
+  case MA_NOT_IMPLEMENTED:
+    return BH_FAILURE_FORMAT;
+  case MA_NO_DEVICE:
+  case MA_DOES_NOT_EXIST:
+  case MA_UNAVAILABLE:
+  case MA_DEVICE_NOT_INITIALIZED:
+  case MA_DEVICE_NOT_STARTED:
+  case MA_FAILED_TO_OPEN_BACKEND_DEVICE:
+    return BH_FAILURE_ENDPOINT;
+  default:
+    return BH_FAILURE_INTERNAL;
+  }
+}
 BH_DEVICE_API BhDeviceContext *bh_device_context_create(const wchar_t *path, int *error) {
   set_error(error, MA_INVALID_ARGS);
   /* A relative DLL path must never search the current working directory. */

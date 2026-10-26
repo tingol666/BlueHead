@@ -26,7 +26,7 @@ static float continuity_gate(Input *s, float target) {
     s->gate = fmaxf(target, s->gate - 1.0f / 480);
   return s->gate;
 }
-API int bh_mix_render(Mixer *m, float *output, uint32_t count, float master) {
+static int render_continuity(Mixer *m, float *output, uint32_t count, float master) {
   if (!m || !output || count > CAPACITY || !isfinite(master))
     return -1;
   if (!atomic_load(&m->enhanced))
@@ -67,7 +67,7 @@ API int bh_mix_render(Mixer *m, float *output, uint32_t count, float master) {
       s->phase = s->drift = 0;
       s->deadline_debt = 0;
       s->buffering = 1;
-      s->recover_late = 0;
+      s->recover_late = framed && epoch == s->seen_epoch;
       s->adaptive_target = s->target;
       s->adaptive_decay = 0;
       s->seen_epoch = epoch;
@@ -268,4 +268,10 @@ API int bh_mix_render(Mixer *m, float *output, uint32_t count, float master) {
   bhq_process(&m->quality, m->delayed, output, count, master);
   atomic_fetch_add(&m->limited, m->quality.limited - before);
   return 1;
+}
+API int bh_mix_render(Mixer *m, float *output, uint32_t count, float master) {
+  unsigned environment = bh_float_enter();
+  int result = render_continuity(m, output, count, master);
+  bh_float_leave(environment);
+  return result;
 }

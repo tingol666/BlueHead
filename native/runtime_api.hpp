@@ -55,6 +55,7 @@ namespace bh {
   X(bh_capture_clock, int, (void *, uint64_t *, uint64_t *)) \
   X(bh_mix_master_value, float, (void *))
 #define DEVICE_APIS(X) \
+  X(bh_device_error_category,int,(int)) \
   X(bh_device_timing,uint64_t,(BhAudioDevice*,int)) \
   X(bh_device_offline_process,int,(BhAudioDevice*,const float*,float*,uint32_t)) \
   X(bh_device_offline,BhAudioDevice*,(BhDeviceContext*,uint32_t,void*,uint32_t,uint32_t,uint32_t,int*)) \
@@ -73,6 +74,8 @@ namespace bh {
   X(bh_device_clock, int, (BhAudioDevice *, uint64_t *, uint64_t *)) \
   X(bh_device_ready_event, void, (BhAudioDevice *, void *))
 #define VOICE_APIS(X) \
+  X(bh_voice_reset_rx, int, (bh_voice *)) \
+  X(bh_voice_skip_rx, int, (bh_voice *, uint32_t)) \
   X(bh_voice_create, bh_voice *, (uint32_t)) \
   X(bh_voice_destroy, void, (bh_voice *)) \
   X( bh_voice_encode, int, (bh_voice *, const int16_t *, uint32_t, uint8_t *, uint32_t)) \

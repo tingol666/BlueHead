@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 import logging
 from pathlib import Path
 import queue
+import sys
 import threading
 import time
 
@@ -24,6 +25,7 @@ from .diagnostics import LoopWatchdog
 from .protocol import capabilities, negotiated
 from .metrics import TrafficMeter
 from .continuity import ContinuityGuard
+from .errors import Retirement
 
 log = logging.getLogger(__name__)
 
@@ -734,6 +736,11 @@ class Receiver:
                     stopped.cancel()
                     terminated.cancel()
                 if not self.stop_event.is_set():
+                    failure = getattr(transport.source, 'failure', None)
+                    if failure is not None:
+                        message = ("原生音频后台连接已中断，请重新开始接收" if
+                                   getattr(transport.source, 'failure_category', '') == 'native_channel' else str(failure))
+                        raise ConnectionError(message) from failure
                     raise ConnectionError("蓝牙适配器已断开")
                 if self.avrcp:
                     await self.avrcp.aclose()
@@ -747,21 +754,27 @@ class Receiver:
                 raise RuntimeError("所选适配器仍被 Windows 蓝牙驱动占用，或尚未关联 WinUSB。高音质模式需要独占接口；可先选原生模式，或按使用说明准备一个适配器。") from exc
             raise
         finally:
+            original_error = sys.exc_info()[1]
+            retirement = Retirement()
             try:
                 if self.media_watch_task:
                     self.media_watch_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
+                    try:
                         await self.media_watch_task
+                    except asyncio.CancelledError:
+                        pass  # This is the cancellation we just requested.
+                    except Exception as error:
+                        retirement.failed(error)
                 if self.calls:
-                    self.calls.close()
-                    await self.calls.wait_closed()
+                    retirement.call(self.calls.close)
+                    await retirement.async_call(self.calls.wait_closed)
                 if self.avrcp:
-                    await self.avrcp.aclose()
+                    await retirement.async_call(self.avrcp.aclose)
                 for session in list(self.sessions.values()):
-                    session.close()
+                    retirement.call(session.close)
                 self.sessions.clear()
                 if self.output:
-                    await asyncio.to_thread(self.output.close)
+                    await retirement.async_call(asyncio.to_thread, self.output.close)
             finally:
                 self.stop_event.set()
                 for task in list(self.control_tasks):
@@ -771,6 +784,7 @@ class Receiver:
                 watchdog.close()
                 lease.close()
                 self.emit("status", message="已停止")
+            retirement.finish(original_error)
 
     async def set_audio_device(self, direction, device, endpoint_id=None):
         if self.settings.mode == "native":
@@ -795,23 +809,49 @@ class Receiver:
             setattr(self.settings, direction + "_endpoint_id", endpoint_id)
             return device
 
-    async def refresh_audio(self):
+    async def refresh_audio(self, force=False):
         from .audio_runtime import refresh_devices
         async with self.audio_lock:
             async with contextlib.AsyncExitStack() as stack:
                 if self.calls:
                     await stack.enter_async_context(self.calls.input_lock)
+                native = bool(getattr(self.mixer, "remote", False))
+                # Native hotplug/backoff belongs to its one control owner.
+                # An inventory poll must not turn a permission latch into
+                # one forced retry per second; only explicit rescan may do so.
+                retry_errors = await asyncio.to_thread(self.mixer.client.retry_audio) if native and force else []
                 mapped, errors = await asyncio.to_thread(refresh_devices, {
                     "output": self.settings.output_device, "input": self.settings.input_device}, {
                     "output": self.settings.output_endpoint_id, "input": self.settings.input_endpoint_id})
+                errors = retry_errors + errors
+                old_input = self.calls.input_device if self.calls else None
+                if native and self.output:
+                    desired = self.settings.output_endpoint_id
+                    if desired and mapped['output'] is not None and self.output.endpoint_id != desired:
+                        try:
+                            await asyncio.to_thread(self.output.switch_device, mapped['output'])
+                        except OSError as error:
+                            errors.append(str(error))
+                    else:
+                        self.output.device = mapped['output']
+                        self.output.endpoint_id = desired if mapped['output'] is not None else None
                 self.settings.output_device = mapped["output"]
                 self.settings.input_device = mapped["input"]
                 for direction in ("input", "output"):
-                    if mapped[direction] is None:
+                    if mapped[direction] is None and not native:
                         setattr(self.settings, direction + "_endpoint_id", None)
-                if self.calls:
+                restore_input = bool(native and self.calls and self.settings.input_endpoint_id and
+                                     mapped['input'] is not None and mapped['input'] != old_input)
+                if self.calls and not restore_input:
                     self.calls.input_device = mapped["input"]
-                return mapped, errors
+            # set_input_device owns input_lock itself. The outer route lock
+            # still prevents a concurrent UI selection during this reconcile.
+            if restore_input:
+                try:
+                    await self.calls.set_input_device(mapped['input'])
+                except OSError as error:
+                    errors.append(str(error))
+            return mapped, errors
 
     async def action(self, action, key):
         if action in ("play", "pause", "play_pause", "stop", "next", "previous") and self.avrcp:

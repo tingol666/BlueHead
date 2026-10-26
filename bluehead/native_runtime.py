@@ -16,6 +16,7 @@ import time
 import uuid
 
 from . import __version__
+from .errors import NativeAudioError, SourceExpired
 
 MAX_REPLY = 1048576
 _client = None
@@ -109,6 +110,10 @@ class NativeClient:
                 self.handle = None
                 raise
             if not response.get("ok"):
+                if response.get("category") == "source_expired":
+                    raise SourceExpired(response.get("error", "Audio source session has expired"))
+                if response.get("category"):
+                    raise NativeAudioError(response)
                 raise OSError(response.get("error", "原生音频操作失败"))
             return response.get("result")
 
@@ -118,6 +123,8 @@ class NativeClient:
             result = self.request("audio_result", ticket=ticket)
             if result.get("done"):
                 if not result.get("success"):
+                    if result.get("category"):
+                        raise NativeAudioError(result)
                     raise OSError(result.get("error", "音频设备操作已取消"))
                 return result
             if time.monotonic() >= deadline:
@@ -131,6 +138,19 @@ class NativeClient:
     def audio(self, direction, endpoint_id=None, start=True, **values):
         ticket = self.request("audio_switch", direction=direction, endpoint_id=endpoint_id or "", start=start, **values)
         return self.wait_audio(ticket)
+
+    def retry_audio(self, timeout=8):
+        """Explicit rescan; the native owner keeps newer route/stop intent."""
+        deadline = time.monotonic() + timeout
+        errors = []
+        for ticket in self.request("audio_retry"):
+            if not ticket:
+                continue
+            try:
+                self.wait_audio(ticket, timeout=max(0, deadline-time.monotonic()))
+            except OSError as error:
+                errors.append(str(error))
+        return errors
 
     def close(self):
         import _winapi
@@ -174,6 +194,8 @@ def current():
 class _Source:
     def __init__(self, client):
         self.client, self.sink = client, None
+        self.failure = None
+        self.failure_category = ''
         self.terminated = asyncio.get_running_loop().create_future()
         self.task = asyncio.create_task(self.poll())
 
@@ -188,10 +210,19 @@ class _Source:
                     if self.sink:
                         self.sink.on_packet(bytes.fromhex(packet))
                 if not batch["active"]:
+                    reason = batch.get('reason', '')
+                    if reason and reason != 'device_removed':
+                        self.failure_category = reason
+                        self.failure = ConnectionError(
+                            '蓝牙控制队列积压，接收已停止，请重新开始接收' if reason == 'control_backpressure' else
+                            '蓝牙传输已停止，请重新开始接收')
                     break
                 await asyncio.sleep(.004 if not batch["packets"] else 0)
         except asyncio.CancelledError:
             return
+        except (OSError, ValueError) as error:
+            self.failure = error
+            self.failure_category = 'native_channel'
         finally:
             if not self.terminated.done():
                 self.terminated.set_result(None)
@@ -217,11 +248,15 @@ class NativeTransport:
     async def __aenter__(self):
         return self
 
-    async def __aexit__(self, *_):
+    async def __aexit__(self, exc_type, _error, _trace):
         self.source.task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await self.source.task
-        self.client.request("usb_close")
+        try:
+            self.client.request("usb_close")
+        except OSError:
+            if exc_type is None:
+                raise
 
 
 class RemoteInput:
@@ -268,26 +303,35 @@ class RemoteMixer:
             self.set_gain(key, self.gains.get(key, 1.0))
 
     def remove(self, key, lease=None):
-        if key in self.inputs:
-            if lease is not None and self.inputs[key].lease != lease:
+        current = self.inputs.get(key)
+        if current is not None:
+            if lease is not None and current.lease != lease:
                 return
-            self.client.request("mix_remove", key=key, lease=self.inputs[key].lease)
-            self.inputs.pop(key, None)
+            with contextlib.suppress(SourceExpired):
+                self.client.request("mix_remove", key=key, lease=current.lease)
+            if self.inputs.get(key) is current:
+                self.inputs.pop(key, None)
 
     def clear(self, key):
-        if key in self.inputs:
-            self.client.request("mix_clear", key=key)
+        current = self.inputs.get(key)
+        if current is not None:
+            with contextlib.suppress(SourceExpired):
+                self.client.request("mix_clear", key=key, lease=current.lease)
 
     def set_gain(self, key, value):
         self.gains[key] = value
-        if key in self.inputs:
-            self.client.request("mix_gain", key=key, gain=value, lease=self.inputs[key].lease)
+        current = self.inputs.get(key)
+        if current is not None:
+            with contextlib.suppress(SourceExpired):
+                self.client.request("mix_gain", key=key, gain=value, lease=current.lease)
 
     def set_enabled(self, key, enabled, lease=None):
-        if key in self.inputs:
-            if lease is not None and self.inputs[key].lease != lease:
+        current = self.inputs.get(key)
+        if current is not None:
+            if lease is not None and current.lease != lease:
                 return
-            self.client.request("mix_gate", key=key, enabled=bool(enabled), lease=self.inputs[key].lease)
+            with contextlib.suppress(SourceExpired):
+                self.client.request("mix_gate", key=key, enabled=bool(enabled), lease=current.lease)
 
     def snapshot(self):
         snapshot = self.client.request("snapshot")
@@ -312,7 +356,7 @@ class RemoteOutput:
     def switch_device(self, device, force=False):
         from .audio import resolve_endpoint
         endpoint = resolve_endpoint(device, "output")
-        self.client.audio("output", endpoint)
+        self.client.audio("output", endpoint, force=force)
         self.device, self.endpoint_id = device, endpoint
 
     def close(self):
@@ -332,11 +376,20 @@ class RemoteMediaSession:
         self.mixer.add(key)
         self.input = self.mixer.inputs[key]
 
+    def _request(self, op, **values):
+        if self.closed:
+            return None
+        try:
+            return self.client.request(op, key=self.key, lease=self.input.lease, **values)
+        except SourceExpired:
+            return None
+
     def configure(self, fmt, prepared=None):
         if prepared:
             prepared.close()
         code = {"sbc": 1, "aac": 2, "aptx": 3, "aptx_hd": 4, "ldac": 5}[fmt.codec]
-        self.client.request("media_config", key=self.key, lease=self.input.lease, codec=code, rate=fmt.rate, channels=fmt.channels)
+        if not self._request("media_config", codec=code, rate=fmt.rate, channels=fmt.channels):
+            return
         self.format = fmt
         if self.channel:
             self.bind(self.channel)
@@ -348,12 +401,12 @@ class RemoteMediaSession:
         if self.closed:
             return
         self.channel = channel
-        self.client.request("media_route", key=self.key, lease=self.input.lease, handle=channel.connection.handle, cid=channel.source_cid)
+        self._request("media_route", handle=channel.connection.handle, cid=channel.source_cid)
 
     def unbind(self):
         self.channel = None
         if not self.closed:
-            self.client.request("media_unroute", key=self.key, lease=self.input.lease)
+            self._request("media_unroute")
 
     def push(self, data):
         # Audio is intercepted before Python HCI/L2CAP dispatch. A packet that
@@ -368,23 +421,28 @@ class RemoteMediaSession:
         if not self.closed:
             self.paused = True
             self.paused_at = time.monotonic()
-            self.client.request("media_pause", key=self.key, lease=self.input.lease, paused=True)
+            self._request("media_pause", paused=True)
 
     def resume(self):
         if not self.closed:
             self.paused = False
             self.started_at = time.monotonic()
-            self.client.request("media_pause", key=self.key, lease=self.input.lease, paused=False)
+            self._request("media_pause", paused=False)
 
     @property
     def last_packet(self):
         if self.closed:
             return 0.0
-        age = self.client.request("media_snapshot", key=self.key, lease=self.input.lease).get("last_packet_age_ms", 1e12)
+        data = self._request("media_snapshot")
+        if data is None:
+            return 0.0
+        age = data.get("last_packet_age_ms", 1e12)
         return time.monotonic() - age / 1000
 
     def snapshot(self):
-        data = self.client.request("media_snapshot", key=self.key, lease=self.input.lease)
+        data = self._request("media_snapshot")
+        if data is None:
+            return {}
         return {**data, "codec": self.format.codec if self.format else "", "rate": self.format.rate if self.format else 0,
                 "selected": self.allowed, "protected": data.get("protected", False), "bitrate": data.get("bitrate", 0)}
 

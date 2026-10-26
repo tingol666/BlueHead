@@ -11,6 +11,7 @@
 #include "audio_continuity.h"
 #include "audio_quality.h"
 #include "audio_timeline.h"
+#include "audio_float.h"
 #define API __declspec(dllexport)
 #define INPUTS 8
 #define CAPACITY 48064u
@@ -27,7 +28,7 @@ typedef struct {
   uint32_t target, maximum;
   atomic_uint continuity_mode, continuity_min, continuity_max, target_view, jitter_view;
   atomic_uint gap_owner;
-  atomic_ullong expired, presentation, deadline_searches, recovery_discarded;
+  atomic_ullong expired, presentation, deadline_searches, recovery_discarded, invalid_samples;
   atomic_ullong concealed, concealed_silence, merged, rebuffers, expanded, accelerated;
   uint64_t last_arrival;
   uint32_t previous_frames, adaptive_target, adaptive_decay, starve_frames, deficit_frames;
@@ -138,6 +139,7 @@ API Mixer *bh_mix_create(void) {
     atomic_init(&s->presentation, 0);
     atomic_init(&s->deadline_searches, 0);
     atomic_init(&s->recovery_discarded, 0);
+    atomic_init(&s->invalid_samples, 0);
     atomic_init(&s->concealed, 0);
     atomic_init(&s->concealed_silence, 0);
     atomic_init(&s->merged, 0);
@@ -206,6 +208,7 @@ API int bh_mix_add(Mixer *m, uint32_t target, uint32_t maximum) {
       atomic_store(&s->presentation, 0);
       atomic_store(&s->deadline_searches, 0);
       atomic_store(&s->recovery_discarded, 0);
+      atomic_store(&s->invalid_samples, 0);
       atomic_store(&s->continuity_mode, 0);
       atomic_store(&s->target_view, target);
       atomic_store(&s->jitter_view, 0);
@@ -314,17 +317,23 @@ static void write_timed(Mixer *m, int index, const float *pcm, uint32_t frames, 
     LeaveCriticalSection(&s->producer);
     return;
   }
-  uint32_t at = (uint32_t)(w % CAPACITY), first = frames < CAPACITY - at ? frames : CAPACITY - at;
-  if (mono) {
-    for (uint32_t i = 0; i < frames; i++) {
-      float value = isfinite(pcm[i]) ? pcm[i] : 0;
-      uint32_t frame = (at + i) % CAPACITY;
-      s->pcm[frame * 2] = s->pcm[frame * 2 + 1] = value;
+  uint32_t at = (uint32_t)(w % CAPACITY);
+  uint64_t invalid = 0;
+  for (uint32_t i = 0; i < frames; i++) {
+    uint32_t frame = (at + i) % CAPACITY;
+    for (int ch = 0; ch < 2; ch++) {
+      float value = pcm[mono ? i : i * 2 + ch];
+      /* More than 24 dB above normalized full scale is outside the supported
+       * input domain, not normal 0–200% gain. Reject it before it can drive
+       * the shared limiter or poison an interpolation/filter history. */
+      if (!isfinite(value) || fabsf(value) > 16) {
+        value = 0;
+        invalid++;
+      }
+      s->pcm[frame * 2 + ch] = value;
     }
-  } else {
-    memcpy(s->pcm + at * 2, pcm, first * 2 * sizeof(float));
-    memcpy(s->pcm, pcm + first * 2, (frames - first) * 2 * sizeof(float));
   }
+  atomic_fetch_add(&s->invalid_samples, invalid);
   if (w - r + frames > s->maximum)
     atomic_store_explicit(&s->trim, w + frames - s->maximum, memory_order_release);
   atomic_store_explicit(&s->write, w + frames, memory_order_release);
@@ -590,5 +599,7 @@ API uint64_t bh_mix_value(Mixer *m, int index, int field) {
     return atomic_load(&s->deadline_searches);
   if (field == 18)
     return atomic_load(&s->recovery_discarded);
+  if (field == 19)
+    return atomic_load(&s->invalid_samples);
   return atomic_load(&s->drift_view);
 }

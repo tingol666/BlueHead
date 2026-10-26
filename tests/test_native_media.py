@@ -9,6 +9,41 @@ from bluehead.protocol import Format, PacketError
 from .vectors import signal, encode, wire_packets, quality, rtp
 
 
+def test_aac_recovery_flushes_old_overlap_but_retains_latm_configuration():
+    from bumble.codecs import BitWriter
+
+    tone = np.repeat((.4 * np.sin(np.arange(12288) * 2 * np.pi * 997 / 48000))[:, None], 2, axis=1)
+    coded = encode('aac', np.concatenate((tone, np.zeros((12288, 2)))).astype(np.float32))
+
+    def same_mux(payload, sequence):
+        writer = BitWriter()
+        writer.write(1, 1)  # useSameStreamMux: deliberately omit the saved configuration.
+        length = len(payload)
+        while length >= 255:
+            writer.write(255, 8)
+            length -= 255
+        writer.write(length, 8)
+        writer.write_bytes(payload)
+        return rtp(bytes(writer), sequence, sequence * 1024)
+
+    decoder = NativeMedia(Format('aac', 48000, 2))
+    try:
+        decoder.decode_packet(next(wire_packets('aac', coded[:1])))
+        for i in range(1, 8):
+            decoder.decode_packet(same_mux(coded[i], i))
+        assert np.max(np.abs(np.frombuffer(decoder.read_pcm(), np.float32))) > .3
+        decoder.restart()
+        decoder.decode_packet(same_mux(coded[-2], 0))
+        quiet = np.frombuffer(decoder.read_pcm(), np.float32)
+        assert len(quiet) == 2048  # An omitted config is still accepted after the flush.
+        assert np.max(np.abs(quiet)) < 1e-8
+        decoder.decode_packet(same_mux(coded[6], 1))
+        assert np.max(np.abs(np.frombuffer(decoder.read_pcm(), np.float32))) > .3
+        assert decoder.errors == 0
+    finally:
+        decoder.close()
+
+
 @pytest.mark.parametrize("codec", ["sbc", "aac", "aptx", "aptx_hd"])
 @pytest.mark.parametrize("rate", [44100, 48000])
 def test_native_real_codec_round_trip(codec, rate):

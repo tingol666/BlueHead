@@ -14,6 +14,7 @@ from .backend import Runner, Settings, usb_adapters
 from .diagnostics import MetadataOnly
 from .audio_runtime import on_audio_thread
 from .quality_log import AudioCounters
+from .errors import AudioHealth
 
 PROTOCOL_VERSION = 1
 MAX_COMMAND = 65536
@@ -80,6 +81,7 @@ class Engine:
         self.directory = Path(directory)
         self.output = output
         self.audio_counters = AudioCounters(self.directory)
+        self.audio_health = AudioHealth()
         self.write_lock = threading.Lock()
         self.settings_lock = threading.RLock()
         self.runner = Runner(self.emit)
@@ -108,6 +110,8 @@ class Engine:
             logging.getLogger(__name__).info("%s %s", event, values)
         if event == 'telemetry':
             self.audio_counters.record(values.get('audio', {}))
+            for notice in self.audio_health.events(values.get('audio', {})):
+                self.emit('audio_health', **notice)
         if event == "audio_device" and values.get("success"):
             setattr(self.settings, values["direction"] + "_device", values["device"])
             setattr(self.settings, values["direction"] + "_endpoint_id", values.get("endpoint_id"))
@@ -151,9 +155,10 @@ class Engine:
                     setattr(settings, direction + "_device", find_endpoint(identity, direction))
                 except ValueError:
                     setattr(settings, direction + "_device", None)
-                    setattr(settings, direction + "_endpoint_id", None)
+                    if settings.mode != 'advanced':
+                        setattr(settings, direction + "_endpoint_id", None)
 
-    def reconfigure_audio(self):
+    def reconfigure_audio(self, force=False):
         if not self.audio_refresh_lock.acquire(blocking=False):
             return False
         try:
@@ -165,20 +170,24 @@ class Engine:
                 return False
             self.emit("audio_refreshing")
             if running and receiver:
-                mapped, errors = asyncio.run_coroutine_threadsafe(receiver.refresh_audio(), self.runner.loop).result(20)
+                operation = receiver.refresh_audio(force=True) if force else receiver.refresh_audio()
+                mapped, errors = asyncio.run_coroutine_threadsafe(operation, self.runner.loop).result(20)
             else:
                 mapped, errors = refresh_devices({"output": self.settings.output_device, "input": self.settings.input_device}, {
                     "output": self.settings.output_endpoint_id, "input": self.settings.input_endpoint_id})
             self.settings.output_device, self.settings.input_device = mapped["output"], mapped["input"]
             self.save()
             self.emit("audio_refreshed", success=not errors, output_device=mapped["output"], input_device=mapped["input"],
-                      message="音频设备已更新，默认设备自动跟随系统" if not errors else "部分音频设备暂不可用，将自动重试")
+                      output_endpoint_id=self.settings.output_endpoint_id, input_endpoint_id=self.settings.input_endpoint_id,
+                      message="音频设备已更新，默认设备自动跟随系统" if not errors else str(errors[0]))
             self.refresh()
             return not errors
         except Exception:
             logging.exception("Audio device refresh failed")
             self.emit("audio_refreshed", success=False, output_device=self.settings.output_device,
-                      input_device=self.settings.input_device, message="音频设备更新未完成，将自动重试")
+                      input_device=self.settings.input_device,
+                      output_endpoint_id=self.settings.output_endpoint_id, input_endpoint_id=self.settings.input_endpoint_id,
+                      message="音频设备更新未完成，请稍后重试")
             return False
         finally:
             self.audio_refresh_lock.release()
@@ -211,7 +220,7 @@ class Engine:
         elif action == "inventory":
             self.refresh()
         elif action == "rescan_audio":
-            threading.Thread(target=self.reconfigure_audio, daemon=True, name="audio-rescan").start()
+            threading.Thread(target=self.reconfigure_audio, kwargs={'force': True}, daemon=True, name="audio-rescan").start()
         elif action in ("configure", "start"):
             # The stopped event is emitted during the old thread's final cleanup.
             # Finish joining it before accepting an intentional codec restart.

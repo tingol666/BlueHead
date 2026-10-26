@@ -292,7 +292,7 @@ API int bh_up_read(Uplink *u, uint8_t *output, uint32_t size) {
 /* fields: queued frames, dropped frames, drift+1000 ppm, underrun events,
  * initial/recovery prefill frames. Only explicit starvation enters rebuffer. */
 API uint64_t bh_up_value(Uplink *u, int bus, int field) {
-  if (!u || bus < -1 || bus > 1 || field < 0 || field > 18)
+  if (!u || bus < -1 || bus > 1 || field < 0 || field > 19)
     return 0;
   if (bus == -1)
     return bh_mix_value(u->clock, -1, field);

@@ -5,9 +5,11 @@
 #include "runtime_usb.hpp"
 #include "runtime_stream_guard.hpp"
 #include "audio_timeline.h"
+#include "runtime_recovery.hpp"
 #include <deque>
 #include <future>
 #include <fstream>
+#include <tuple>
 namespace bh {
 class Core final : public HciTarget {
   bool offline = false, enhance_audio = true;
@@ -19,7 +21,7 @@ class Core final : public HciTarget {
   std::mutex replay_mutex;
   json replay_result = json::object();
   std::unique_ptr<HciDispatch> test_dispatch;
-  std::atomic<uint32_t> bridge_stall{0}, voice_stall{0};
+  std::atomic<uint32_t> bridge_stall{0}, voice_stall{0}, voice_commit_stall{0};
   std::atomic<uint64_t> injected_stalls{0};
   void test_pause(std::atomic<uint32_t> &request) {
     auto ms = request.exchange(0);
@@ -41,12 +43,16 @@ class Core final : public HciTarget {
     Handle wake{CreateEventW(nullptr, FALSE, FALSE, nullptr)};
     std::thread worker;
     std::atomic<bool> stop{false}, paused{true}, restart{false};
-    std::atomic<uint32_t> stall{0};
+    std::atomic<uint32_t> stall{0}, commit_stall{0};
     BhPacketClock packet_clock{};
     std::atomic<uint32_t> handle{0xffff}, cid{0xffff}, epoch{1}, producers{0};
     uint32_t lease = 0;
     std::atomic<uint64_t> packets{0}, drops{0}, decoded{0}, errors{0}, coded{0}, lost{0},
         recoveries{0}, last_packet{0}, last_decoded{0}, concealed{0}, timeline_resets{0};
+    std::atomic<uint64_t> expired_packets{0}, decoder_restarts{0}, malformed_packets{0};
+    DecoderRecovery failure;
+    bool recovery_restart = false;
+    double restart_after = 0;
     uint32_t codec = 0, rate = 0, channels = 0;
     std::string key;
     std::mutex commit_mutex;
@@ -55,6 +61,12 @@ class Core final : public HciTarget {
     uint64_t meter_start = 0, meter_bytes = 0;
     std::atomic<uint64_t> bitrate{0};
     explicit Media(Core &c, int id) : core(c), input(id) {}
+    void reset_observations() {
+      packets = drops = decoded = errors = coded = lost = recoveries = last_packet = last_decoded =
+          concealed = timeline_resets = expired_packets = decoder_restarts = malformed_packets = 0;
+      meter_start = meter_bytes = 0;
+      bitrate = 0;
+    }
     void retire() {
       handle = cid = 0xffff;
       while (producers.load())
@@ -72,6 +84,9 @@ class Core final : public HciTarget {
       Packet discard;
       while (queue.pop(discard)) {
       };
+      paused = true;
+      codec = rate = channels = 0;
+      reset_observations();
     }
     ~Media() { retire(); }
     void configure(int code, int hz, int ch, const std::string &k) {
@@ -90,13 +105,14 @@ class Core final : public HciTarget {
       retire();
       codec = code;
       packet_clock = {};
+      failure = {};
+      recovery_restart = false;
+      restart_after = 0;
+      expired_packets = decoder_restarts = malformed_packets = 0;
       rate = hz;
       channels = ch;
       key = k;
-      packets = drops = decoded = errors = coded = lost = recoveries = last_packet = last_decoded =
-          0;
-      meter_start = meter_bytes = 0;
-      bitrate = 0;
+      reset_observations();
       decoder = prepared.release();
       ldac = std::move(prepared_ldac);
       ldac_pcm = std::move(prepared_pcm);
@@ -133,13 +149,21 @@ class Core final : public HciTarget {
       if (allowed)
         for (const auto &other : core.media)
           if (other.get() != this && other->allowed && other->handle != 0xffff && !other->paused &&
-              now - other->last_packet.load() < frequency()) {
+              elapsed_ticks(now, other->last_packet.load()) < frequency()) {
             competing = true;
             break;
           }
       protected_audio = guard.observe(arrival / static_cast<double>(frequency()), frames, 1,
                                       missing, failed, competing);
       core.api.bh_mix_gate(core.mixer, input, allowed && !protected_audio);
+    }
+    bool past_deadline(const Packet &p) {
+      if (age_ticks(p.arrival) <= frequency() * 180 / 1000)
+        return false;
+      expired_packets++;
+      recovery_restart = true;
+      restart = true;
+      return true;
     }
     void run() {
       Priority priority;
@@ -150,14 +174,30 @@ class Core final : public HciTarget {
           core.test_pause(stall);
           if (paused || p.epoch != epoch)
             continue;
+          // A worker wake is not permission to play arbitrarily old sound.
+          // Only this consumer retires compressed entries; the HCI producer
+          // never mutates an SPSC read pointer or a decoder instance.
+          if (past_deadline(p))
+            continue;
+          if (restart && seconds() < restart_after)
+            continue;
           if (restart.exchange(false)) {
             packet_clock = {};
             meter_start = meter_bytes = 0;
             bitrate = 0;
-            if (decoder)
-              core.api.bh_media_restart(decoder);
-            else
+            if (decoder) {
+              if (core.api.bh_media_restart(decoder) < 0) {
+                errors++;
+                restart = true;
+                restart_after = seconds() + 1;
+                continue;
+              }
+            } else
               ldac.reset();
+            if (recovery_restart) {
+              decoder_restarts++;
+              recovery_restart = false;
+            }
           }
           if (codec == 5) {
             try {
@@ -168,8 +208,9 @@ class Core final : public HciTarget {
               }
               uint64_t stats[10]{};
               uint32_t frames = ldac->feed(p.data.data(), p.size, ldac_pcm.get(), stats);
+              core.test_pause(commit_stall);
               std::lock_guard<std::mutex> commit(commit_mutex);
-              if (!paused && p.epoch == epoch) {
+              if (!paused && p.epoch == epoch && !past_deadline(p)) {
                 update_guard(p.arrival, frames, stats[5] >= lost ? stats[5] - lost.load() : 0,
                              stats[3] >= errors ? stats[3] - errors.load() : 0);
                 if (frames) {
@@ -198,15 +239,23 @@ class Core final : public HciTarget {
           }
           auto before_frames = core.api.bh_media_value(decoder, 0),
                before_errors = core.api.bh_media_value(decoder, 3),
-               before_lost = core.api.bh_media_value(decoder, 5);
+               before_lost = core.api.bh_media_value(decoder, 5),
+               before_malformed = core.api.bh_media_value(decoder, 9);
           int result = core.api.bh_media_feed(decoder, p.data.data(), p.size);
+          core.test_pause(commit_stall);
           auto real_frames = core.api.bh_media_value(decoder, 0) - before_frames;
           auto failed = core.api.bh_media_value(decoder, 3) - before_errors;
           if (result < 0 && !failed)
             failed = 1;
           errors += failed;
+          auto malformed = core.api.bh_media_value(decoder, 9) - before_malformed;
+          malformed_packets += malformed;
+          if (failure.observe(seconds(), failed != 0, malformed != 0, real_frames)) {
+            recovery_restart = true;
+            restart = true;
+          }
           std::lock_guard<std::mutex> commit(commit_mutex);
-          if (!paused && p.epoch == epoch) {
+          if (!paused && p.epoch == epoch && !past_deadline(p)) {
             update_guard(p.arrival, real_frames, core.api.bh_media_value(decoder, 5) - before_lost,
                          failed);
             core.api.bh_media_drain_mixer_at(decoder, core.mixer, input, p.arrival);
@@ -238,6 +287,8 @@ class Core final : public HciTarget {
       }
     }
     json snapshot() {
+      auto last = last_packet.load(), recent = last_decoded.load();
+      auto packet_age = age_ticks(last), decoded_age = age_ticks(recent);
       return {{"codec", codec},
               {"rate", rate},
               {"packets", packets.load()},
@@ -245,17 +296,18 @@ class Core final : public HciTarget {
               {"decoded_frames", decoded.load()},
               {"decode_errors", errors.load()},
               {"coded_bytes", coded.load()},
-              {"bitrate",
-               !paused && ticks() - last_packet.load() < frequency() * 3 / 2 ? bitrate.load() : 0},
+              {"bitrate", !paused && last && packet_age < frequency() * 3 / 2 ? bitrate.load() : 0},
               {"lost_packets", lost.load()},
               {"concealed_frames", concealed.load()},
               {"timeline_resets", timeline_resets.load()},
+              {"expired_packets", expired_packets.load()},
+              {"decoder_restarts", decoder_restarts.load()},
+              {"malformed_packets", malformed_packets.load()},
               {"recoveries", recoveries.load()},
               {"protected", protected_audio.load()},
-              {"playing", !paused && ticks() - last_decoded.load() < frequency() * 3 / 2},
+              {"playing", !paused && recent && decoded_age < frequency() * 3 / 2},
               {"buffer_ms", core.api.bh_mix_value(core.mixer, input, 0) / 48.0},
-              {"last_packet_age_ms",
-               last_packet ? (ticks() - last_packet.load()) * 1000.0 / frequency() : 1e12}};
+              {"last_packet_age_ms", last ? packet_age * 1000.0 / frequency() : 1e12}};
     }
   };
   struct Wire {
@@ -269,6 +321,9 @@ class Core final : public HciTarget {
     uint32_t voice_generation = 0;
     bool simulated = false;
     uint32_t delay_ms = 0;
+    bool automatic = false;
+    int simulated_error = 0;
+    bool force = false;
   };
   std::array<std::unique_ptr<Media>, 8> media;
   std::map<std::string, int> keys;
@@ -292,6 +347,7 @@ class Core final : public HciTarget {
   bh_voice *voice = nullptr;
   std::atomic<uint64_t> voice_rx_packets{0}, voice_tx_packets{0}, voice_plc{0},
       voice_decode_errors{0}, voice_rx_bytes{0}, voice_tx_bytes{0}, voice_frames{0};
+  std::atomic<uint64_t> voice_expired_packets{0}, voice_rx_resets{0};
   std::atomic<float> microphone_gain{1}, system_gain{1}, device_gain{1};
   std::atomic<float> playback_gain{1};
   std::array<uint64_t, 3> master_revisions{};
@@ -305,13 +361,21 @@ class Core final : public HciTarget {
   BhAudioDevice *output = nullptr, *capture = nullptr;
   void *loop_capture = nullptr, *loop_converter = nullptr;
   std::string output_selection, input_selection;
-  bool output_wanted = false, capture_wanted = false;
+  std::array<std::string, 2> wanted_endpoint{};
+  std::array<std::string, 2> retry_endpoint{};
+  std::atomic<bool> simulated_inventory_enabled{false};
+  std::vector<BhEndpoint> simulated_endpoints;
+  std::array<int, 2> simulated_prepare_errors{};
+  bool output_wanted = false, capture_wanted = false, system_wanted = false;
+  std::array<Recovery, 3> recovery{};
+  std::atomic<bool> microphone_fault{false}, system_fault{false};
   std::mutex audio_mutex;
   std::condition_variable audio_condition;
   std::deque<AudioJob> audio_jobs;
   std::map<uint64_t, json> audio_results;
   uint64_t next_job = 0;
   std::array<uint64_t, 3> latest_job{};
+  std::array<bool, 3> preparing_audio{};
   std::atomic<uint64_t> device_reopens{0};
   std::atomic<bool> microphone_active{false}, system_active{false}, output_active{false};
   json device_error = json::object();
@@ -321,13 +385,15 @@ class Core final : public HciTarget {
   fs::path assets;
   int key_input(const std::string &key) {
     auto found = keys.find(key);
-    require(found != keys.end(), "Unknown audio source");
+    if (found == keys.end())
+      throw SourceExpired();
     return found->second;
   }
   static int direction_id(const std::string &s) { return s == "output" ? 0 : s == "input" ? 1 : 2; }
   uint64_t schedule(const std::string &direction, const std::string &endpoint, bool start = true,
                     uint32_t generation = 0, bool simulated = false, uint32_t delay_ms = 0,
-                    uint64_t expected_latest = UINT64_MAX) {
+                    uint64_t expected_latest = UINT64_MAX, bool automatic = false,
+                    int simulated_error = 0, bool force = false) {
     std::lock_guard<std::mutex> lock(audio_mutex);
     if (expected_latest != UINT64_MAX && expected_latest != latest_job[direction_id(direction)])
       return 0;
@@ -342,7 +408,8 @@ class Core final : public HciTarget {
     }
     while (audio_results.size() > 64)
       audio_results.erase(audio_results.begin());
-    audio_jobs.push_back({id, direction, endpoint, start, generation, simulated, delay_ms});
+    audio_jobs.push_back({id, direction, endpoint, start, generation, simulated, delay_ms,
+                          automatic, simulated_error, force});
     audio_condition.notify_one();
     return id;
   }
@@ -351,6 +418,50 @@ class Core final : public HciTarget {
     audio_results[j.id] = result;
     while (audio_results.size() > 64)
       audio_results.erase(audio_results.begin());
+  }
+  Fault device_fault(int code) {
+    switch (api.bh_device_error_category(code)) {
+    case BH_FAILURE_ENDPOINT:
+      return Fault::endpoint;
+    case BH_FAILURE_BUSY:
+      return Fault::busy;
+    case BH_FAILURE_PERMISSION:
+      return Fault::permission;
+    case BH_FAILURE_FORMAT:
+      return Fault::format;
+    case BH_FAILURE_MEMORY:
+      return Fault::memory;
+    case BH_FAILURE_TIMEOUT:
+      return Fault::timeout;
+    default:
+      return Fault::internal;
+    }
+  }
+  void audio_failed(const AudioJob &job, Fault fault, int code, const char *message) {
+    {
+      std::lock_guard<std::mutex> lock(audio_mutex);
+      if (latest_job[direction_id(job.direction)] != job.id) {
+        audio_results[job.id] = {{"done", true}, {"success", false}, {"cancelled", true}};
+        return;
+      }
+    }
+    auto &state = recovery[direction_id(job.direction)];
+    state.fail(fault, code, seconds(), job.automatic && job.start);
+    bool previous_active =
+        job.direction == "output" ? output && api.bh_device_active(output)
+        : job.direction == "input"
+            ? capture && api.bh_device_active(capture)
+            : loop_capture && SUCCEEDED(static_cast<HRESULT>(api.bh_loop_error(loop_capture)));
+    if (previous_active && !job.automatic)
+      state.keep_previous(seconds());
+    finish(job, {{"done", true},
+                 {"success", false},
+                 {"error", message},
+                 {"category", fault_name(fault)},
+                 {"native_code", code},
+                 {"previous_route_active", previous_active},
+                 {"retryable", job.automatic && state.automatic},
+                 {"direction", job.direction}});
   }
   void audio_loop() {
     HRESULT apartment = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -365,6 +476,7 @@ class Core final : public HciTarget {
         if (!audio_jobs.empty()) {
           job = std::move(audio_jobs.front());
           audio_jobs.pop_front();
+          preparing_audio[direction_id(job.direction)] = true;
           have = true;
         }
       }
@@ -372,8 +484,15 @@ class Core final : public HciTarget {
         audio_deadline = ticks() + frequency() * 12;
         try {
           execute_audio(job);
+        } catch (const AudioFailure &e) {
+          audio_failed(job, e.category, e.code, e.what());
         } catch (const std::exception &e) {
-          finish(job, {{"done", true}, {"success", false}, {"error", e.what()}});
+          audio_failed(job, Fault::internal, 0, e.what());
+        }
+        cache_device_diagnostics();
+        {
+          std::lock_guard<std::mutex> lock(audio_mutex);
+          preparing_audio[direction_id(job.direction)] = false;
         }
         audio_deadline = 0;
       }
@@ -382,6 +501,7 @@ class Core final : public HciTarget {
         audio_deadline = ticks() + frequency() * 12;
         try {
           check_devices();
+          cache_device_diagnostics();
         } catch (const std::exception &) {
           bridge_errors++;
         }
@@ -430,12 +550,43 @@ class Core final : public HciTarget {
         return;
       }
     }
+    require(!offline || job.simulated || !job.start,
+            "Hardware opening is disabled in offline-test mode");
+    auto &route_recovery = recovery[direction_id(job.direction)];
+    if (!job.automatic && !job.force && !job.simulated_error && job.start &&
+        !route_recovery.pending) {
+      bool unchanged = job.direction == "output" ? output && output_selection == job.endpoint &&
+                                                       api.bh_device_active(output)
+                       : job.direction == "input"
+                           ? capture && input_selection == job.endpoint && !microphone_fault &&
+                                 api.bh_device_active(capture)
+                           : loop_capture && !system_fault &&
+                                 SUCCEEDED(static_cast<HRESULT>(api.bh_loop_error(loop_capture)));
+      if (unchanged) {
+        route_recovery.manual();
+        finish(job, {{"done", true},
+                     {"success", true},
+                     {"unchanged", true},
+                     {"endpoint_id", job.endpoint}});
+        return;
+      }
+    }
+    if (!job.automatic || job.force)
+      route_recovery.manual();
     if (job.direction == "system") {
       void *candidate = nullptr, *converter = nullptr;
       DWORD error = 0;
       if (job.start) {
         candidate = api.bh_loop_open(GetCurrentProcessId(), &error);
-        require(candidate, "Computer audio capture unavailable");
+        if (!candidate) {
+          auto failure = static_cast<HRESULT>(error);
+          Fault fault = failure == E_ACCESSDENIED                          ? Fault::permission
+                        : failure == E_NOINTERFACE || failure == E_NOTIMPL ? Fault::format
+                        : failure == E_OUTOFMEMORY                         ? Fault::memory
+                        : failure == HRESULT_FROM_WIN32(ERROR_TIMEOUT)     ? Fault::timeout
+                                                                           : Fault::endpoint;
+          throw AudioFailure(fault, static_cast<int>(error), "Computer audio capture unavailable");
+        }
         api.bh_loop_ready_event(candidate, bridge_wake);
         converter = api.bh_capture_create(48000, 1, 48000);
         if (!converter) {
@@ -468,12 +619,15 @@ class Core final : public HciTarget {
         api.bh_up_clear(uplink, 1);
       }
       audio_results[job.id] = {{"done", true}, {"success", true}};
+      system_wanted = job.start;
       commit_lock.unlock();
       if (old && api.bh_loop_close(old) != 1)
         TerminateProcess(GetCurrentProcess(), ERROR_TIMEOUT);
       if (old_converter)
         api.bh_capture_free(old_converter);
       system_active = job.start;
+      system_fault = false;
+      recovery[2].success(seconds());
       finish(job, {{"done", true}, {"success", true}});
       return;
     }
@@ -484,6 +638,20 @@ class Core final : public HciTarget {
     if (job.simulated) {
       require(offline, "Offline-test mode required");
       Sleep(job.delay_ms);
+      if (job.start && job.simulated_error)
+        throw AudioFailure(device_fault(job.simulated_error), job.simulated_error,
+                           "Offline endpoint preparation failed");
+      if (job.start && simulated_inventory_enabled) {
+        std::lock_guard<std::mutex> lock(audio_mutex);
+        bool available = std::any_of(
+            simulated_endpoints.begin(), simulated_endpoints.end(), [&](const auto &item) {
+              return item.direction == (render ? BH_PLAYBACK : BH_CAPTURE) &&
+                     (job.endpoint.empty() ? item.is_default != 0
+                                           : wide(job.endpoint) == item.endpoint_id);
+            });
+        if (!available)
+          throw AudioFailure(Fault::endpoint, -204, "Offline endpoint is absent");
+      }
       if (job.start)
         candidate = api.bh_device_offline(context, render ? BH_PLAYBACK : BH_CAPTURE, mixer, 48000,
                                           render ? 2 : 1, 48000, &error);
@@ -494,8 +662,10 @@ class Core final : public HciTarget {
                                              endpoint.empty() ? nullptr : endpoint.c_str(), &error)
                  : api.bh_device_open_capture(
                        context, endpoint.empty() ? nullptr : endpoint.c_str(), 48000, &error);
-      require(candidate,
-              render ? "Cannot prepare playback endpoint" : "Cannot prepare microphone endpoint");
+      if (!candidate)
+        throw AudioFailure(device_fault(error), error,
+                           render ? "Cannot prepare playback endpoint"
+                                  : "Cannot prepare microphone endpoint");
     }
     if (candidate && !render)
       api.bh_device_ready_event(candidate, bridge_wake);
@@ -515,26 +685,32 @@ class Core final : public HciTarget {
     BhAudioDevice *old = nullptr;
     if (render) {
       old = output;
-      if (old && api.bh_device_stop(old) != 0) {
+      int stopped = old ? api.bh_device_stop(old) : 0;
+      if (stopped != 0) {
         if (candidate)
           api.bh_device_close(candidate);
-        throw std::runtime_error(
-            "Previous playback endpoint did not stop; new consumer was not started");
+        throw AudioFailure(device_fault(stopped), stopped,
+                           "Previous playback endpoint did not stop; new consumer was not started");
       }
-      if (candidate && api.bh_device_start(candidate) != 0) {
-        if (old)
-          api.bh_device_start(old);
+      int started = candidate ? api.bh_device_start(candidate) : 0;
+      if (started != 0) {
+        if (old && api.bh_device_start(old) != 0)
+          bridge_errors++;
         api.bh_device_close(candidate);
-        throw std::runtime_error("New playback endpoint could not start");
+        throw AudioFailure(device_fault(started), started, "New playback endpoint could not start");
       }
       output = candidate;
       output_active = job.start;
       output_selection = job.endpoint;
       output_wanted = job.start;
+      if (!job.automatic)
+        wanted_endpoint[0] = retry_endpoint[0] = job.endpoint;
     } else {
-      if (candidate && api.bh_device_start(candidate) != 0) {
+      int started = candidate ? api.bh_device_start(candidate) : 0;
+      if (started != 0) {
         api.bh_device_close(candidate);
-        throw std::runtime_error("New microphone endpoint could not start");
+        throw AudioFailure(device_fault(started), started,
+                           "New microphone endpoint could not start");
       }
       {
         std::lock_guard<std::mutex> lock(bridge_mutex);
@@ -542,10 +718,14 @@ class Core final : public HciTarget {
         capture = candidate;
         api.bh_up_clear(uplink, 0);
         microphone_active = job.start;
+        microphone_fault = false;
       }
       input_selection = job.endpoint;
       capture_wanted = job.start;
+      if (!job.automatic)
+        wanted_endpoint[1] = retry_endpoint[1] = job.endpoint;
     }
+    recovery[render ? 0 : 1].success(seconds());
     audio_results[job.id] = {{"done", true}, {"success", true}, {"endpoint_id", job.endpoint}};
     commit_lock.unlock();
     if (old)
@@ -554,10 +734,14 @@ class Core final : public HciTarget {
   }
   std::string default_output, default_input;
   bool inventory_known = false;
+  bool wanted_output_present = true, wanted_input_present = true;
   void cache_device_diagnostics() {
     // Only the audio-control owner dereferences stream pointers. The RPC
     // snapshot reads this copy and cannot race a hot switch or close.
     json result = json::object();
+    result["recovery"] = {{"output", recovery[0].snapshot(seconds())},
+                          {"microphone", recovery[1].snapshot(seconds())},
+                          {"system", recovery[2].snapshot(seconds())}};
     for (auto direction : {"output", "microphone"}) {
       auto *stream = std::strcmp(direction, "output") == 0 ? output : capture;
       BhDeviceStats stats{};
@@ -585,29 +769,58 @@ class Core final : public HciTarget {
     device_diagnostics = std::move(result);
   }
   void check_devices() {
-    cache_device_diagnostics();
-    if (offline)
+    auto now = seconds();
+    if (!offline) {
+      output_active = output && api.bh_device_active(output);
+      microphone_active = capture && api.bh_device_active(capture);
+    }
+    recovery[0].healthy(now, output_active);
+    recovery[1].healthy(now, microphone_active);
+    recovery[2].healthy(now, system_active && !system_fault);
+    if (offline && !simulated_inventory_enabled)
       return;
-    output_active = output && api.bh_device_active(output);
-    microphone_active = capture && api.bh_device_active(capture);
+    if (loop_capture && FAILED(static_cast<HRESULT>(api.bh_loop_error(loop_capture))))
+      system_fault = true;
+    bool pending_system = false;
+    uint64_t system_ticket = 0;
+    {
+      std::lock_guard<std::mutex> lock(audio_mutex);
+      system_ticket = latest_job[2];
+      pending_system = std::any_of(audio_jobs.begin(), audio_jobs.end(),
+                                   [](const auto &j) { return j.direction == "system"; });
+    }
+    if (system_wanted && !quiesced && !pending_system &&
+        (system_fault || (recovery[2].pending && recovery[2].automatic)) &&
+        recovery[2].ready(now)) {
+      device_reopens++;
+      schedule("system", "", true, voice_epoch, false, 0, system_ticket, true);
+    }
     if (!output_wanted && !capture_wanted)
       return;
-    uint32_t count = 0;
-    int result = api.bh_device_inventory(context, nullptr, 0, &count);
-    if (result != 0 && result != BH_DEVICE_BUFFER_SMALL)
-      return;
-    if (count > 4096)
-      return;
-    std::vector<BhEndpoint> endpoints(count);
-    if (api.bh_device_inventory(context, endpoints.data(), count, &count) != 0)
-      return;
+    std::vector<BhEndpoint> endpoints;
+    std::array<int, 2> simulated_errors{};
+    if (offline) {
+      std::lock_guard<std::mutex> lock(audio_mutex);
+      endpoints = simulated_endpoints;
+      simulated_errors = simulated_prepare_errors;
+    } else {
+      uint32_t count = 0;
+      int result = api.bh_device_inventory(context, nullptr, 0, &count);
+      if (result != 0 && result != BH_DEVICE_BUFFER_SMALL)
+        return;
+      if (count > 4096)
+        return;
+      endpoints.resize(count);
+      if (api.bh_device_inventory(context, endpoints.data(), count, &count) != 0)
+        return;
+    }
     std::string out, in;
-    bool output_present = output_selection.empty(), input_present = input_selection.empty();
+    bool output_present = wanted_endpoint[0].empty(), input_present = wanted_endpoint[1].empty();
     for (const auto &e : endpoints) {
       auto identity = utf8(e.endpoint_id);
-      if (e.direction == BH_PLAYBACK && identity == output_selection)
+      if (e.direction == BH_PLAYBACK && identity == wanted_endpoint[0])
         output_present = true;
-      if (e.direction == BH_CAPTURE && identity == input_selection)
+      if (e.direction == BH_CAPTURE && identity == wanted_endpoint[1])
         input_present = true;
       if (e.is_default) {
         if (e.direction == BH_PLAYBACK)
@@ -618,29 +831,42 @@ class Core final : public HciTarget {
     }
     bool output_changed = inventory_known && output_selection.empty() && out != default_output;
     bool input_changed = inventory_known && input_selection.empty() && in != default_input;
+    if (inventory_known && (output_changed || output_present != wanted_output_present))
+      recovery[0].manual();
+    if (inventory_known && (input_changed || input_present != wanted_input_present))
+      recovery[1].manual();
+    wanted_output_present = output_present;
+    wanted_input_present = input_present;
     default_output = out;
     default_input = in;
     inventory_known = true;
     bool pending_output = false, pending_input = false;
     uint64_t output_ticket = 0, input_ticket = 0;
+    auto selected_output = output_present ? wanted_endpoint[0] : std::string();
+    auto selected_input = input_present ? wanted_endpoint[1] : std::string();
     {
       std::lock_guard<std::mutex> lock(audio_mutex);
       output_ticket = latest_job[0];
       input_ticket = latest_job[1];
+      retry_endpoint = {selected_output, selected_input};
       pending_output = std::any_of(audio_jobs.begin(), audio_jobs.end(),
                                    [](const auto &j) { return j.direction == "output"; });
       pending_input = std::any_of(audio_jobs.begin(), audio_jobs.end(),
                                   [](const auto &j) { return j.direction == "input"; });
     }
-    if (output_wanted && !pending_output &&
-        (!output || !api.bh_device_active(output) || output_changed || !output_present)) {
+    if (output_wanted && !quiesced && !pending_output && recovery[0].ready(now) &&
+        (!output_active || output_changed || selected_output != output_selection ||
+         (recovery[0].pending && recovery[0].automatic))) {
       device_reopens++;
-      schedule("output", output_present ? output_selection : "", true, 0, false, 0, output_ticket);
+      schedule("output", selected_output, true, 0, offline, 0, output_ticket, true,
+               simulated_errors[0]);
     }
-    if (capture_wanted && !pending_input &&
-        (!capture || !api.bh_device_active(capture) || input_changed || !input_present)) {
+    if (capture_wanted && !quiesced && !pending_input && recovery[1].ready(now) &&
+        (!microphone_active || microphone_fault || input_changed ||
+         selected_input != input_selection || (recovery[1].pending && recovery[1].automatic))) {
       device_reopens++;
-      schedule("input", input_present ? input_selection : "", true, 0, false, 0, input_ticket);
+      schedule("input", selected_input, true, 0, offline, 0, input_ticket, true,
+               simulated_errors[1]);
     }
   }
   void bridge_loop() {
@@ -658,8 +884,10 @@ class Core final : public HciTarget {
           for (unsigned batch = 0; batch < 8; batch++) {
             int n = api.bh_device_read_f32(capture, pcm.data(), 1024);
             if (n <= 0) {
-              if (n < 0)
+              if (n < 0) {
                 bridge_errors++;
+                microphone_fault = true;
+              }
               break;
             }
             if (voice_handle != 0xffff)
@@ -676,6 +904,10 @@ class Core final : public HciTarget {
           if (api.bh_loop_clock(loop_capture, &position, &arrival) > 0)
             api.bh_up_observe(uplink, 1, position, arrival);
           int n = api.bh_loop_read(loop_capture, system.data(), 4800);
+          if (n < 0) {
+            bridge_errors++;
+            system_fault = true;
+          }
           if (n > 0) {
             api.bh_capture_push(loop_converter, system.data(), n);
             while ((n = api.bh_capture_read_f32(loop_converter, pcm.data(), 1024)) > 0) {
@@ -699,6 +931,8 @@ class Core final : public HciTarget {
     uint32_t consecutive_missing = 0;
     uint64_t expected = 0;
     uint64_t source_position = 0;
+    bool rx_recovery = false;
+    double rx_retry_at = 0;
     uint64_t frame_ticks = frequency() * 75 / 10000;
     while (!voice_stop) {
       test_pause(voice_stall);
@@ -708,9 +942,34 @@ class Core final : public HciTarget {
       while (batch++ < 64 && voice_rx.pop(p)) {
         if (p.epoch != voice_epoch || voice_handle == 0xffff)
           continue;
+        if (ticks() > p.arrival + frequency() * 90 / 1000) {
+          voice_expired_packets++;
+          api.bh_voice_skip_rx(voice, p.size);
+          rx_recovery = true;
+          expected = 0;
+          continue;
+        }
+        if (rx_recovery) {
+          if (seconds() < rx_retry_at)
+            continue;
+          if (api.bh_voice_reset_rx(voice) < 0) {
+            voice_decode_errors++;
+            rx_retry_at = seconds() + 1;
+            continue;
+          }
+          rx_recovery = false;
+          voice_rx_resets++;
+          consecutive_missing = 0;
+          source_position = 0;
+          if (voice_input >= 0)
+            api.bh_mix_clear(mixer, voice_input);
+        }
         int frames = api.bh_voice_push_rx(voice, p.data.data(), p.size, p.status);
         if (frames < 0) {
           voice_decode_errors++;
+          rx_recovery = true;
+          rx_retry_at = seconds() + .1;
+          expected = 0;
           continue;
         }
         if (frames > 0) {
@@ -720,6 +979,15 @@ class Core final : public HciTarget {
           consecutive_missing = 0;
         }
         uint32_t n = api.bh_voice_read_f32(voice, pcm.data(), pcm.size());
+        test_pause(voice_commit_stall);
+        if (p.epoch != voice_epoch || voice_handle == 0xffff)
+          continue;
+        if (age_ticks(p.arrival) > frequency() * 90 / 1000) {
+          voice_expired_packets++;
+          rx_recovery = true;
+          expected = 0;
+          continue;
+        }
         if (n && voice_input >= 0) {
           source_position += n;
           api.bh_mix_observe(mixer, voice_input, source_position, p.arrival);
@@ -791,6 +1059,9 @@ class Core final : public HciTarget {
     voice_codec = 0;
     voice_epoch++;
     api.bh_mix_call(mixer, -1);
+    int retired_input = voice_input.exchange(-1);
+    if (retired_input >= 0)
+      api.bh_mix_clear(mixer, retired_input);
   }
 
 public:
@@ -963,8 +1234,8 @@ public:
       throw std::runtime_error("Hardware opening is disabled in offline-test mode");
     if (request.contains("lease")) {
       auto id = key_input(request.at("key"));
-      require(request.at("lease").get<uint32_t>() == media[id]->lease,
-              "Audio source session has expired");
+      if (request.at("lease").get<uint32_t>() != media[id]->lease)
+        throw SourceExpired();
     }
     if (op == "test_replay") {
       start_replay(request);
@@ -977,7 +1248,7 @@ public:
       result["running"] = replaying.load();
       if (replaying)
         result["elapsed_seconds"] =
-            (ticks() - replay_started.load()) / static_cast<double>(frequency());
+            age_ticks(replay_started.load()) / static_cast<double>(frequency());
       return result;
     }
     if (op == "test_replay_stop") {
@@ -992,15 +1263,18 @@ public:
       auto direction = request.at("direction").get<std::string>();
       auto ms = request.value("milliseconds", 0u);
       require(ms > 0 && ms <= 2000, "Invalid native stall duration");
-      if (direction == "media") {
+      if (direction == "media" || direction == "media_commit") {
         auto &slot = *media[key_input(request.value("key", std::string("offline:media")))];
-        slot.stall = ms;
+        (direction == "media" ? slot.stall : slot.commit_stall) = ms;
         SetEvent(slot.wake);
       } else if (direction == "capture") {
         bridge_stall = ms;
         SetEvent(bridge_wake);
       } else if (direction == "voice") {
         voice_stall = ms;
+        SetEvent(voice_wake);
+      } else if (direction == "voice_commit") {
+        voice_commit_stall = ms;
         SetEvent(voice_wake);
       } else
         throw std::runtime_error("Unknown native worker");
@@ -1049,7 +1323,81 @@ public:
       require((direction == "input" || direction == "output") && delay <= 2000,
               "Invalid offline audio job");
       return schedule(direction, request.value("endpoint_id", std::string()),
-                      request.value("start", true), request.value("voice_epoch", 0u), true, delay);
+                      request.value("start", true), request.value("voice_epoch", 0u), true, delay,
+                      UINT64_MAX, false, request.value("error_code", 0),
+                      request.value("force", false));
+    }
+    if (op == "test_recovery_policy") {
+      require(offline, "Offline-test mode required");
+      auto events = request.at("events");
+      require(events.is_array() && events.size() <= 512, "Invalid recovery input");
+      Recovery state;
+      DecoderRecovery decoder;
+      json result = json::array();
+      double previous = 0;
+      for (const auto &event : events) {
+        double now = event.at("time");
+        require(std::isfinite(now) && now >= previous, "Recovery time must be monotonic");
+        previous = now;
+        auto action = event.value("action", std::string("fail"));
+        if (action == "fail") {
+          int code = event.at("code");
+          state.fail(device_fault(code), code, now, event.value("automatic", true));
+        } else if (action == "success")
+          state.success(now);
+        else if (action == "manual")
+          state.manual();
+        else if (action == "tick")
+          state.healthy(now, event.value("active", true));
+        else if (action != "decode")
+          throw std::runtime_error("Invalid recovery action");
+        auto value = state.snapshot(now);
+        value["ready"] = state.ready(now);
+        if (action == "decode")
+          value["rebuild"] =
+              decoder.observe(now, event.value("failed", false), event.value("malformed", false),
+                              event.value("frames", uint64_t(0)));
+        result.push_back(std::move(value));
+      }
+      return result;
+    }
+    if (op == "test_elapsed") {
+      require(offline, "Offline-test mode required");
+      return elapsed_ticks(request.at("now").get<uint64_t>(), request.at("stamp").get<uint64_t>());
+    }
+    if (op == "test_inventory") {
+      require(offline, "Offline-test mode required");
+      const auto &items = request.at("endpoints");
+      require(items.is_array() && items.size() <= 16, "Invalid endpoint inventory");
+      std::vector<BhEndpoint> next;
+      for (const auto &item : items) {
+        auto id = wide(item.at("id"));
+        require(!id.empty() && id.size() < 64, "Invalid endpoint identity");
+        BhEndpoint endpoint{};
+        endpoint.size = sizeof(endpoint);
+        endpoint.direction =
+            item.value("direction", std::string("output")) == "output" ? BH_PLAYBACK : BH_CAPTURE;
+        endpoint.is_default = item.value("default", false);
+        std::copy(id.begin(), id.end(), endpoint.endpoint_id);
+        next.push_back(endpoint);
+      }
+      {
+        std::lock_guard<std::mutex> lock(audio_mutex);
+        simulated_endpoints = std::move(next);
+        simulated_prepare_errors = {request.value("output_error", 0),
+                                    request.value("input_error", 0)};
+        simulated_inventory_enabled = true;
+      }
+      audio_condition.notify_one();
+      return true;
+    }
+    if (op == "test_routes") {
+      require(offline, "Offline-test mode required");
+      std::lock_guard<std::mutex> lock(audio_mutex);
+      return {{"output", output_selection},
+              {"input", input_selection},
+              {"wanted_output", wanted_endpoint[0]},
+              {"wanted_input", wanted_endpoint[1]}};
     }
     if (op == "test_voice_rx") {
       require(offline && !replaying, "Exclusive offline-test mode required");
@@ -1140,7 +1488,12 @@ public:
       if (usb)
         while (packets.size() < 64 && usb->pop(p))
           packets.push_back(hex(p.data.data(), p.size));
-      return {{"packets", packets}, {"active", usb && usb->active()}};
+      bool active = usb && usb->active();
+      return {{"packets", packets},
+              {"active", active},
+              {"reason", active ? ""
+                         : usb  ? usb->terminal_reason()
+                                : "stopped"}};
     }
     if (op == "mix_config") {
       auto mb = request.value("buffer_ms", 60u), vb = request.value("call_buffer_ms", 30u);
@@ -1173,6 +1526,11 @@ public:
       auto found = keys.find(key);
       if (found != keys.end()) {
         int id = found->second;
+        if (id == voice_input) {
+          stop_voice();
+          schedule("input", "", false);
+          schedule("system", "", false);
+        }
         media[id]->retire();
         api.bh_mix_remove(mixer, id);
         keys.erase(found);
@@ -1314,6 +1672,7 @@ public:
       voice_stop = false;
       voice_rx_packets = voice_tx_packets = voice_plc = voice_decode_errors = voice_rx_bytes =
           voice_tx_bytes = voice_frames = 0;
+      voice_expired_packets = voice_rx_resets = 0;
       api.bh_mix_call(mixer, id);
       api.bh_mix_clear(mixer, id);
       api.bh_mix_gate(mixer, id, true);
@@ -1339,7 +1698,31 @@ public:
           (generation != voice_epoch || (request.value("start", true) && voice_handle == 0xffff)))
         return 0;
       return schedule(request.at("direction"), request.value("endpoint_id", std::string()),
-                      request.value("start", true), generation);
+                      request.value("start", true), generation, false, 0, UINT64_MAX, false, 0,
+                      request.value("force", false));
+    }
+    if (op == "audio_retry") {
+      require(!quiesced, "Receiver is stopping");
+      std::vector<std::tuple<std::string, std::string, uint64_t>> routes;
+      {
+        std::lock_guard<std::mutex> lock(audio_mutex);
+        auto available = [&](const char *direction) {
+          return !preparing_audio[direction_id(direction)] &&
+                 std::none_of(audio_jobs.begin(), audio_jobs.end(),
+                              [&](const auto &job) { return job.direction == direction; });
+        };
+        if (output_wanted && available("output"))
+          routes.emplace_back("output", retry_endpoint[0], latest_job[0]);
+        if (capture_wanted && available("input"))
+          routes.emplace_back("input", retry_endpoint[1], latest_job[1]);
+        if (system_wanted && available("system"))
+          routes.emplace_back("system", "", latest_job[2]);
+      }
+      json tickets = json::array();
+      for (const auto &route : routes)
+        tickets.push_back(schedule(std::get<0>(route), std::get<1>(route), true, 0, offline, 0,
+                                   std::get<2>(route), true, 0, true));
+      return tickets;
     }
     if (op == "audio_cancel") {
       std::lock_guard<std::mutex> lock(audio_mutex);
@@ -1396,6 +1779,7 @@ public:
           {"presented_frames", api.bh_mix_value(mixer, id, 16)},
           {"callback_period_searches", api.bh_mix_value(mixer, id, 17)},
           {"recovery_discarded_frames", api.bh_mix_value(mixer, id, 18)},
+          {"invalid_samples", api.bh_mix_value(mixer, id, 19)},
           {"drift_ppm", static_cast<int64_t>(api.bh_mix_value(mixer, id, 2)) - 1000}};
       if (pair.first.rfind("call:", 0) != 0)
         sources[pair.first]["media"] = media[id]->snapshot();
@@ -1443,12 +1827,15 @@ public:
             {"uplink", up},
             {"voice",
              {{"rx_packets", voice_rx_packets.load()},
+              {"epoch", voice_epoch.load()},
               {"tx_packets", voice_tx_packets.load()},
               {"rx_bytes", voice_rx_bytes.load()},
               {"tx_bytes", voice_tx_bytes.load()},
               {"decoded_frames", voice_frames.load()},
               {"plc_frames", voice_plc.load()},
               {"decode_errors", voice_decode_errors.load()},
+              {"expired_packets", voice_expired_packets.load()},
+              {"rx_resets", voice_rx_resets.load()},
               {"active", voice_handle != 0xffff}}}};
   }
 };

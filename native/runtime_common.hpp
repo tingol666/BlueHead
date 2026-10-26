@@ -22,6 +22,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "audio_float.h"
 namespace bh {
 using json = nlohmann::json;
 namespace fs = std::filesystem;
@@ -52,6 +53,7 @@ struct Handle {
 };
 class Priority {
   HANDLE task = nullptr;
+  unsigned floating = bh_float_enter();
 
 public:
   explicit Priority(const wchar_t *name = L"Audio") {
@@ -61,6 +63,7 @@ public:
   ~Priority() {
     if (task)
       AvRevertMmThreadCharacteristics(task);
+    bh_float_leave(floating);
   }
 };
 inline uint64_t ticks() {
@@ -77,6 +80,10 @@ inline uint64_t frequency() {
   return f;
 }
 inline double seconds() { return static_cast<double>(ticks()) / frequency(); }
+inline uint64_t elapsed_ticks(uint64_t now, uint64_t stamp) {
+  return now >= stamp ? now - stamp : 0;
+}
+inline uint64_t age_ticks(uint64_t stamp) { return elapsed_ticks(ticks(), stamp); }
 inline std::wstring wide(const std::string &s) {
   if (s.empty())
     return {};

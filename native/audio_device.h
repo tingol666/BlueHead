@@ -11,6 +11,17 @@
 typedef struct BhDeviceContext BhDeviceContext;
 typedef struct BhAudioDevice BhAudioDevice;
 enum { BH_DEVICE_ABI = 1, BH_PLAYBACK = 1, BH_CAPTURE = 2, BH_DEVICE_BUFFER_SMALL = -10001 };
+/* Stable semantic error classes; native backend codes remain available. */
+enum {
+  BH_FAILURE_INTERNAL,
+  BH_FAILURE_ENDPOINT,
+  BH_FAILURE_BUSY,
+  BH_FAILURE_PERMISSION,
+  BH_FAILURE_FORMAT,
+  BH_FAILURE_MEMORY,
+  BH_FAILURE_TIMEOUT
+};
+BH_DEVICE_API int bh_device_error_category(int code);
 typedef struct {
   uint32_t size, direction, is_default, reserved;
   wchar_t endpoint_id[64];

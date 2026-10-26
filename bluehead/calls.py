@@ -18,6 +18,7 @@ from .metrics import TrafficMeter
 from .uplink import CallRouter
 from .voice import VoiceCodec, available_codecs
 from .hfp_compat import HandsFreeProtocol, handsfree_records, selected_codec, renegotiate_fallback
+from .errors import Retirement
 
 log = logging.getLogger(__name__)
 MICROPHONE_OPEN_TIMEOUT = 5
@@ -711,28 +712,29 @@ class CallManager:
         if link is not None and self.links.get(key) is not link:
             return
         if key in self.links:
-            log.info("SCO disconnected: peer=%s counters=%s microphone_frames=%s", key,
-                     self.statistics.get(key), getattr(self.microphone, "frames", 0))
+            log.info("SCO disconnected: peer=%s counters=%s", key, self.statistics.get(key))
+        retirement = Retirement()
         self.links.pop(key, None)
         self.voice_buffers.pop(key, None)
         codec = self.voice_codecs.pop(key, None)
         if codec:
-            codec.close()
+            retirement.call(codec.close)
         pending = self.capture_tasks.pop(key, None)
         if pending:
-            pending.cancel()
-        self.mixer.remove("call:" + key)
+            retirement.call(pending.cancel)
+        retirement.call(self.mixer.remove, "call:" + key)
         if self.router.owner == key:
-            self.close_system_capture()
+            retirement.call(self.close_system_capture)
             if self.capture_route:
-                self.capture_route.close()
+                retirement.call(self.capture_route.close)
                 self.capture_route = None
-            self.router.select(None)
+            retirement.call(self.router.select, None)
             if self.microphone:
-                self.retire_microphone(self.microphone)
+                retirement.call(self.retire_microphone, self.microphone)
                 self.microphone = None
             self.mixer.call_active, self.mixer.call_source = False, None
             self.emit("microphone", key=key, active=False)
+        retirement.finish()
 
     async def set_input_device(self, device):
         retry = None
@@ -788,24 +790,26 @@ class CallManager:
         if self.closed:
             return
         self.closed = True
-        self.server.l2cap_server.close()
+        retirement = Retirement()
+        retirement.call(self.server.l2cap_server.close)
         if self.device.sdp_service_records.get(0x10002) is self.sdp_record:
             self.device.sdp_service_records.pop(0x10002, None)
-        self.close_system_capture()
-        self.device.remove_listener("connection", self.on_connection)
+        retirement.call(self.close_system_capture)
+        retirement.call(self.device.remove_listener, "connection", self.on_connection)
         for key in list(self.links):
-            self.audio_closed(key)
+            retirement.call(self.audio_closed, key)
         if self.capture_route:
-            self.capture_route.close()
+            retirement.call(self.capture_route.close)
             self.capture_route = None
         if self.microphone:
-            self.retire_microphone(self.microphone)
+            retirement.call(self.retire_microphone, self.microphone)
             self.microphone = None
-        self.router.select(None)
+        retirement.call(self.router.select, None)
         self.links.clear()
         self.voice_buffers.clear()
         for task in list(self.tasks):
             task.cancel()
+        retirement.finish()
 
     async def wait_closed(self):
         while self.tasks or self.cleanup_tasks:

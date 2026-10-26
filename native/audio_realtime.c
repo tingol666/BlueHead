@@ -11,6 +11,7 @@
 #include <stdatomic.h>
 #include "speex_resampler.h"
 #include "audio_timeline.h"
+#include "audio_float.h"
 
 #define API __declspec(dllexport)
 #define BLOCK 480u
@@ -109,7 +110,7 @@ API uint64_t bh_render_value(Render *r, int field) {
     return 0;
   }
 }
-API int bh_render_process(Render *r, float *output, uint32_t frames) {
+static int render_process(Render *r, float *output, uint32_t frames) {
   if (!r || !output || !frames || frames > MAX_IO)
     return -1;
   if (atomic_load_explicit(&r->halted, memory_order_acquire)) {
@@ -151,6 +152,12 @@ API int bh_render_process(Render *r, float *output, uint32_t frames) {
   return 1;
 }
 
+API int bh_render_process(Render *r, float *output, uint32_t frames) {
+  unsigned environment = bh_float_enter();
+  int result = render_process(r, output, frames);
+  bh_float_leave(environment);
+  return result;
+}
 /* PortAudio's ABI: Windows unsigned long is 32-bit, pointers are native-sized. */
 API int bh_output_callback(const void *input, void *output, unsigned long frames, const void *times,
                            unsigned long status, void *userdata) {
@@ -330,7 +337,7 @@ API int bh_input_callback(const void *input, void *output, unsigned long frames,
   bh_capture_push(c, input, frames);
   return 0;
 }
-static int capture_read(Capture *c, int16_t *integer, float *floating, uint32_t capacity) {
+static int capture_read_impl(Capture *c, int16_t *integer, float *floating, uint32_t capacity) {
   if (!c || (!integer && !floating) || !capacity || capacity > MAX_IO)
     return -1;
   uint64_t dropped = atomic_load_explicit(&c->dropped, memory_order_acquire);
@@ -360,7 +367,7 @@ static int capture_read(Capture *c, int16_t *integer, float *floating, uint32_t 
         float value = c->ring[at * c->channels];
         if (c->channels == 2)
           value = (value + c->ring[at * 2 + 1]) * .5f;
-        c->mono[i] = isfinite(value) ? value : 0;
+        c->mono[i] = isfinite(value) && fabsf(value) <= 16 ? value : 0;
       }
       atomic_store_explicit(&c->read, r + take, memory_order_release);
       c->remaining = take;
@@ -401,6 +408,12 @@ static int capture_read(Capture *c, int16_t *integer, float *floating, uint32_t 
     produced += available;
   }
   return (int)produced;
+}
+static int capture_read(Capture *c, int16_t *integer, float *floating, uint32_t capacity) {
+  unsigned environment = bh_float_enter();
+  int result = capture_read_impl(c, integer, floating, capacity);
+  bh_float_leave(environment);
+  return result;
 }
 API int bh_capture_read(Capture *c, int16_t *output, uint32_t capacity) {
   return capture_read(c, output, NULL, capacity);

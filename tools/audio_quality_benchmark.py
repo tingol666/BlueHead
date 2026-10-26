@@ -22,6 +22,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--report', type=Path, required=True)
     parser.add_argument('--generic', action='store_true', help='Compare the former generic PLC callback')
+    parser.add_argument('--amplitude', type=float, default=.06, help='Include subnormal/near-silence cost checks')
     args = parser.parse_args()
     measurements = []
     for sources, gap in ((1, False), (2, False), (8, False), (8, True)):
@@ -34,7 +35,7 @@ def main():
             api.bh_mix_continuity(mixer.handle, stream.index, 1, 0, 0)
             api.bh_mix_timeline(mixer.handle, stream.index, 0 if args.generic else 1)
         t = np.arange(480) / 48000
-        tone = (.06*np.sin(2*np.pi*1000*t)).astype('f4')
+        tone = (args.amplitude*np.sin(2*np.pi*1000*t)).astype('f4')
         pcm = np.column_stack((tone, -.37*tone)).astype('f4')
         output = np.empty((480, 2), 'f4')
         costs = []
@@ -59,7 +60,7 @@ def main():
                                                         map(float, np.percentile(costs, [50, 95, 99, 100]))))})
         finally:
             mixer.close()
-    result = {'scope': __doc__, 'generic_gap_owner': args.generic, 'audio_sha256': hashlib.sha256(
+    result = {'scope': __doc__, 'amplitude': args.amplitude, 'generic_gap_owner': args.generic, 'audio_sha256': hashlib.sha256(
         (ROOT / 'bluehead/assets/bluehead_audio.dll').read_bytes()).hexdigest(), 'measurements': measurements}
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(result, indent=2) + '\n', 'utf-8')

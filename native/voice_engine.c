@@ -11,6 +11,7 @@
 #include <string.h>
 #include <limits.h>
 #include <math.h>
+#include "audio_float.h"
 
 #define H2_BYTES 60u
 #define PCM_QUEUE (BH_VOICE_FRAME_SAMPLES * BH_VOICE_QUEUE_FRAMES)
@@ -35,7 +36,7 @@ struct bh_voice {
   SpeexResamplerState *downsample, *upsample;
   uint32_t codec_rate, low_samples;
   int16_t low_pcm[120];
-  uint8_t cvsd_low_byte, cvsd_odd, cvsd_damaged;
+  uint8_t cvsd_low_byte, cvsd_odd, cvsd_damaged, cvsd_skip;
   uint32_t cvsd_samples;
   plc_state_t *plc;
   uint8_t rx[H2_BYTES], damaged[H2_BYTES], last_wire[H2_BYTES];
@@ -256,6 +257,53 @@ void bh_voice_destroy(bh_voice *v) {
   memset(v, 0, sizeof(*v));
   free(v);
 }
+int bh_voice_skip_rx(bh_voice *v, uint32_t wire_bytes) {
+  if (!ready(v))
+    return -1;
+  if (v->codec == BH_VOICE_CVSD) {
+    v->cvsd_skip = (v->cvsd_odd ^ v->cvsd_skip ^ (wire_bytes & 1u));
+    v->cvsd_odd = 0;
+    v->cvsd_samples = v->cvsd_damaged = 0;
+  }
+  v->queue_read = v->queue_size = 0;
+  return 0;
+}
+int bh_voice_reset_rx(bh_voice *v) {
+  if (!ready(v))
+    return -1;
+  if (v->codec == BH_VOICE_LC3_SWB) {
+    v->decoder = lc3_setup_decoder(7500, 32000, 48000, v->decoder_memory);
+    if (!v->decoder)
+      return -3;
+  } else {
+    if (v->codec == BH_VOICE_MSBC) {
+      AVCodecContext *candidate = avcodec_alloc_context3(avcodec_find_decoder(AV_CODEC_ID_SBC));
+      if (!candidate)
+        return -3;
+      candidate->sample_rate = 16000;
+      av_channel_layout_default(&candidate->ch_layout, 1);
+      if (avcodec_open2(candidate, NULL, NULL) < 0) {
+        avcodec_free_context(&candidate);
+        return -3;
+      }
+      avcodec_free_context(&v->msbc_decoder);
+      v->msbc_decoder = candidate;
+      av_frame_unref(v->msbc_output);
+    }
+    if (speex_resampler_reset_mem(v->upsample))
+      return -3;
+    if (v->plc)
+      plc_init(v->plc);
+  }
+  v->cvsd_skip ^= v->cvsd_odd;
+  v->cvsd_odd = v->cvsd_damaged = v->cvsd_samples = 0;
+  v->rx_size = v->rx_started = v->rx_sequence = 0;
+  v->queue_read = v->queue_size = 0;
+  memset(v->rx, 0, sizeof(v->rx));
+  memset(v->damaged, 0, sizeof(v->damaged));
+  memset(v->last_wire, 0, sizeof(v->last_wire));
+  return 0;
+}
 int bh_voice_reset(bh_voice *v) {
   if (!valid(v))
     return -1;
@@ -286,7 +334,7 @@ int bh_voice_reset(bh_voice *v) {
   }
   if (v->plc)
     plc_init(v->plc);
-  v->cvsd_odd = v->cvsd_damaged = v->cvsd_samples = 0;
+  v->cvsd_odd = v->cvsd_damaged = v->cvsd_samples = v->cvsd_skip = 0;
   v->rx_size = v->rx_started = v->rx_sequence = v->tx_sequence = 0;
   v->queue_read = v->queue_size = 0;
   memset(v->rx, 0, sizeof(v->rx));
@@ -300,8 +348,8 @@ int bh_voice_reset(bh_voice *v) {
   v->ready = 1;
   return 0;
 }
-int bh_voice_encode_f32(bh_voice *v, const float *pcm, uint32_t samples, uint8_t *wire,
-                        uint32_t capacity) {
+static int voice_encode_f32(bh_voice *v, const float *pcm, uint32_t samples, uint8_t *wire,
+                            uint32_t capacity) {
   static const uint8_t sequence[4] = {0x08, 0x38, 0xc8, 0xf8};
   if (!ready(v) || !pcm || !wire || samples != BH_VOICE_FRAME_SAMPLES)
     return -1;
@@ -346,6 +394,13 @@ int bh_voice_encode_f32(bh_voice *v, const float *pcm, uint32_t samples, uint8_t
   v->stats.tx_frames++;
   return H2_BYTES;
 }
+int bh_voice_encode_f32(bh_voice *v, const float *pcm, uint32_t samples, uint8_t *wire,
+                        uint32_t capacity) {
+  unsigned environment = bh_float_enter();
+  int result = voice_encode_f32(v, pcm, samples, wire, capacity);
+  bh_float_leave(environment);
+  return result;
+}
 int bh_voice_encode(bh_voice *v, const int16_t *pcm, uint32_t samples, uint8_t *wire,
                     uint32_t capacity) {
   if (!pcm || samples != BH_VOICE_FRAME_SAMPLES)
@@ -355,7 +410,8 @@ int bh_voice_encode(bh_voice *v, const int16_t *pcm, uint32_t samples, uint8_t *
     floating[i] = pcm[i] / 32768.0f;
   return bh_voice_encode_f32(v, floating, samples, wire, capacity);
 }
-int bh_voice_push_rx(bh_voice *v, const uint8_t *wire, uint32_t length, uint32_t packet_status) {
+static int voice_push_rx(bh_voice *v, const uint8_t *wire, uint32_t length,
+                         uint32_t packet_status) {
   uint32_t i;
   int produced = 0;
   if (!ready(v) || (!wire && length) || length > MAX_RX_BYTES || packet_status > 3)
@@ -365,7 +421,9 @@ int bh_voice_push_rx(bh_voice *v, const uint8_t *wire, uint32_t length, uint32_t
   v->stats.rx_packets++;
   v->stats.rx_bytes += length;
   if (v->codec == BH_VOICE_CVSD) {
-    for (i = 0; i < length; ++i) {
+    i = v->cvsd_skip ? 1 : 0;
+    v->cvsd_skip = 0;
+    for (; i < length; ++i) {
       if (!v->cvsd_odd) {
         v->cvsd_low_byte = wire[i];
         v->cvsd_odd = 1;
@@ -418,6 +476,12 @@ int bh_voice_push_rx(bh_voice *v, const uint8_t *wire, uint32_t length, uint32_t
     }
   }
   return produced;
+}
+int bh_voice_push_rx(bh_voice *v, const uint8_t *wire, uint32_t length, uint32_t packet_status) {
+  unsigned environment = bh_float_enter();
+  int result = voice_push_rx(v, wire, length, packet_status);
+  bh_float_leave(environment);
+  return result;
 }
 uint32_t bh_voice_read_pcm(bh_voice *v, int16_t *pcm, uint32_t capacity) {
   uint32_t i, count;

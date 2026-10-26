@@ -35,6 +35,9 @@ BH_VOICE_API uint32_t bh_voice_codec_available(uint32_t codec_id);
 BH_VOICE_API bh_voice *bh_voice_create(uint32_t codec_id);
 BH_VOICE_API void bh_voice_destroy(bh_voice *voice);
 BH_VOICE_API int bh_voice_reset(bh_voice *voice);
+/* Worker-only receive recovery; transmit sequence and encoder stay intact. */
+BH_VOICE_API int bh_voice_reset_rx(bh_voice *voice);
+BH_VOICE_API int bh_voice_skip_rx(bh_voice *voice, uint32_t wire_bytes);
 /* Fixed encoding frame: 360 PCM samples. Returns bytes written, or <0.
  * Capacity errors do not consume sequence/codec state. CVSD here means HCI
  * 8k S16 PCM (controller does CVSD coding), not a software CVSD bitstream. */

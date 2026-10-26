@@ -103,7 +103,7 @@ def test_capture_clock_uses_producer_progress_not_consumer_drain_time(rate):
 
 
 @pytest.mark.parametrize('codec', [1, 2, 3])
-def test_voice_float_decode_is_unquantized_and_s16_adapter_is_consistent(dll, codec):
+def test_voice_float_decode_is_unquantized_and_s16_adapter_is_consistent(dll, codec):  # noqa: F811 imported pytest fixture
     dll.bh_voice_encode_f32.argtypes = [C.c_void_p, C.c_void_p, C.c_uint32, C.c_void_p, C.c_uint32]
     dll.bh_voice_read_f32.argtypes = [C.c_void_p, C.c_void_p, C.c_uint32]
     dll.bh_voice_read_f32.restype = C.c_uint32

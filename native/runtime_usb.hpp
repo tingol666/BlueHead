@@ -783,6 +783,17 @@ public:
   }
   bool pop(SmallPacket &p) { return controls.pop(p); }
   bool active() const { return alive.load(); }
+  const char *terminal_reason() const {
+    if (control_overflows.load())
+      return "control_backpressure";
+    if (last_transfer_status.load() == LIBUSB_TRANSFER_NO_DEVICE)
+      return "device_removed";
+    if (last_submit_error.load() < 0)
+      return "usb_submit_failed";
+    if (last_transfer_status.load() != LIBUSB_TRANSFER_COMPLETED)
+      return "usb_transfer_failed";
+    return "stopped";
+  }
   json snapshot() const {
     return {{"active", active()},
             {"rx_packets", rx_packets.load()},
@@ -792,6 +803,7 @@ public:
             {"tx_deadline_misses", deadline_misses.load()},
             {"last_submit_error", last_submit_error.load()},
             {"last_transfer_status", last_transfer_status.load()},
+            {"terminal_reason", active() ? "" : terminal_reason()},
             {"single_owner", true}};
   }
 };

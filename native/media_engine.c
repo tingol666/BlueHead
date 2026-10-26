@@ -5,6 +5,7 @@
 #include "media_engine.h"
 #include "audio_continuity.h"
 #include "audio_timeline.h"
+#include "audio_float.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -122,8 +123,13 @@ BH_MEDIA_API int bh_media_restart(BhMedia *m) {
     if (!m->parser)
       return -1;
   }
-  /* LATM useSameStreamMux packets need the previous StreamMuxConfig. */
-  return m->codec == 2 ? 0 : open_codec(m);
+  if (m->codec == 2) {
+    /* Clear the old synthesis overlap, retaining StreamMuxConfig for
+     * useSameStreamMux packets. Reopening would lose that configuration. */
+    avcodec_flush_buffers(m->context);
+    return 0;
+  }
+  return open_codec(m);
 }
 static void enqueue(BhMedia *m, const float *data, uint32_t frames) {
   m->frames += frames;
@@ -255,7 +261,7 @@ static int frame_pcm(BhMedia *m) {
   }
   if (frames >= 0) {
     for (int i = 0; i < frames * 2; i++)
-      if (!isfinite(output[i]))
+      if (!isfinite(output[i]) || fabsf(output[i]) > 16)
         return -1;
     if (m->continuity_enabled)
       for (int i = 0; i < frames; i++) {
@@ -479,7 +485,7 @@ static int feed_packet(BhMedia *m, const uint8_t *data, uint32_t size) {
   m->coded += size;
   return chunk(m, m->packet_data, size);
 }
-BH_MEDIA_API int bh_media_feed(BhMedia *m, const uint8_t *data, uint32_t size) {
+static int media_feed(BhMedia *m, const uint8_t *data, uint32_t size) {
   if (!m)
     return -1;
   m->packet_timestamp_valid = 0;
@@ -494,6 +500,12 @@ BH_MEDIA_API int bh_media_feed(BhMedia *m, const uint8_t *data, uint32_t size) {
       m->source_expected += duration;
     }
   }
+  return result;
+}
+BH_MEDIA_API int bh_media_feed(BhMedia *m, const uint8_t *data, uint32_t size) {
+  unsigned environment = bh_float_enter();
+  int result = media_feed(m, data, size);
+  bh_float_leave(environment);
   return result;
 }
 BH_MEDIA_API uint32_t bh_media_read(BhMedia *m, float *output, uint32_t frames) {

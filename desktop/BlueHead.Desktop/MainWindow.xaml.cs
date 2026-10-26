@@ -37,6 +37,7 @@ public partial class MainWindow
     internal readonly DesktopState State = new();
     private readonly EngineClient engine = new();
     private EngineSettings settings = new();
+    private readonly Dictionary<string, string> audioHealthNotices = new();
     private UiSettings preferences = new();
     private bool applying = true, running, closing, allowClose, driverBusy, refreshingAudio;
     private readonly bool offline;
@@ -198,7 +199,7 @@ public partial class MainWindow
             ApplySettings();
             UpdateSetupState();
         }
-        else if (kind == "starting") { Notice.Visibility = Visibility.Collapsed; SetRunning(true); StatusTitle.Text = "正在准备接收"; StatusDetail.Text = "正在打开蓝牙与音频设备…"; }
+        else if (kind == "starting") { audioHealthNotices.Clear(); Notice.Visibility = Visibility.Collapsed; SetRunning(true); StatusTitle.Text = "正在准备接收"; StatusDetail.Text = "正在打开蓝牙与音频设备…"; }
         else if (kind == "stopped")
         {
             voiceInUse = mediaProtected = highMediaActive = false;
@@ -211,6 +212,24 @@ public partial class MainWindow
             }
         }
         else if (kind is "error" or "warning") ShowNotice(message.Text("message"));
+        else if (kind == "audio_health")
+        {
+            var direction = message.Text("direction");
+            if (message.Text("state") == "restored")
+            {
+                if (audioHealthNotices.TryGetValue(direction, out var previous) && NoticeText.Text == previous)
+                    Notice.Visibility = Visibility.Collapsed;
+                audioHealthNotices.Remove(direction);
+                FooterStatus.Text = message.Text("message");
+                if (Notice.Visibility != Visibility.Visible && audioHealthNotices.Count > 0)
+                    ShowNotice(audioHealthNotices.Values.Last());
+            }
+            else
+            {
+                audioHealthNotices[direction] = message.Text("message");
+                ShowNotice(message.Text("message"));
+            }
+        }
         else if (kind == "status")
         {
             StatusDetail.Text = message.Text("message");
@@ -221,9 +240,13 @@ public partial class MainWindow
         {
             refreshingAudio = false; StartButton.IsEnabled = !driverBusy && !closing;
             settings.output_device = message.Endpoint("output_device"); settings.input_device = message.Endpoint("input_device");
-            if (settings.output_device == null) settings.output_endpoint_id = null;
-            if (settings.input_device == null) settings.input_endpoint_id = null;
-            FooterStatus.Text = "音频设备已更新 · 蓝牙连接保持";
+            if (message.TryGetProperty("output_endpoint_id", out var outputIdentity))
+                settings.output_endpoint_id = outputIdentity.ValueKind == JsonValueKind.String ? outputIdentity.GetString() : null;
+            else if (settings.output_device == null) settings.output_endpoint_id = null;
+            if (message.TryGetProperty("input_endpoint_id", out var inputIdentity))
+                settings.input_endpoint_id = inputIdentity.ValueKind == JsonValueKind.String ? inputIdentity.GetString() : null;
+            else if (settings.input_device == null) settings.input_endpoint_id = null;
+            FooterStatus.Text = message.GetProperty("success").GetBoolean() ? "音频设备已更新 · 蓝牙连接保持" : "音频设备更新未完成";
             if (!message.GetProperty("success").GetBoolean()) ShowNotice(message.Text("message"));
             ApplySettings();
         }

@@ -34,7 +34,7 @@ struct bh_voice {
   AVFrame *msbc_input, *msbc_output;
   AVPacket *msbc_packet;
   SpeexResamplerState *downsample, *upsample;
-  uint32_t codec_rate, low_samples;
+  uint32_t codec_rate, low_samples, pcm_rate, frame_samples, capacity;
   int16_t low_pcm[120];
   uint8_t cvsd_low_byte, cvsd_odd, cvsd_damaged, cvsd_skip;
   uint32_t cvsd_samples;
@@ -67,25 +67,29 @@ static uint32_t header_sequence(const uint8_t *p) {
 static void plc_good(bh_voice *v) { plc_rx(v->plc, v->low_pcm, (int)v->low_samples); }
 static void plc_fill(bh_voice *v) { plc_fillin(v->plc, v->low_pcm, (int)v->low_samples); }
 static int upsample_frame(bh_voice *v) {
-  spx_uint32_t in = v->low_samples, out = BH_VOICE_FRAME_SAMPLES;
+  spx_uint32_t in = v->low_samples, out = v->frame_samples;
   float low[120];
   for (uint32_t i = 0; i < v->low_samples; i++)
     low[i] = v->low_pcm[i] / 32768.0f;
+  if (!v->upsample) {
+    memcpy(v->decoded, low, v->low_samples * sizeof(float));
+    return 0;
+  }
   int result = speex_resampler_process_float(v->upsample, 0, low, &in, v->decoded, &out);
-  return result || in != v->low_samples || out != BH_VOICE_FRAME_SAMPLES ? -3 : 0;
+  return result || in != v->low_samples || out != v->frame_samples ? -3 : 0;
 }
 static void queue_pcm(bh_voice *v) {
   uint32_t i;
-  if (v->queue_size + BH_VOICE_FRAME_SAMPLES > PCM_QUEUE) {
-    uint32_t drop = BH_VOICE_FRAME_SAMPLES;
-    v->queue_read = (v->queue_read + drop) % PCM_QUEUE;
+  if (v->queue_size + v->frame_samples > v->capacity) {
+    uint32_t drop = v->frame_samples;
+    v->queue_read = (v->queue_read + drop) % v->capacity;
     v->queue_size -= drop;
     v->stats.discarded_samples += drop;
     v->stats.queue_overruns++;
   }
-  for (i = 0; i < BH_VOICE_FRAME_SAMPLES; ++i)
-    v->queue[(v->queue_read + v->queue_size + i) % PCM_QUEUE] = v->decoded[i];
-  v->queue_size += BH_VOICE_FRAME_SAMPLES;
+  for (i = 0; i < v->frame_samples; ++i)
+    v->queue[(v->queue_read + v->queue_size + i) % v->capacity] = v->decoded[i];
+  v->queue_size += v->frame_samples;
   if (v->queue_size > v->stats.high_water_samples)
     v->stats.high_water_samples = v->queue_size;
 }
@@ -194,19 +198,28 @@ static int create_msbc(bh_voice *v) {
   av_channel_layout_default(&v->msbc_input->ch_layout, 1);
   return av_frame_get_buffer(v->msbc_input, 0) < 0 ? -3 : 0;
 }
-bh_voice *bh_voice_create(uint32_t codec_id) {
+bh_voice *bh_voice_create(uint32_t codec_id) { return bh_voice_create_at(codec_id, 48000); }
+uint32_t bh_voice_pcm_rate(const bh_voice *v) { return valid(v) ? v->pcm_rate : 0; }
+bh_voice *bh_voice_create_at(uint32_t codec_id, uint32_t pcm_rate) {
   bh_voice *v;
-  if (!bh_voice_codec_available(codec_id))
+  uint32_t native_rate = codec_id == BH_VOICE_LC3_SWB ? 32000
+                         : codec_id == BH_VOICE_MSBC  ? 16000
+                                                      : 8000;
+  if (!bh_voice_codec_available(codec_id) || (pcm_rate != 48000 && pcm_rate != native_rate))
     return NULL;
   v = calloc(1, sizeof(*v));
   if (!v)
     return NULL;
   v->magic = CONTEXT_MAGIC;
   v->codec = codec_id;
+  v->codec_rate = native_rate;
+  v->pcm_rate = pcm_rate;
+  v->frame_samples = pcm_rate * 75u / 10000u;
+  v->capacity = v->frame_samples * BH_VOICE_QUEUE_FRAMES;
   if (codec_id == BH_VOICE_LC3_SWB) {
     /* The size API takes PCM rate, not the encoded LC3 sample rate. */
-    v->encoder_memory = calloc(1, lc3_encoder_size(7500, 48000));
-    v->decoder_memory = calloc(1, lc3_decoder_size(7500, 48000));
+    v->encoder_memory = calloc(1, lc3_encoder_size(7500, pcm_rate));
+    v->decoder_memory = calloc(1, lc3_decoder_size(7500, pcm_rate));
     if (!v->encoder_memory || !v->decoder_memory) {
       bh_voice_destroy(v);
       return NULL;
@@ -218,17 +231,18 @@ bh_voice *bh_voice_create(uint32_t codec_id) {
       bh_voice_destroy(v);
       return NULL;
     }
-    v->codec_rate = codec_id == BH_VOICE_MSBC ? 16000 : 8000;
     v->low_samples = v->codec_rate * 75u / 10000u;
-    v->downsample = speex_resampler_init(1, 48000, v->codec_rate, 5, &error);
-    if (!v->downsample || error) {
-      bh_voice_destroy(v);
-      return NULL;
-    }
-    v->upsample = speex_resampler_init(1, v->codec_rate, 48000, 5, &error);
-    if (!v->upsample || error) {
-      bh_voice_destroy(v);
-      return NULL;
+    if (pcm_rate != native_rate) {
+      v->downsample = speex_resampler_init(1, pcm_rate, v->codec_rate, 5, &error);
+      if (!v->downsample || error) {
+        bh_voice_destroy(v);
+        return NULL;
+      }
+      v->upsample = speex_resampler_init(1, v->codec_rate, pcm_rate, 5, &error);
+      if (!v->upsample || error) {
+        bh_voice_destroy(v);
+        return NULL;
+      }
     }
   }
   if (bh_voice_reset(v)) {
@@ -272,7 +286,7 @@ int bh_voice_reset_rx(bh_voice *v) {
   if (!ready(v))
     return -1;
   if (v->codec == BH_VOICE_LC3_SWB) {
-    v->decoder = lc3_setup_decoder(7500, 32000, 48000, v->decoder_memory);
+    v->decoder = lc3_setup_decoder(7500, 32000, v->pcm_rate, v->decoder_memory);
     if (!v->decoder)
       return -3;
   } else {
@@ -290,7 +304,7 @@ int bh_voice_reset_rx(bh_voice *v) {
       v->msbc_decoder = candidate;
       av_frame_unref(v->msbc_output);
     }
-    if (speex_resampler_reset_mem(v->upsample))
+    if (v->upsample && speex_resampler_reset_mem(v->upsample))
       return -3;
     if (v->plc)
       plc_init(v->plc);
@@ -309,12 +323,13 @@ int bh_voice_reset(bh_voice *v) {
     return -1;
   v->ready = 0;
   if (v->codec == BH_VOICE_LC3_SWB) {
-    v->encoder = lc3_setup_encoder(7500, 32000, 48000, v->encoder_memory);
-    v->decoder = lc3_setup_decoder(7500, 32000, 48000, v->decoder_memory);
+    v->encoder = lc3_setup_encoder(7500, 32000, v->pcm_rate, v->encoder_memory);
+    v->decoder = lc3_setup_decoder(7500, 32000, v->pcm_rate, v->decoder_memory);
     if (!v->encoder || !v->decoder)
       return -3;
   } else {
-    if (speex_resampler_reset_mem(v->downsample) || speex_resampler_reset_mem(v->upsample))
+    if ((v->downsample && speex_resampler_reset_mem(v->downsample)) ||
+        (v->upsample && speex_resampler_reset_mem(v->upsample)))
       return -3;
     /* Preserve the SRC's initial zero history: fixed-size codec frames
      * must consume and produce exactly their duration from frame one.
@@ -351,7 +366,7 @@ int bh_voice_reset(bh_voice *v) {
 static int voice_encode_f32(bh_voice *v, const float *pcm, uint32_t samples, uint8_t *wire,
                             uint32_t capacity) {
   static const uint8_t sequence[4] = {0x08, 0x38, 0xc8, 0xf8};
-  if (!ready(v) || !pcm || !wire || samples != BH_VOICE_FRAME_SAMPLES)
+  if (!ready(v) || !pcm || !wire || samples != v->frame_samples)
     return -1;
   if (capacity < (v->codec == BH_VOICE_CVSD ? 120u : H2_BYTES))
     return -2;
@@ -364,10 +379,13 @@ static int voice_encode_f32(bh_voice *v, const float *pcm, uint32_t samples, uin
   } else {
     int16_t low[120];
     float filtered[120];
-    spx_uint32_t in = BH_VOICE_FRAME_SAMPLES, out = v->low_samples;
-    if (speex_resampler_process_float(v->downsample, 0, pcm, &in, filtered, &out) ||
-        in != BH_VOICE_FRAME_SAMPLES || out != v->low_samples)
-      return -3;
+    spx_uint32_t in = v->frame_samples, out = v->low_samples;
+    if (v->downsample) {
+      if (speex_resampler_process_float(v->downsample, 0, pcm, &in, filtered, &out) ||
+          in != v->frame_samples || out != v->low_samples)
+        return -3;
+    } else
+      memcpy(filtered, pcm, out * sizeof(float));
     for (uint32_t i = 0; i < out; i++)
       low[i] = quantize(filtered[i]);
     if (v->codec == BH_VOICE_CVSD) {
@@ -403,7 +421,7 @@ int bh_voice_encode_f32(bh_voice *v, const float *pcm, uint32_t samples, uint8_t
 }
 int bh_voice_encode(bh_voice *v, const int16_t *pcm, uint32_t samples, uint8_t *wire,
                     uint32_t capacity) {
-  if (!pcm || samples != BH_VOICE_FRAME_SAMPLES)
+  if (!ready(v) || !pcm || samples != v->frame_samples)
     return -1;
   float floating[BH_VOICE_FRAME_SAMPLES];
   for (uint32_t i = 0; i < samples; i++)
@@ -489,8 +507,8 @@ uint32_t bh_voice_read_pcm(bh_voice *v, int16_t *pcm, uint32_t capacity) {
     return 0;
   count = capacity < v->queue_size ? capacity : v->queue_size;
   for (i = 0; i < count; ++i)
-    pcm[i] = quantize(v->queue[(v->queue_read + i) % PCM_QUEUE]);
-  v->queue_read = (v->queue_read + count) % PCM_QUEUE;
+    pcm[i] = quantize(v->queue[(v->queue_read + i) % v->capacity]);
+  v->queue_read = (v->queue_read + count) % v->capacity;
   v->queue_size -= count;
   return count;
 }
@@ -499,8 +517,8 @@ uint32_t bh_voice_read_f32(bh_voice *v, float *pcm, uint32_t capacity) {
     return 0;
   uint32_t count = capacity < v->queue_size ? capacity : v->queue_size;
   for (uint32_t i = 0; i < count; i++)
-    pcm[i] = v->queue[(v->queue_read + i) % PCM_QUEUE];
-  v->queue_read = (v->queue_read + count) % PCM_QUEUE;
+    pcm[i] = v->queue[(v->queue_read + i) % v->capacity];
+  v->queue_read = (v->queue_read + count) % v->capacity;
   v->queue_size -= count;
   return count;
 }

@@ -9,19 +9,34 @@
 #include <stdint.h>
 #include <stdlib.h>
 #define BHR_PHASES 256u
-#define BHR_BASE_TAPS 128u
-#define BHR_MAX_TAPS 6144u /* 384k -> 8k, bounded public PCM domain. */
+#define BHR_BASE_TAPS 160u
+#define BHR_MAX_TAPS 12288u /* 384k -> 8k, bounded public PCM domain. */
 #define BHR_HISTORY (BHR_MAX_TAPS / 2u)
 typedef struct BhRateKernel {
   uint32_t input_rate, output_rate, taps, centre, references;
   double ratio;
-  double *coefficient; /* [phase][tap][value, derivative per phase step] */
+  double *coefficient; /* [phase][values..., derivatives per phase step...] */
 } BhRateKernel;
 static void bhr_free(BhRateKernel *k) {
   if (k) {
     free(k->coefficient);
     free(k);
   }
+}
+/* Control-only modified Bessel series. Kaiser windows are also used in the
+ * pinned SpeexDSP implementation; these coefficients are designed locally
+ * for the one-pass asynchronous converter, without copying its tables. */
+static double bhr_bessel(double z, double *i1_over_z) {
+  double term = 1, sum = 1, derivative = .5;
+  for (unsigned n = 1; n < 48; n++) {
+    term *= z * z / (4. * n * n);
+    sum += term;
+    derivative += .5 * term / (n + 1);
+    if (term < sum * 1e-18)
+      break;
+  }
+  *i1_over_z = derivative;
+  return sum;
 }
 static BhRateKernel *bhr_create(uint32_t input_rate, uint32_t output_rate) {
   if (input_rate < 8000 || input_rate > 384000 || output_rate < 8000 || output_rate > 384000)
@@ -32,7 +47,9 @@ static BhRateKernel *bhr_create(uint32_t input_rate, uint32_t output_rate) {
   k->input_rate = input_rate;
   k->output_rate = output_rate;
   k->ratio = (double)input_rate / output_rate;
-  k->taps = ((uint32_t)ceil(BHR_BASE_TAPS * fmax(1, k->ratio)) + 1u) & ~1u;
+  int voice_down = output_rate <= 32000 && k->ratio > 1;
+  uint32_t base_taps = voice_down ? 256u : BHR_BASE_TAPS;
+  k->taps = ((uint32_t)ceil(base_taps * fmax(1, k->ratio)) + 1u) & ~1u;
   k->centre = k->taps / 2u - 1u;
   if (k->taps > BHR_MAX_TAPS) {
     bhr_free(k);
@@ -47,8 +64,10 @@ static BhRateKernel *bhr_create(uint32_t input_rate, uint32_t output_rate) {
   /* Downsampling needs an explicit anti-alias filter even at integer phase.
    * 92% of output Nyquist leaves a transition band without attenuating the
    * 20kHz band at 48k. Equal/up rates keep the full source passband. */
-  double cutoff = k->ratio > 1 ? .92 / k->ratio : 1;
+  double cutoff = k->ratio > 1 ? (voice_down ? .95 : .92) / k->ratio : 1;
   double radius = k->taps / 2.;
+  double beta = voice_down ? 14 : 18;
+  double unused, normalization = bhr_bessel(beta, &unused);
   for (uint32_t p = 0; p <= BHR_PHASES; p++) {
     double sum = 0, slope = 0;
     double *row = k->coefficient + (size_t)p * k->taps * 2;
@@ -56,9 +75,10 @@ static BhRateKernel *bhr_create(uint32_t input_rate, uint32_t output_rate) {
       double x = (double)t - k->centre - (double)p / BHR_PHASES;
       double value = 0, derivative = 0;
       if (fabs(x) < radius) {
-        double a = pi * x / radius;
-        double window = .35875 + .48829 * cos(a) + .14128 * cos(2 * a) + .01168 * cos(3 * a);
-        double dw = -pi / radius * (.48829 * sin(a) + .28256 * sin(2 * a) + .03504 * sin(3 * a));
+        double derivative_scale;
+        double z = beta * sqrt(fmax(0, 1 - x * x / (radius * radius)));
+        double window = bhr_bessel(z, &derivative_scale) / normalization;
+        double dw = -beta * beta * x / (radius * radius) * derivative_scale / normalization;
         double sinc = fabs(x) < 1e-9 ? cutoff : sin(pi * cutoff * x) / (pi * x);
         double ds =
             fabs(x) < 1e-9
@@ -67,15 +87,15 @@ static BhRateKernel *bhr_create(uint32_t input_rate, uint32_t output_rate) {
         value = sinc * window;
         derivative = -(ds * window + sinc * dw);
       }
-      row[t * 2] = value;
-      row[t * 2 + 1] = derivative;
+      row[t] = value;
+      row[k->taps + t] = derivative;
       sum += value;
       slope += derivative;
     }
     for (uint32_t t = 0; t < k->taps; t++) {
-      double value = row[t * 2], derivative = row[t * 2 + 1];
-      row[t * 2] = value / sum;
-      row[t * 2 + 1] = (derivative * sum - value * slope) / (sum * sum * BHR_PHASES);
+      double value = row[t], derivative = row[k->taps + t];
+      row[t] = value / sum;
+      row[k->taps + t] = (derivative * sum - value * slope) / (sum * sum * BHR_PHASES);
     }
   }
   return k;

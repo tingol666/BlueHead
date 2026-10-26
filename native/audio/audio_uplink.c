@@ -30,6 +30,11 @@ int bh_mix_clock_config(Mixer *, float, float);
 int bh_mix_continuity(Mixer *, int, int, uint32_t, uint32_t);
 int bh_mix_timeline(Mixer *, int, int);
 void bh_mix_observe(Mixer *, int, uint64_t, uint64_t);
+int bh_mix_format(Mixer *, int, uint32_t);
+typedef struct MixRoute MixRoute;
+MixRoute *bh_mix_route_create(Mixer *, uint32_t);
+void bh_mix_route_free(MixRoute *);
+int bh_mix_render_route(MixRoute *, float *, uint32_t, float);
 static unsigned bits(float f) {
   unsigned u;
   memcpy(&u, &f, 4);
@@ -48,6 +53,8 @@ typedef struct {
   atomic_int muted, adaptive;
   atomic_ullong excess[2];
   Mixer *clock;
+  MixRoute *route;
+  atomic_uint source_rate[2];
   int input[2];
   float stereo[LIMIT];
   int16_t a[LIMIT / 2], b[LIMIT / 2];
@@ -66,6 +73,8 @@ API Uplink *bh_up_create(void) {
   atomic_init(&u->adaptive, 0);
   atomic_init(&u->excess[0], 0);
   atomic_init(&u->excess[1], 0);
+  atomic_init(&u->source_rate[0], 48000);
+  atomic_init(&u->source_rate[1], 48000);
   u->rate = 16000;
   u->clock = bh_mix_create();
   if (!u->clock) {
@@ -82,14 +91,41 @@ API Uplink *bh_up_create(void) {
     free(u);
     return NULL;
   }
+  u->route = bh_mix_route_create(u->clock, 48000);
+  if (!u->route) {
+    bh_mix_free(u->clock);
+    DeleteCriticalSection(&u->lock);
+    free(u);
+    return NULL;
+  }
   return u;
 }
 API void bh_up_free(Uplink *u) {
   if (u) {
+    bh_mix_route_free(u->route);
     bh_mix_free(u->clock);
     DeleteCriticalSection(&u->lock);
     free(u);
   }
+}
+/* Control-side format contracts. Output changes require the voice consumer
+ * stopped; a source change uses the mixer's per-source reader lease. */
+API int bh_up_output_rate(Uplink *u, uint32_t rate) {
+  if (!u || rate < 8000 || rate > 384000)
+    return -1;
+  MixRoute *prepared = bh_mix_route_create(u->clock, rate);
+  if (!prepared)
+    return -1;
+  bh_mix_route_free(u->route);
+  u->route = prepared;
+  return 0;
+}
+API int bh_up_source_rate(Uplink *u, int bus, uint32_t rate) {
+  if (!u || bus < 0 || bus > 1 || bh_mix_format(u->clock, u->input[bus], rate) < 0)
+    return -1;
+  atomic_store(&u->source_rate[bus], rate);
+  atomic_store(&u->excess[bus], 0);
+  return 0;
 }
 static void reset_bus(Uplink *u, int bus) {
   bh_mix_clear(u->clock, u->input[bus]);
@@ -160,10 +196,11 @@ API void bh_up_write(Uplink *u, int bus, const uint8_t *data, uint32_t size) {
   if (atomic_load_explicit(&u->adaptive, memory_order_acquire)) {
     if (size & 1)
       return;
-    if (size > 8640) {
-      atomic_fetch_add(&u->excess[!!bus], (size - 8640) / 2);
-      data += size - 8640;
-      size = 8640;
+    uint32_t maximum = atomic_load(&u->source_rate[!!bus]) * 9 / 100 * 2;
+    if (size > maximum) {
+      atomic_fetch_add(&u->excess[!!bus], (size - maximum) / 2);
+      data += size - maximum;
+      size = maximum;
     }
     bh_mix_write_s16_mono(u->clock, u->input[!!bus], (const int16_t *)data, size / 2);
     return;
@@ -195,10 +232,11 @@ API int bh_up_write_f32(Uplink *u, int bus, const float *data, uint32_t frames) 
   if (!u || !data || bus < 0 || bus > 1 ||
       !atomic_load_explicit(&u->adaptive, memory_order_acquire))
     return -1;
-  if (frames > 4320) {
-    atomic_fetch_add(&u->excess[bus], frames - 4320);
-    data += frames - 4320;
-    frames = 4320;
+  uint32_t maximum = atomic_load(&u->source_rate[bus]) * 9 / 100;
+  if (frames > maximum) {
+    atomic_fetch_add(&u->excess[bus], frames - maximum);
+    data += frames - maximum;
+    frames = maximum;
   }
   bh_mix_write_f32_mono(u->clock, u->input[bus], data, frames);
   return (int)frames;
@@ -208,7 +246,7 @@ static int render_adaptive(Uplink *u, uint32_t frames) {
         dg = number(atomic_load(&u->device_gain));
   bh_mix_gain(u->clock, u->input[0], mg);
   bh_mix_gain(u->clock, u->input[1], sg);
-  return bh_mix_render(u->clock, u->stereo, frames, atomic_load(&u->muted) ? 0 : dg);
+  return bh_mix_render_route(u->route, u->stereo, frames, atomic_load(&u->muted) ? 0 : dg);
 }
 API int bh_up_read_f32(Uplink *u, float *output, uint32_t frames) {
   if (!u || !output || frames > LIMIT / 2 ||
@@ -292,14 +330,16 @@ API int bh_up_read(Uplink *u, uint8_t *output, uint32_t size) {
 /* fields: queued frames, dropped frames, drift+1000 ppm, underrun events,
  * initial/recovery prefill frames. Only explicit starvation enters rebuffer. */
 API uint64_t bh_up_value(Uplink *u, int bus, int field) {
-  if (!u || bus < -1 || bus > 1 || field < 0 || field > 19)
+  if (!u || bus < -1 || bus > 1 || field < 0 || field > 20)
     return 0;
   if (bus == -1)
     return bh_mix_value(u->clock, -1, field);
   if (!atomic_load_explicit(&u->adaptive, memory_order_acquire))
     return field == 0 ? bh_up_size(u, bus) / 2 : field == 2 ? 1000 : 0;
   uint64_t value = bh_mix_value(u->clock, u->input[bus], field);
-  return field == 1 ? value + atomic_load(&u->excess[bus]) : value;
+  return field == 1 ? value + bht_scale(atomic_load(&u->excess[bus]),
+                                        atomic_load(&u->source_rate[bus]), BHT_RATE)
+                    : value;
 }
 
 API int bh_up_continuity(Uplink *u, int enabled) {

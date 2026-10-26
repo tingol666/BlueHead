@@ -88,6 +88,8 @@ private:
     uint32_t consecutive_missing = 0;
     uint64_t expected = 0;
     uint64_t source_position = 0;
+    uint32_t pcm_rate = api.bh_voice_pcm_rate(voice);
+    uint32_t frame_samples = pcm_rate * 75 / 10000;
     bool rx_recovery = false;
     double rx_retry_at = 0;
     uint64_t frame_ticks = frequency() * 75 / 10000;
@@ -147,9 +149,10 @@ private:
         }
         if (n && voice_input >= 0) {
           source_position += n;
-          api.bh_mix_observe(mixer, voice_input, source_position, p.arrival);
+          api.bh_mix_observe(mixer, voice_input, bht_scale(source_position, pcm_rate, BHT_RATE),
+                             p.arrival);
           api.bh_mix_write_f32_mono(mixer, voice_input, pcm.data(), n);
-          voice_frames += n;
+          voice_frames += bht_scale(n, pcm_rate, BHT_RATE);
         }
         bh_voice_stats stats{};
         api.bh_voice_get_stats(voice, &stats, sizeof(stats));
@@ -175,10 +178,10 @@ private:
       while (!voice_stop && voice_handle != 0xffff && voice_tx.size() < 2) {
         api.bh_up_gain(uplink, microphone_gain.load(), system_gain.load(),
                        microphone_muted ? 0.0f : device_gain.load(), microphone_muted.load());
-        if (api.bh_up_read_f32(uplink, pcm.data(), 360) >= 0) {
+        if (api.bh_up_read_f32(uplink, pcm.data(), frame_samples) >= 0) {
           wire.epoch = voice_epoch;
-          int n =
-              api.bh_voice_encode_f32(voice, pcm.data(), 360, wire.bytes.data(), wire.bytes.size());
+          int n = api.bh_voice_encode_f32(voice, pcm.data(), frame_samples, wire.bytes.data(),
+                                          wire.bytes.size());
           if (n > 0) {
             wire.size = n;
             voice_tx.push(wire);
@@ -714,10 +717,15 @@ public:
       uint32_t codec = request.at("codec");
       auto handle = request.at("handle").get<uint32_t>();
       require(handle <= 0xfff, "Invalid voice handle");
-      std::unique_ptr<bh_voice, decltype(api.bh_voice_destroy)> prepared(api.bh_voice_create(codec),
-                                                                         api.bh_voice_destroy);
+      uint32_t native_rate = codec == 3 ? 32000 : codec == 2 ? 16000 : 8000;
+      std::unique_ptr<bh_voice, decltype(api.bh_voice_destroy)> prepared(
+          api.bh_voice_create_at(codec, native_rate), api.bh_voice_destroy);
       require(prepared != nullptr, "Native voice codec unavailable");
       stop_voice();
+      require(api.bh_mix_format(mixer, id, native_rate) == 0,
+              "Cannot prepare native voice output format");
+      require(api.bh_up_output_rate(uplink, native_rate) == 0,
+              "Cannot prepare native voice input format");
       voice = prepared.release();
       voice_key = key;
       voice_codec = codec;
@@ -782,6 +790,7 @@ public:
     json up = json::object();
     for (int bus = 0; bus < 2; bus++)
       up[bus ? "system" : "microphone"] = {
+          {"pcm_rate", api.bh_up_value(uplink, bus, 20)},
           {"queued_frames", api.bh_up_value(uplink, bus, 0)},
           {"dropped_frames", api.bh_up_value(uplink, bus, 1)},
           {"drift_ppm", static_cast<int64_t>(api.bh_up_value(uplink, bus, 2)) - 1000},
@@ -815,6 +824,7 @@ public:
                      {"decoded_frames", voice_frames.load()},
                      {"plc_frames", voice_plc.load()},
                      {"decode_errors", voice_decode_errors.load()},
+                     {"pcm_rate", voice ? api.bh_voice_pcm_rate(voice) : 0},
                      {"expired_packets", voice_expired_packets.load()},
                      {"rx_resets", voice_rx_resets.load()},
                      {"active", voice_handle != 0xffff}}}};

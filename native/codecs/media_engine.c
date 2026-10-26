@@ -223,17 +223,18 @@ static int frame_pcm(BhMedia *m) {
   float *output = m->converted;
   int frames = -1;
   enum AVSampleFormat packed = av_get_packed_sample_fmt(f->format);
-  if (m->output_rate == m->rate && f->ch_layout.nb_channels == 2 &&
+  if (m->output_rate == m->rate &&
+      (f->ch_layout.nb_channels == 1 || f->ch_layout.nb_channels == 2) &&
       (packed == AV_SAMPLE_FMT_FLT || packed == AV_SAMPLE_FMT_S16 || packed == AV_SAMPLE_FMT_S32)) {
-    /* The decoder already runs on the graph rate. Format conversion needs
-     * neither a resampler nor integer re-quantization. Preserve stereo and
-     * FFmpeg's mono rematrix policy by keeping the mono case on swresample. */
+    /* Native decoder PCM needs no SRC or re-quantization. Mono is explicitly
+     * copied at unity to both output channels; stereo remains independent. */
     int planar = av_sample_fmt_is_planar(f->format);
     frames = f->nb_samples;
     for (int i = 0; i < frames; i++)
       for (int ch = 0; ch < 2; ch++) {
-        const void *data = f->extended_data[planar ? ch : 0];
-        int at = planar ? i : i * 2 + ch;
+        int source_channel = f->ch_layout.nb_channels == 1 ? 0 : ch;
+        const void *data = f->extended_data[planar ? source_channel : 0];
+        int at = planar ? i : i * f->ch_layout.nb_channels + source_channel;
         output[i * 2 + ch] = packed == AV_SAMPLE_FMT_FLT ? ((const float *)data)[at]
                              : packed == AV_SAMPLE_FMT_S16
                                  ? ((const int16_t *)data)[at] / 32768.0f

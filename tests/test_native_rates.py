@@ -92,12 +92,45 @@ def test_isolated_ldac_worker_publishes_96k_pcm_on_actual_native_hci_route():
         assert client.request('test_render', frames=480)['rms'] > .01
 
 
-@pytest.mark.parametrize('source_rate,output_rate', [(96000, 48000), (192000, 48000), (44100, 96000), (96000, 192000)])
+def test_low_rate_packet_cadence_with_zero_user_target_does_not_starve_forever():
+    api, mixer, source = create(8000, np.empty((0, 2), 'f4'))
+    renderer = NativeRender(SimpleNamespace(handle=mixer), 96000)
+    heard = False
+    try:
+        for frame in range(100):
+            t = (np.arange(60) + frame*60) / 8000
+            pcm = np.column_stack((.1*np.sin(2*np.pi*997*t), .05*np.cos(2*np.pi*997*t))).astype('f4')
+            api.bh_mix_write(mixer, source, pcm.ctypes.data, len(pcm))
+            output = render(renderer, 720, (720,))
+            if frame >= 4:
+                assert np.max(abs(output)) > .03
+                heard = True
+        assert heard and api.bh_mix_value(mixer, source, 3) == 0
+        assert api.bh_mix_value(mixer, source, 17) == 0
+    finally:
+        renderer.close()
+        api.bh_mix_free(mixer)
+
+
+def test_mix_preserves_low_level_detail_during_cancellation_before_final_float_rounding():
+    api, mixer, _ = create(48000, np.full((2000, 2), .75, 'f4'))
+    for level in (2**-25, -.75, .25, -2**-26, -.25, 0, 0):
+        add(api, mixer, 48000, np.full((2000, 2), level, 'f4'))
+    renderer = NativeRender(SimpleNamespace(handle=mixer), 48000)
+    try:
+        output = render(renderer, 1800)
+        np.testing.assert_array_equal(output[72:], np.full_like(output[72:], 2**-26))
+    finally:
+        renderer.close()
+        api.bh_mix_free(mixer)
+
+
+@pytest.mark.parametrize('source_rate,output_rate', [(96000, 48000), (192000, 48000), (44100, 96000), (96000, 192000), (48000, 8000), (48000, 16000), (96000, 32000)])
 def test_one_pass_src_retains_passband_and_rejects_aliases(source_rate, output_rate):
     t = np.arange(source_rate // 3) / source_rate
-    tones = [997, min(20003, min(source_rate, output_rate) * .42)]
+    tones = [997, min(20003, min(source_rate, output_rate) * .4375)]
     if source_rate > output_rate:
-        tones.append(output_rate * .71)
+        tones.append(output_rate * .505)
     mono = sum(.1 * np.sin(2*np.pi*f*t + .37) for f in tones)
     pcm = np.column_stack((mono, -.31*mono)).astype('f4')
     api, mixer, _ = create(source_rate, pcm)

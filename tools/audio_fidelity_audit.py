@@ -99,7 +99,7 @@ def fractional_measure(api):
                 assert api.bh_test_fractional_response(mixer, frequency / 48000, fraction,
                                                       C.byref(real), C.byref(imaginary)) == 0
                 actual = complex(real.value, imaginary.value)
-                expected = np.exp(2j * np.pi * frequency / 48000 * (64 + fraction))
+                expected = np.exp(2j * np.pi * frequency / 48000 * (192 + fraction))
                 gain.append(20 * math.log10(max(abs(actual), 1e-30)))
                 error.append(abs(actual - expected))
             result.append(dict(frequency_hz=frequency, minimum_gain_db=min(gain), maximum_gain_db=max(gain),

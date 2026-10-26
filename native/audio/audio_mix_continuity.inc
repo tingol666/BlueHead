@@ -44,7 +44,8 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
     bhq_reset_envelope(&m->quality);
   }
   memset(output, 0, count * 2 * sizeof(float));
-  memset(m->delayed, 0, count * 2 * sizeof(float));
+  memset(m->delayed, 0, count * 2 * sizeof(double));
+  memset(m->accumulated, 0, count * 2 * sizeof(double));
   int flush_muted = master == 0 && m->quality.master.value != 0;
   if (flush_muted)
     bhq_reset_envelope(&m->quality);
@@ -154,11 +155,16 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
       uint64_t centre = (uint64_t)target + (uint64_t)ceil(native_count / 2);
       observed_target = (uint32_t)(centre > s->maximum ? s->maximum : centre);
     }
+    if (kernel->ratio != 1) {
+      uint32_t support = kernel->taps - kernel->centre + (uint32_t)ceil(native_count);
+      if (observed_target < support)
+        observed_target = support;
+    }
     if (s->buffering && s->available < observed_target) {
       atomic_fetch_add(&s->prefill, presented);
       atomic_fetch_add(&s->presentation, presented);
       atomic_store_explicit(&s->read, s->cursor, memory_order_release);
-      bhq_source(&s->quality, m->scratch, output, m->delayed, count, gain);
+      bhq_source(&s->quality, m->scratch, m->accumulated, m->delayed, count, gain);
       atomic_fetch_sub(&s->readers, 1);
       continue;
     }
@@ -205,6 +211,9 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
       ratio += s->drift;
     }
     ratio *= kernel->ratio;
+    s->boundary = NULL;
+    if (s->available && (ratio != 1 || s->phase != 0))
+      prepare_boundary(m, s, kernel);
     uint32_t produced = prefix;
     double position = s->phase;
     for (; produced < count && (uint64_t)position < s->available; produced++, position += ratio) {
@@ -296,12 +305,12 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
     if (ppm > 1000)
       ppm = 1000;
     atomic_store(&s->drift_view, (unsigned)llround(ppm + 1000));
-    bhq_source(&s->quality, m->scratch, output, m->delayed, count, gain);
+    bhq_source(&s->quality, m->scratch, m->accumulated, m->delayed, count, gain);
     atomic_store_explicit(&s->read, s->cursor, memory_order_release);
     atomic_fetch_sub(&s->readers, 1);
   }
   uint64_t before = m->quality.limited;
-  bhq_process(&m->quality, m->delayed, output, count, master);
+  bhq_process(&m->quality, m->delayed, m->accumulated, output, count, master);
   atomic_fetch_add(&m->limited, m->quality.limited - before);
   return 1;
 }

@@ -41,6 +41,8 @@ namespace bh {
   X(bh_up_clear, void, (void *, int)) \
   X( bh_up_rate, int, (void *, uint32_t)) \
   X(bh_up_adaptive, int, (void *, int)) \
+  X(bh_up_output_rate, int, (void *, uint32_t)) \
+  X(bh_up_source_rate, int, (void *, int, uint32_t)) \
   X( bh_up_gain, void, (void *, float, float, float, int)) \
   X(bh_up_write, void, (void *, int, const uint8_t *, uint32_t)) \
   X(bh_up_read, int, (void *, uint8_t *, uint32_t)) \
@@ -78,6 +80,8 @@ namespace bh {
   X(bh_voice_reset_rx, int, (bh_voice *)) \
   X(bh_voice_skip_rx, int, (bh_voice *, uint32_t)) \
   X(bh_voice_create, bh_voice *, (uint32_t)) \
+  X(bh_voice_create_at, bh_voice *, (uint32_t, uint32_t)) \
+  X(bh_voice_pcm_rate, uint32_t, (const bh_voice *)) \
   X(bh_voice_destroy, void, (bh_voice *)) \
   X( bh_voice_encode, int, (bh_voice *, const int16_t *, uint32_t, uint8_t *, uint32_t)) \
   X(bh_voice_encode_f32, int, (bh_voice *, const float *, uint32_t, uint8_t *, uint32_t)) \

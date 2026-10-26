@@ -3,9 +3,11 @@ from pathlib import Path
 import os
 
 import numpy as np
+import av
 
 from bluehead.ldac import NativeLdac, _NativeMedia
 from bluehead.protocol import Format, ldac_frames
+from bluehead.media import NativeMedia
 from tools.audio_fidelity_audit import mixer_api, unity_measure
 from .vectors import LdacEncoder, rtp, signal
 
@@ -38,3 +40,36 @@ def test_ldac_media_at_96k_is_exactly_raw_decoder_pcm_without_intermediate_src()
         encoder.close()
         raw.close()
         media.close()
+
+
+def test_native_mono_mapping_duplicates_decoder_samples_at_unity_without_rematrix_gain():
+    encoder = av.CodecContext.create('sbc', 'w')
+    encoder.sample_rate, encoder.layout, encoder.format, encoder.bit_rate = 48000, 'mono', 's16', 128000
+    encoder.open()
+    t = np.arange(4800) / 48000
+    pcm = np.rint(12000*np.sin(2*np.pi*997*t)).astype('i2')
+    packets = []
+    for i in range(0, len(pcm)-encoder.frame_size+1, encoder.frame_size):
+        frame = av.AudioFrame.from_ndarray(pcm[i:i+encoder.frame_size].reshape(1, -1), 's16', 'mono')
+        frame.sample_rate = 48000
+        packets.extend(encoder.encode(frame))
+    packets.extend(encoder.encode(None))
+    reference = av.CodecContext.create('sbc', 'r')
+    reference.sample_rate, reference.layout = 48000, 'mono'
+    expected, actual = [], []
+    decoder = NativeMedia(Format('sbc', 48000, 1), 48000)
+    try:
+        for i, packet in enumerate(packets):
+            expected.extend(f.to_ndarray().reshape(-1) for f in reference.decode(av.Packet(bytes(packet))))
+            decoder.decode_packet(rtp(b'\x01'+bytes(packet), i, i*encoder.frame_size))
+            actual.append(np.frombuffer(decoder.read_pcm(), 'f4').reshape(-1, 2))
+        output = np.concatenate(actual)
+        samples = np.concatenate(expected).astype('f4')/32768
+        # The streaming SBC parser can retain its final frame until the next
+        # packet. Every PCM sample it actually publishes must match exactly.
+        assert 0 <= len(samples)-len(output) <= encoder.frame_size
+        np.testing.assert_array_equal(output[:, 0], samples[:len(output)])
+        np.testing.assert_array_equal(output[:, 1], samples[:len(output)])
+        assert decoder.value(13) == 0  # No software SRC/rematrix path was needed.
+    finally:
+        decoder.close()

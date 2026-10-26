@@ -43,6 +43,7 @@ BH_DEVICE_API int bh_device_inventory(BhDeviceContext *context, BhEndpoint *outp
 /* Prepared but stopped: opening a candidate never starts a second mixer consumer. */
 BH_DEVICE_API BhAudioDevice *bh_device_open_output(BhDeviceContext *context, void *mixer,
                                                    const wchar_t *endpoint_id, int *error);
+/* output_rate=0 preserves the actual capture endpoint rate as float PCM. */
 BH_DEVICE_API BhAudioDevice *bh_device_open_capture(BhDeviceContext *context,
                                                     const wchar_t *endpoint_id,
                                                     uint32_t output_rate, int *error);

@@ -43,11 +43,14 @@ class EndpointActor {
     bool automatic = false;
     int simulated_error = 0;
     bool force = false;
+    uint32_t simulated_rate = 48000;
   };
   std::atomic<uint64_t> bridge_frames{0}, system_frames{0}, bridge_errors{0};
   std::mutex bridge_mutex;
   BhDeviceContext *context = nullptr;
   BhAudioDevice *output = nullptr, *capture = nullptr;
+  uint32_t capture_rate =
+      48000; // Protected by bridge_mutex; diagnostic counts use canonical frames.
   void *loop_capture = nullptr, *loop_converter = nullptr;
   std::string output_selection, input_selection;
   std::array<std::string, 2> wanted_endpoint{};
@@ -76,7 +79,7 @@ public:
   uint64_t schedule(const std::string &direction, const std::string &endpoint, bool start = true,
                     uint32_t generation = 0, bool simulated = false, uint32_t delay_ms = 0,
                     uint64_t expected_latest = UINT64_MAX, bool automatic = false,
-                    int simulated_error = 0, bool force = false) {
+                    int simulated_error = 0, bool force = false, uint32_t simulated_rate = 48000) {
     std::lock_guard<std::mutex> lock(audio_mutex);
     if (expected_latest != UINT64_MAX && expected_latest != latest_job[direction_id(direction)])
       return 0;
@@ -92,7 +95,7 @@ public:
     while (audio_results.size() > 64)
       audio_results.erase(audio_results.begin());
     audio_jobs.push_back({id, direction, endpoint, start, generation, simulated, delay_ms,
-                          automatic, simulated_error, force});
+                          automatic, simulated_error, force, simulated_rate});
     audio_condition.notify_one();
     return id;
   }
@@ -338,15 +341,16 @@ private:
           throw AudioFailure(Fault::endpoint, -204, "Offline endpoint is absent");
       }
       if (job.start)
-        candidate = api.bh_device_offline(context, render ? BH_PLAYBACK : BH_CAPTURE, mixer, 48000,
-                                          render ? 2 : 1, 48000, &error);
+        candidate =
+            api.bh_device_offline(context, render ? BH_PLAYBACK : BH_CAPTURE, mixer,
+                                  job.simulated_rate, render ? 2 : 1, job.simulated_rate, &error);
       require(!job.start || candidate, "Offline endpoint preparation failed");
     } else if (job.start) {
       candidate =
           render ? api.bh_device_open_output(context, mixer,
                                              endpoint.empty() ? nullptr : endpoint.c_str(), &error)
                  : api.bh_device_open_capture(
-                       context, endpoint.empty() ? nullptr : endpoint.c_str(), 48000, &error);
+                       context, endpoint.empty() ? nullptr : endpoint.c_str(), 0, &error);
       if (!candidate)
         throw AudioFailure(device_fault(error), error,
                            render ? "Cannot prepare playback endpoint"
@@ -399,8 +403,17 @@ private:
       }
       {
         std::lock_guard<std::mutex> lock(bridge_mutex);
+        BhDeviceStats format{};
+        format.size = sizeof(format);
+        if (candidate && (api.bh_device_stats(candidate, &format) != 0 ||
+                          api.bh_up_source_rate(uplink, 0, format.output_rate) != 0)) {
+          api.bh_device_close(candidate);
+          throw AudioFailure(Fault::format, -205, "Cannot prepare native microphone format");
+        }
         old = capture;
         capture = candidate;
+        if (candidate)
+          capture_rate = format.output_rate;
         api.bh_up_clear(uplink, 0);
         microphone_active = job.start;
         microphone_fault = false;
@@ -577,7 +590,7 @@ private:
             }
             if (voice_handle != 0xffff)
               api.bh_up_write_f32(uplink, 0, pcm.data(), n);
-            bridge_frames += n;
+            bridge_frames += bht_scale(n, capture_rate, BHT_RATE);
             // A large endpoint callback may contain several read quanta.
             // Re-arm a bounded drain rather than wait for another callback.
             if (batch == 7)
@@ -680,10 +693,12 @@ public:
       auto delay = request.value("delay_ms", 0u);
       require((direction == "input" || direction == "output") && delay <= 2000,
               "Invalid offline audio job");
+      auto rate = request.value("sample_rate", 48000u);
+      require(rate >= 8000 && rate <= 384000, "Invalid offline endpoint rate");
       return schedule(direction, request.value("endpoint_id", std::string()),
                       request.value("start", true), request.value("voice_epoch", 0u), true, delay,
                       UINT64_MAX, false, request.value("error_code", 0),
-                      request.value("force", false));
+                      request.value("force", false), rate);
     }
     if (op == "test_inventory") {
       require(offline, "Offline-test mode required");
@@ -723,10 +738,10 @@ public:
       require(offline, "Offline-test mode required");
       uint32_t frames = request.value("frames", 480u);
       require(frames && frames <= 4800, "Invalid offline capture quantum");
+      std::lock_guard<std::mutex> lock(bridge_mutex);
       std::vector<float> pcm(frames);
       for (uint32_t i = 0; i < frames; i++)
-        pcm[i] = .2f * std::sin(i * 6.283185307179586 * 1000 / 48000);
-      std::lock_guard<std::mutex> lock(bridge_mutex);
+        pcm[i] = .2f * std::sin(i * 6.283185307179586 * 1000 / capture_rate);
       require(capture, "Offline microphone is not prepared");
       require(api.bh_device_offline_process(capture, pcm.data(), nullptr, frames) == 0,
               "Offline capture callback failed");

@@ -8,14 +8,14 @@ API int bh_test_fractional_response(Mixer *m, double normalized_frequency, doubl
     return -1;
   Input *s = &m->input[0];
   s->cursor = 0;
-  s->available = 256;
-  for (int i = 0; i < 256; i++) {
+  s->available = 512;
+  for (int i = 0; i < 512; i++) {
     double angle = 6.2831853071795864769 * normalized_frequency * i;
     s->pcm[i * 2] = (float)cos(angle);
     s->pcm[i * 2 + 1] = (float)sin(angle);
   }
   float value[2];
-  interpolate_stereo(m->default_route->kernel[0], s, 64, fraction, value);
+  interpolate_stereo(m->default_route->kernel[0], s, 192, fraction, value);
   *real = value[0];
   *imaginary = value[1];
   return 0;

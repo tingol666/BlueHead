@@ -47,6 +47,7 @@ typedef struct {
   uint64_t cursor, available;
   double rendered, presentation_fraction;
   float history[BHR_HISTORY * 2], gate;
+  const float *boundary;
   uint32_t render_rate;
   int buffering, recover_late;
   double phase, drift;
@@ -70,7 +71,8 @@ typedef struct Mixer {
   atomic_ullong limited;
   BhMixQuality quality;
   MixRoute *routes, *default_route;
-  float scratch[CAPACITY * 2], delayed[CAPACITY * 2];
+  float scratch[CAPACITY * 2], boundary[BHR_MAX_TAPS * 4];
+  double accumulated[CAPACITY * 2], delayed[CAPACITY * 2];
   LARGE_INTEGER qpc_frequency;
   float sinc[PHASES + 1][TAPS];
 } Mixer;
@@ -603,6 +605,18 @@ static float interpolate(Mixer *m, Input *s, int offset, int channel, float frac
              (m->sinc[index][t] + blend * (m->sinc[index + 1][t] - m->sinc[index][t]));
   return value;
 }
+static void prepare_boundary(Mixer *m, Input *s, const BhRateKernel *kernel) {
+  uint32_t left = kernel->centre;
+  for (uint32_t j = 0; j < left; j++)
+    for (int ch = 0; ch < 2; ch++)
+      m->boundary[j * 2 + ch] = sample(s, (int)j - (int)left, ch);
+  uint32_t count = s->available < kernel->taps ? (uint32_t)s->available : kernel->taps;
+  uint32_t at = (uint32_t)(s->cursor % s->capacity);
+  uint32_t first = count < s->capacity - at ? count : s->capacity - at;
+  memcpy(m->boundary + left * 2, s->pcm + at * 2, first * 2 * sizeof(float));
+  memcpy(m->boundary + (left + first) * 2, s->pcm, (count - first) * 2 * sizeof(float));
+  s->boundary = m->boundary;
+}
 static void interpolate_stereo(const BhRateKernel *k, Input *s, int offset, double fraction,
                                float out[2]) {
   double phase = fraction * BHR_PHASES;
@@ -621,14 +635,36 @@ static void interpolate_stereo(const BhRateKernel *k, Input *s, int offset, doub
   uint32_t at = (uint32_t)((s->cursor + (uint32_t)(start < 0 ? 0 : start)) % s->capacity);
   int contiguous =
       start >= 0 && (uint64_t)start + k->taps <= s->available && at + k->taps <= s->capacity;
+  const float *window = contiguous ? s->pcm + at * 2 : NULL;
+  if (start < 0 && s->boundary) {
+    window = s->boundary + offset * 2;
+    contiguous = 1;
+  }
+  if (contiguous) {
+    __m128d left = _mm_setzero_pd(), right = _mm_setzero_pd();
+    __m128d w00 = _mm_set1_pd(h00), w10 = _mm_set1_pd(h10);
+    __m128d w01 = _mm_set1_pd(h01), w11 = _mm_set1_pd(h11);
+    for (uint32_t t = 0; t < k->taps; t += 2) {
+      __m128d c = _mm_add_pd(_mm_add_pd(_mm_mul_pd(w00, _mm_loadu_pd(a + t)),
+                                        _mm_mul_pd(w10, _mm_loadu_pd(a + k->taps + t))),
+                             _mm_add_pd(_mm_mul_pd(w01, _mm_loadu_pd(b + t)),
+                                        _mm_mul_pd(w11, _mm_loadu_pd(b + k->taps + t))));
+      __m128 pcm = _mm_loadu_ps(window + t * 2);
+      __m128d l = _mm_cvtps_pd(_mm_shuffle_ps(pcm, pcm, _MM_SHUFFLE(2, 0, 2, 0)));
+      __m128d r = _mm_cvtps_pd(_mm_shuffle_ps(pcm, pcm, _MM_SHUFFLE(3, 1, 3, 1)));
+      left = _mm_add_pd(left, _mm_mul_pd(c, l));
+      right = _mm_add_pd(right, _mm_mul_pd(c, r));
+    }
+    double l[2], r[2];
+    _mm_storeu_pd(l, left);
+    _mm_storeu_pd(r, right);
+    out[0] = (float)(l[0] + l[1]);
+    out[1] = (float)(r[0] + r[1]);
+    return;
+  }
   for (uint32_t t = 0; t < k->taps; t++) {
-    double c = h00 * a[t * 2] + h10 * a[t * 2 + 1] + h01 * b[t * 2] + h11 * b[t * 2 + 1];
-    __m128d pcm;
-    if (contiguous)
-      pcm =
-          _mm_cvtps_pd(_mm_castsi128_ps(_mm_loadl_epi64((const __m128i *)(s->pcm + (at + t) * 2))));
-    else
-      pcm = _mm_set_pd(sample(s, start + (int)t, 1), sample(s, start + (int)t, 0));
+    double c = h00 * a[t] + h10 * a[k->taps + t] + h01 * b[t] + h11 * b[k->taps + t];
+    __m128d pcm = _mm_set_pd(sample(s, start + (int)t, 1), sample(s, start + (int)t, 0));
     sum = _mm_add_pd(sum, _mm_mul_pd(pcm, _mm_set1_pd(c)));
   }
   _mm_storel_pi((__m64 *)out, _mm_cvtpd_ps(sum));

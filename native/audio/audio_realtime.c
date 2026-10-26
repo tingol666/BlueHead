@@ -1,5 +1,7 @@
-/* BlueHead native PortAudio callbacks and bounded format conversion. Apache-2.0.
- * SpeexDSP is initialized outside callbacks, then keeps its rate/quality fixed.
+/* BlueHead bounded native callback boundaries. Apache-2.0.
+ * Render routes merge native-rate SRC and clock matching in one pass.
+ * Capture SRC remains an explicit fixed-rate compatibility adapter, prepared
+ * outside callbacks; production capture normally preserves the native rate.
  * Callbacks allocate nothing and never enter Python. Capture uses a lock-free
  * single-producer/single-consumer ring; its worker owns conversion and routing.
  */
@@ -331,7 +333,7 @@ static int capture_read_impl(Capture *c, int16_t *integer, float *floating, uint
         uint32_t at = (r + i) % c->capacity;
         float value = c->ring[at * c->channels];
         if (c->channels == 2)
-          value = (value + c->ring[at * 2 + 1]) * .5f;
+          value = (float)(((double)value + c->ring[at * 2 + 1]) * .5);
         c->mono[i] = isfinite(value) && fabsf(value) <= 16 ? value : 0;
       }
       atomic_store_explicit(&c->read, r + take, memory_order_release);

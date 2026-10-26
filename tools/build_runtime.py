@@ -1,6 +1,7 @@
 """Build the native USB/audio runtime from pinned local dependencies."""
 from pathlib import Path
 from native_build import compiler as find_compiler, includes
+from firmware_assets import verify as verify_firmware
 import hashlib
 import json
 import subprocess
@@ -8,6 +9,7 @@ import tarfile
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
+verify_firmware()
 BUILD = ROOT / "work/runtime-build"
 BUILD.mkdir(parents=True, exist_ok=True)
 vendor = ROOT / "vendor/nlohmann-json"

@@ -663,7 +663,12 @@ class Receiver:
     async def initialize_transport(self, device, config, transport, timeout=12):
         """Bound setup independently of the media path and honor Stop mid-reset."""
         async def initialize():
-            await device.power_on()
+            if hasattr(transport, 'wait_ready'):
+                await transport.wait_ready(lambda message: self.emit('status', message=message))
+            try:
+                await asyncio.wait_for(device.power_on(), timeout)
+            except TimeoutError:
+                raise TimeoutError('蓝牙适配器启动超时，未收到完整初始化响应；请检查连接和专用接收驱动') from None
             from .discovery import update_inquiry_power
             await update_inquiry_power(device, config.name, self.settings.calls)
             await self.advertise()
@@ -672,11 +677,15 @@ class Receiver:
         stopped = asyncio.create_task(self.stop_event.wait())
         terminated = asyncio.ensure_future(asyncio.shield(transport.source.terminated))
         try:
-            await asyncio.wait([setup, stopped, terminated], timeout=timeout,
+            await asyncio.wait([setup, stopped, terminated],
+                               timeout=timeout + (65 if hasattr(transport, 'wait_ready') else 0),
                                return_when=asyncio.FIRST_COMPLETED)
             if self.stop_event.is_set():
                 return False
             if terminated.done():
+                failure = getattr(transport.source, 'failure', None)
+                if failure is not None:
+                    raise failure
                 raise ConnectionError("蓝牙适配器在启动时断开，请检查专用接收驱动或重新插拔适配器")
             if setup.done():
                 await setup

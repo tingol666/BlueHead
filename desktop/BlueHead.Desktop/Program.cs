@@ -83,7 +83,7 @@ internal static class Program
         var restartAdapter = new DriverDevice(@"USB\VID_8087&PID_0033\offline", "Intel AX211", "WinUSB", "offline.inf", "", false, false) { RebootRequired = true };
         window.ApplyDriverInventory([restartAdapter]); Pump();
         checks["pending_restart_is_visible_on_home"] = window.AdapterNeedsRestart && window.SetupCard.IsVisible && window.StatusTitle.Text == "需要重启 Windows" && Equals(window.StartButton.Content, "查看重启要求");
-        checks["restart_requirement_is_not_shown_as_healthy"] = window.DriverStatus.Text.Contains("需要重启 Windows") && !window.InstallDriverButton.IsEnabled;
+        checks["restart_requirement_is_not_shown_as_healthy"] = window.DriverStatus.Text.Contains("请重启电脑") && !window.InstallDriverButton.IsEnabled;
         checks["restart_card_hides_redundant_setup_benefits"] = window.SetupBenefits.Visibility == Visibility.Collapsed;
         window.StartButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent)); Pump();
         checks["pending_restart_start_button_does_not_start_receiver"] = !window.SelfTestCommands.Any(command => command.Text("command") == "start");
@@ -376,7 +376,8 @@ internal static class Program
         Event("""{"event":"telemetry","audio":{},"devices":[{"key":"remote-demo","media":{},"call":{"active":true,"codec":"lc3_swb","rate":32000,"rx_bitrate":64000,"tx_bitrate":64000,"microphone_active":true}}]}"""); Pump();
         checks["hfp_lc3_swb_uses_correct_codec_label_and_32khz"] = remote.MediaDescription.Contains("HFP / LC3-SWB · 32 kHz");
         checks["voice_details_preserve_actual_codec_alongside_auto_negotiation"] = remote.LiveDetails.Contains("语音编码：自动协商") && remote.LiveDetails.Contains("当前 LC3-SWB · 32 kHz");
-        checks["version_is_211_release"] = AppVersion.Number == "2.1.1" && window.Title == "BlueHead 2.1.1" && AppVersion.Label == "2.1.1";
+        checks["version_is_consistent_release"] = AppVersion.Number == typeof(Program).Assembly.GetName().Version?.ToString(3)
+            && window.Title == "BlueHead " + AppVersion.Number && AppVersion.Label == AppVersion.Number;
         Event("""{"event":"avrcp","key":"remote-demo","connected":false,"controls":false}"""); Pump();
         checks["avrcp_disconnect_clears_metadata_and_reclaims_row"] = !remoteRow.IsVisible && !remote.HasRemoteMedia && !remote.TrackDescription.Contains("示例曲目");
         Event("""{"event":"device","key":"remote-demo","state":"已断开"}""");

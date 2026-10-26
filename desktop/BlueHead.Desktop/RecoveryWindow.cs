@@ -32,6 +32,7 @@ internal sealed class RecoveryWindow : Window
         if (picker.SelectedItem is not DriverDevice device) return;
         if (MessageBox.Show(this, $"恢复 {device.Name} 的原蓝牙驱动？", "恢复系统蓝牙", MessageBoxButton.OKCancel) != MessageBoxResult.OK) return;
         restore.IsEnabled = false;
+        status.Text = "正在恢复驱动并初始化系统蓝牙，请保持适配器连接…";
         try
         {
             var path = Path.Combine(AppContext.BaseDirectory, "BlueHead.DriverHelper.exe");
@@ -39,7 +40,9 @@ internal sealed class RecoveryWindow : Window
             start.AddArgument("--restore"); start.AddArgument(device.InstanceId);
             using var process = Process.Start(start) ?? throw new IOException("恢复工具未能启动。");
             await process.WaitForExitAsync();
-            await Refresh(); status.Text = process.ExitCode == 0 ? "恢复操作完成。" : "恢复未完成，请查看管理员窗口中的原因。";
+            var record = Drivers.ReadRecord(device.InstanceId);
+            await Refresh(); status.Text = process.ExitCode == 0 ? record?.RebootRequired == true ?
+                "驱动恢复完成，请重启电脑。" : "系统蓝牙已恢复，初始化检查通过。" : record?.Error ?? "恢复未完成，请查看管理员窗口中的原因。";
         }
         catch (Exception error) { status.Text = error.Message; }
         finally { restore.IsEnabled = true; }

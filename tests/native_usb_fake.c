@@ -21,6 +21,64 @@ static int mode(const char *value) {
   const char *setting = getenv("BLUEHEAD_USB_FAULT");
   return setting && !strcmp(setting, value);
 }
+static int intel(void) {
+  const char *setting = getenv("BLUEHEAD_USB_FAULT");
+  return setting && !strncmp(setting, "intel-", 6);
+}
+static int intel_boot = -1, upload_commands, bulk_violations, firmware_loads;
+static unsigned payload_bytes;
+static struct { unsigned char data[260]; int length, endpoint, offset; } replies[16];
+static unsigned reply_read, reply_write;
+static void reply_event(int endpoint, const unsigned char *data, int length) {
+  if (reply_write - reply_read >= 16 || length > 260) { bulk_violations++; return; }
+  unsigned slot = reply_write++ % 16;
+  memcpy(replies[slot].data, data, (size_t)length);
+  replies[slot].length = length; replies[slot].endpoint = endpoint; replies[slot].offset = 0;
+}
+static void complete_command(unsigned opcode, unsigned status, const unsigned char *extra, int size, int bulk) {
+  unsigned char p[260] = {0x0e, (unsigned char)(4 + size), 1, (unsigned char)opcode, (unsigned char)(opcode >> 8), (unsigned char)status};
+  if (size) memcpy(p + 6, extra, (size_t)size);
+  reply_event(bulk ? 0x82 : 0x81, p, size + 6);
+}
+static void intel_write(struct libusb_transfer *t) {
+  int bulk = t->type == LIBUSB_TRANSFER_TYPE_BULK;
+  const unsigned char *p = t->buffer + (bulk ? 0 : LIBUSB_CONTROL_SETUP_SIZE);
+  unsigned opcode = p[0] | ((unsigned)p[1] << 8);
+  int size = p[2]; p += 3;
+  if (opcode == 0x0c03) complete_command(opcode, intel_boot == 1 ? 1 : 0, NULL, 0, 0);
+  else if (opcode == 0xfc05) {
+    // Actual AX211 CNVI/CNVR/hardware fields from a read-only version query.
+    unsigned char fields[] = {0x10,4,1,4,8,0, 0x11,4,0x10,4,0x40,0, 0x12,4,0,0x37,0x19,0,
+                              0x1c,1,(unsigned char)intel_boot, 0x2f,1,1};
+    if (mode("intel-unsupported")) fields[2] = 2;
+    complete_command(opcode, 0, fields, sizeof(fields), 0);
+  } else if (opcode == 0xfc09) {
+    upload_commands++;
+    if (!bulk || size < 2 || size > 253) bulk_violations++;
+    if (mode("intel-command-timeout")) return;
+    if (p[0] == 1) payload_bytes += (unsigned)(size - 1);
+    complete_command(opcode, mode("intel-command-reject") ? 0x0c : 0, NULL, 0, 1);
+    if (payload_bytes == 720088) {
+      // Actual successful AX211 response uses opcode=0, not necessarily fc09.
+      unsigned char done[] = {0xff,5,6,0,0,0,0};
+      if (mode("intel-signature-reject")) done[3] = 1;
+      reply_event(0x82, done, sizeof(done));
+    }
+  } else if (opcode == 0xfc01) {
+    unsigned char boot[] = {0xff,7,2,0,1,0,0,0,0};
+    if (mode("intel-boot-metadata")) { boot[5] = 2; boot[7] = 1; boot[8] = 1; }
+    if (size != 8 || p[0] || p[1] != 1 || p[2] || p[3] != 1 ||
+        p[4] || p[5] != 8 || p[6] != 0x10 || p[7]) bulk_violations++;
+    intel_boot = 3; firmware_loads++;
+    if (!mode("intel-boot-timeout")) reply_event(0x82, boot, sizeof(boot));
+  } else if (opcode == 0xfc8b) {
+    if (intel_boot != 3 || bulk || size < 3) bulk_violations++;
+    complete_command(opcode, mode("intel-ddc-reject") ? 0x0c : 0, NULL, 0, 0);
+  } else bulk_violations++;
+}
+__declspec(dllexport) int fake_upload_commands(void) { return upload_commands; }
+__declspec(dllexport) int fake_bulk_violations(void) { return bulk_violations; }
+__declspec(dllexport) int fake_firmware_loads(void) { return firmware_loads; }
 __declspec(dllexport) int fake_bad_release(void) { return bad_release; }
 __declspec(dllexport) int fake_pending(void) {
   int n = 0;
@@ -29,6 +87,7 @@ __declspec(dllexport) int fake_pending(void) {
   return n;
 }
 int LIBUSB_CALL libusb_init(libusb_context **context) {
+  if (intel_boot == -1) intel_boot = mode("intel-warm") ? 3 : 1;
   *context = (libusb_context *)1;
   return 0;
 }
@@ -39,8 +98,9 @@ const char *LIBUSB_CALL libusb_error_name(int code) {
 }
 ssize_t LIBUSB_CALL libusb_get_device_list(libusb_context *context, libusb_device ***list) {
   (void)context;
-  *list = calloc(2, sizeof(**list));
+  *list = calloc(3, sizeof(**list));
   (*list)[0] = (libusb_device *)1;
+  if (mode("intel-ambiguous")) { (*list)[1] = (libusb_device *)2; return 2; }
   return 1;
 }
 void LIBUSB_CALL libusb_free_device_list(libusb_device **list, int unref) {
@@ -53,6 +113,7 @@ int LIBUSB_CALL libusb_get_device_descriptor(libusb_device *device,
   memset(descriptor, 0, sizeof(*descriptor));
   descriptor->idVendor = 0x1234;
   descriptor->idProduct = 0xabcd;
+  if (intel()) { descriptor->idVendor = 0x8087; descriptor->idProduct = 0x0033; }
   descriptor->bDeviceClass = 0xe0;
   return 0;
 }
@@ -135,12 +196,33 @@ int LIBUSB_CALL libusb_handle_events_timeout_completed(libusb_context *context,
   (void)context;
   (void)timeout;
   (void)completed;
-  Sleep(2);
+  Sleep(intel() && !mode("intel-cancel") ? 0 : 2);
   for (int i = 0; i < 8; i++) {
     struct libusb_transfer *transfer = pending[i];
     if (!transfer)
       continue;
     int expired = transfer->timeout && GetTickCount64() - submitted_at[i] >= transfer->timeout;
+    if (intel() && !cancelled[i] && !expired) {
+      if (!(transfer->endpoint & 0x80)) {
+        intel_write(transfer);
+        pending[i] = NULL; transfer->actual_length = transfer->length;
+        transfer->status = LIBUSB_TRANSFER_COMPLETED; transfer->callback(transfer);
+        continue;
+      }
+      if (reply_read != reply_write) {
+        unsigned slot = reply_read % 16;
+        if (replies[slot].endpoint == transfer->endpoint) {
+          int n = replies[slot].length - replies[slot].offset;
+          if (mode("intel-fragmented") && n > 3) n = 3;
+          memcpy(transfer->buffer, replies[slot].data + replies[slot].offset, (size_t)n);
+          replies[slot].offset += n;
+          if (replies[slot].offset == replies[slot].length) reply_read++;
+          pending[i] = NULL; transfer->actual_length = n;
+          transfer->status = LIBUSB_TRANSFER_COMPLETED; transfer->callback(transfer);
+          continue;
+        }
+      }
+    }
     if (!cancelled[i] && !expired)
       continue;
     pending[i] = NULL;

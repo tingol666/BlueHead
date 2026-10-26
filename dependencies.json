@@ -427,5 +427,15 @@
       "Changelog, https://github.com/pywinrt/pywinrt/blob/main/projection/winrt/CHANGELOG.md"
     ],
     "scope": "runtime"
+  },
+  {
+    "name": "intel-bluetooth-firmware",
+    "version": "BT_Solar_REL82200_23.50.26292.82200",
+    "license": "Redistributable binary firmware; see LICENCE.ibt_firmware",
+    "scope": "runtime",
+    "project_urls": [
+      "https://gitlab.com/kernel-firmware/linux-firmware"
+    ],
+    "revision": "98b55c84e8da5c09dd9b8d21f5667c63db5993fa"
   }
 ]

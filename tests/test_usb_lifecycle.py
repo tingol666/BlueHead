@@ -33,7 +33,7 @@ def usb_probe(tmp_path_factory):
     return executable
 
 
-@pytest.mark.parametrize('fault', ['none', 'open-denied', 'submit-failed', 'control-timeout'])
+@pytest.mark.parametrize('fault', ['none', 'open-denied', 'submit-failed', 'control-timeout', 'driver-busy'])
 def test_usb_startup_failure_is_explicit_and_retires_all_requests_before_release(usb_probe, fault):
     env = dict(os.environ, BLUEHEAD_USB_FAULT=fault)
     process = subprocess.run([str(usb_probe), str(usb_probe.parent)], capture_output=True,
@@ -46,6 +46,8 @@ def test_usb_startup_failure_is_explicit_and_retires_all_requests_before_release
         assert 'LIBUSB_ERROR_ACCESS (-3)' in report['error']
     elif fault == 'submit-failed':
         assert 'initial HCI USB reads' in report['error']
+    elif fault == 'driver-busy':
+        assert 'driver operation is in progress' in report['error']
     else:
         assert 'error' not in report, report
         assert report['opened'] and report['closed'] and report['reopened']

@@ -18,7 +18,8 @@ PRIVATE = {"pairing.json", "settings.json", "recovery.json", "desktop.json"}
 PRIVATE_SUFFIXES = {".pyc", ".pdb", ".log", ".dmp", ".user", ".suo", ".bak", ".tmp",
                     ".key", ".pem", ".pfx", ".p12"}
 GENERATED_SUFFIXES = {".dll", ".exe", ".a", ".o", ".obj", ".lib"}
-SOURCE_BINARIES = {"bluehead/assets/libusb-1.0.dll"}
+SOURCE_BINARIES = {"bluehead/assets/libusb-1.0.dll", "bluehead/assets/intel/ibt-1040-0041.sfi",
+                   "bluehead/assets/intel/ibt-1040-0041.ddc"}
 
 
 def digest(path):

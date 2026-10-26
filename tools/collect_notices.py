@@ -55,6 +55,10 @@ for distribution in sorted(metadata.distributions(), key=lambda d: d.metadata["N
 (root / "requirements-runtime.lock.txt").write_text("\n".join(
     line for line in lines if line.split("==")[0].split(" @ ")[0].lower().replace("_", "-") not in development_only
 ) + "\n", "utf-8")
+firmware = json.loads((root / "vendor/intel-firmware/origin.json").read_text("utf-8"))
+records.append({"name": "intel-bluetooth-firmware", "version": firmware['firmware_version'],
+                "license": "Redistributable binary firmware; see LICENCE.ibt_firmware", "scope": "runtime",
+                "project_urls": [firmware['upstream']], "revision": firmware['revision']})
 (root / "dependencies.json").write_text(json.dumps(records, ensure_ascii=False, indent=2), "utf-8")
 assets = root / "bluehead/assets"
 library_records = {}

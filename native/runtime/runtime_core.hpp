@@ -18,7 +18,9 @@ public:
       require(!offline, "Hardware opening is disabled in offline-test mode");
       require(!usb, "USB owner already running");
       auto candidate = std::make_unique<Usb>(assets, audio);
-      candidate->open(request.at("vid"), request.at("pid"), request.value("index", 0u));
+      // Firmware upload can take seconds. Keep RPC/Stop responsive while the
+      // same USB owner performs bounded bootstrap on its own event thread.
+      candidate->start(request.at("vid"), request.at("pid"), request.value("index", 0u));
       usb = std::move(candidate);
       audio.transport_opened();
       return true;
@@ -42,11 +44,14 @@ public:
         while (packets.size() < 64 && usb->pop(p))
           packets.push_back(hex(p.data.data(), p.size));
       bool active = usb && usb->active();
-      return {{"packets", packets},
-              {"active", active},
-              {"reason", active ? ""
-                         : usb  ? usb->terminal_reason()
-                                : "stopped"}};
+      json result = {{"packets", packets},
+                     {"active", active},
+                     {"reason", active ? ""
+                                : usb  ? usb->terminal_reason()
+                                       : "stopped"}};
+      if (usb)
+        result.update(usb->startup());
+      return result;
     }
     auto result = audio.command(request);
     if (op == "snapshot")

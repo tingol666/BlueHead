@@ -23,6 +23,7 @@ REQUIRED_LICENSES = {
     "speexdsp/COPYING", "liblc3/LICENSE", "pipewire-rate-control/LICENSE", "gcc-runtime/COPYING.RUNTIME",
     "winpthreads/COPYING", "dotnet/LICENSE.TXT", "wpf-ui/LICENSE.md", "wpf-ui-abstractions/LICENSE.md",
     "libldacdec-MIT.txt", "nlohmann-json/LICENSE.MIT",
+    "intel-bluetooth-firmware/LICENCE.ibt_firmware",
 }
 
 
@@ -45,6 +46,11 @@ def audit(package):
     internal = package / "app/engine/_internal"
     files = sorted(path for path in package.rglob("*") if path.is_file())
     errors, checks, versions, native_hashes = [], {}, {}, {}
+    try:
+        from firmware_assets import verify
+        checks['intel_firmware_assets'] = len(verify(internal / 'bluehead/assets', package / 'licenses'))
+    except (OSError, ValueError) as error:
+        errors.append({'check': 'intel_firmware_assets', 'component': 'intel', 'reason': str(error)})
 
     def fail(check, component, reason):
         errors.append({"check": check, "component": component, "reason": reason})

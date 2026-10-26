@@ -16,6 +16,11 @@ int wmain(int count, wchar_t **values) {
   Target target;
   bh::Module mock(bh::fs::path(values[1]) / L"libusb-1.0.dll");
   bh::json report;
+  wchar_t mode[64]{};
+  GetEnvironmentVariableW(L"BLUEHEAD_USB_FAULT", mode, 64);
+  bh::Handle driver(std::wstring(mode) == L"driver-busy"
+                        ? CreateMutexW(nullptr, FALSE, L"Global\\BlueHead.DriverOperation")
+                        : nullptr);
   auto start = bh::seconds();
   try {
     bh::Usb usb(values[1], target);

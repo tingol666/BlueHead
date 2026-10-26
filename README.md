@@ -4,7 +4,7 @@
 
 BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free endpoint for Windows. Listen to a mobile device on your computer and send the computer's microphone back over Bluetooth. No shared Wi-Fi or mobile companion app is required.
 
-**2.1.1**：统一原生音频时间线、float 音频链路、分级异常恢复和清晰的组件边界；保留 iPhone/iPad 标准音频、AVRCP 媒体控制和 HFP LC3-SWB。
+**2.1.2**：补齐 Intel AX211 在专用驱动下重启后的固件自动初始化，并完善系统蓝牙恢复引导；延续原生音频时间线、float 音频链路和分级异常恢复。
 
 [下载已发布稳定版](https://github.com/tingol666/BlueHead/releases/latest) · [使用指南](docs/UI_GUIDE.md) · [构建源码](docs/BUILDING.md) · [验证范围](docs/TESTING.md) · [报告问题](https://github.com/tingol666/BlueHead/issues)
 
@@ -32,6 +32,8 @@ BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free 
 | 仅接收声音 | 沿用 Windows 蓝牙驱动接收媒体 | 先在 Windows 中配对；编码与播放由系统管理，本程序不提供专用模式的语音和混音控制 |
 
 专用接收会占用所选适配器。使用内置蓝牙时，该适配器原有的耳机、键鼠等连接会断开；也可使用单独的受支持 USB 蓝牙适配器。应用会备份恢复所需的信息，驱动更换和恢复需 Windows 管理员授权。停止接收后可恢复系统蓝牙。
+
+Intel AX211 在电脑重启或断电后需要重新加载运行固件。2.1.2 的完整包自带匹配固件，点击“开始接收”会自动检查并加载，无需每次来回更换驱动、联网下载或手动操作。恢复系统蓝牙时也会处理初始化并等待 Windows 无线电就绪；若原厂驱动已恢复但仍需系统重启，界面会提示 **“驱动恢复完成，请重启电脑”**。适配范围和固件来源见 [Intel 启动说明](docs/INTEL_FIRMWARE.md)。
 
 ## 第一次使用
 
@@ -68,7 +70,7 @@ AVRCP 的标准设备音量为 0%–100%，与本地 0%–200% 接收增益独�
 
 ## 技术栈与源码
 
-2.1.1 由独立 `BlueHead.Runtime.exe` 统一持有 USB/HCI、媒体解码、SCO 双向收发、PCM 桥接、混音、重采样和 WASAPI 音频流。已经建立的专用接收音频在 C/C++ 中持续运行，PCM 不经过 Python 或界面。Python 3.13 保留 Bumble 的配对、SDP、AVDTP/AVRCP、HFP 协商和应用控制；新连接、重新协商及部分控制操作仍需要它运行。
+2.1.2 由独立 `BlueHead.Runtime.exe` 统一持有 USB/HCI、启动固件初始化、媒体解码、SCO 双向收发、PCM 桥接、混音、重采样和 WASAPI 音频流。已经建立的专用接收音频在 C/C++ 中持续运行，PCM 不经过 Python 或界面。Python 3.13 保留 Bumble 的配对、SDP、AVDTP/AVRCP、HFP 协商和应用控制；新连接、重新协商及部分控制操作仍需要它运行。
 
 运行时不再依赖 PyAV、NumPy 或 sounddevice。原生组件包括音频专用 FFmpeg、SpeexDSP、miniaudio、liblc3，以及可独立替换的 SpanDSP PLC 动态库。界面仍为 C#/WPF，不裁剪 WPF/COM。
 
@@ -98,6 +100,6 @@ licenses/    第三方许可证
 
 GitHub 源码只保留实现、测试、构建工具、使用说明、必要资源和固定依赖／许可证。
 BlueHead 自有 EXE/DLL、FFmpeg 编译产物、测试编码器、完整安装包及本机日志／设置不进入源码树；
-从干净检出运行 `tools/build_all_native.py` 可构建原生组件。唯一保留的外部二进制依赖 libusb 有完整来源与 SHA-256 记录。
+从干净检出运行 `tools/build_all_native.py` 可构建原生组件。保留的外部二进制为固定版本 libusb 和未修改的 Intel 启动固件，均有来源、许可证与 SHA-256 记录。
 安装包、绿色版、源码归档和校验值单独通过 Releases 提供。开发与发布步骤见 [构建说明](docs/BUILDING.md)，
 组件边界见 [架构说明](docs/ARCHITECTURE.md)，音频恢复规则见 [恢复设计](docs/RECOVERY.md)。

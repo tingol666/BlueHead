@@ -23,7 +23,9 @@ internal static class Program
             }
             if (args.Length == 1 && args[0] == "--restore-all")
             {
-                foreach (var device in ManagedAdapters()) Drivers.RestoreAsync(device.InstanceId).GetAwaiter().GetResult();
+                var restart = false;
+                foreach (var device in ManagedAdapters()) restart |= Drivers.RestoreAsync(device.InstanceId).GetAwaiter().GetResult().RebootRequired;
+                if (restart) return 3010;
                 return ManagedAdapters().Count == 0 ? 0 : 1;
             }
             if (args.Length == 1 && args[0] == "--list") { Console.WriteLine(JsonSerializer.Serialize(Drivers.Enumerate())); return 0; }
@@ -38,7 +40,10 @@ internal static class Program
                 var operation = args[0]; var instance = args[1];
                 // Wait without pumping a second arbitrary IPC command: this process performs one exact operation.
                 var task = operation == "--install" ? Drivers.InstallAsync(instance) : operation == "--restore" ? Drivers.RestoreAsync(instance) : Drivers.BackupAsync(instance);
-                var record = task.GetAwaiter().GetResult(); Console.WriteLine(JsonSerializer.Serialize(record)); return 0;
+                var record = task.GetAwaiter().GetResult(); Console.WriteLine(JsonSerializer.Serialize(record));
+                if (operation == "--restore" && record.RebootRequired)
+                    System.Windows.Forms.MessageBox.Show("驱动恢复完成，请重启电脑。", "BlueHead · 系统蓝牙", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return 0;
             }
             Console.Error.WriteLine("Usage: --list | --compatible INSTANCE | --backup INSTANCE | --install INSTANCE | --restore INSTANCE | --self-test"); return 2;
         }

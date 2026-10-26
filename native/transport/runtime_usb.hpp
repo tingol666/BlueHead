@@ -4,6 +4,7 @@
 #include "runtime_common.hpp"
 #include "runtime_hci_events.hpp"
 #include "hci_dispatch.hpp"
+#include "intel_firmware.hpp"
 #include <bcrypt.h>
 #include <functional>
 #include <libusb.h>
@@ -66,6 +67,8 @@ class Usb {
   };
   std::mutex event_mutex;
   UsbApi api;
+  fs::path assets;
+  bool driver_prepare = false;
   HciTarget &target;
   HciDispatch dispatch;
   libusb_context *context = nullptr;
@@ -93,7 +96,11 @@ class Usb {
       done{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
   Handle local_lease, global_lease;
   std::string init_error;
-  std::mutex init_mutex;
+  mutable std::mutex init_mutex;
+  std::string firmware_state = "opening";
+  unsigned firmware_progress = 0;
+  std::unique_ptr<IntelFirmware> bootstrap;
+  std::atomic<bool> initializing{false};
   uint64_t sco_completed = 0;
   uint64_t tx_next = 0;
   uint16_t vid = 0, pid = 0;
@@ -130,6 +137,15 @@ class Usb {
     return wide(hex(digest.data(), 12));
   }
   void acquire_lease() {
+    auto check_driver_operation = [this] {
+      if (driver_prepare)
+        return;
+      SetLastError(0);
+      Handle operation(OpenMutexW(SYNCHRONIZE, FALSE, L"Global\\BlueHead.DriverOperation"));
+      require(!operation && GetLastError() == ERROR_FILE_NOT_FOUND,
+              "A Bluetooth driver operation is in progress; wait for it to complete");
+    };
+    check_driver_operation();
     auto suffix = lease_suffix(vid, pid, index);
     for (auto *item : {&local_lease, &global_lease}) {
       auto name =
@@ -140,6 +156,7 @@ class Usb {
       require(static_cast<bool>(*item) && error != ERROR_ALREADY_EXISTS,
               "Bluetooth adapter already has an HCI owner");
     }
+    check_driver_operation();
   }
   void inspect() {
     libusb_device **list = nullptr;
@@ -162,6 +179,19 @@ class Usb {
     if (!chosen) {
       api.libusb_free_device_list(list, 1);
       throw std::runtime_error("Selected USB Bluetooth adapter is unavailable");
+    }
+    if (driver_prepare) {
+      unsigned matches = 0;
+      for (ssize_t i = 0; i < count; i++) {
+        libusb_device_descriptor d{};
+        if (api.libusb_get_device_descriptor(list[i], &d) == 0 && d.idVendor == vid &&
+            d.idProduct == pid)
+          matches++;
+      }
+      if (matches != 1) {
+        api.libusb_free_device_list(list, 1);
+        throw std::runtime_error("Intel firmware: ambiguous physical adapter; refusing to guess");
+      }
     }
     int result = api.libusb_open(chosen, &device);
     libusb_config_descriptor *config = nullptr;
@@ -324,6 +354,12 @@ class Usb {
   }
   void packet(uint8_t type, const uint8_t *p, uint32_t n) {
     rx_packets++;
+    if (bootstrap) {
+      if (type == 4)
+        bootstrap->event(p, n);
+      // No ACL or voice packet is valid for the host until bootstrap commits.
+      return;
+    }
     if (type == 2 && dispatch.acl(p, n))
       return;
     if (type == 3) {
@@ -354,7 +390,8 @@ class Usb {
   }
   void feed(uint8_t type, const uint8_t *p, uint32_t n) {
     auto &s = splitters[type];
-    uint32_t header = type == 2 ? 4 : type == 3 ? 3 : 2;
+    bool boot_event = type == 2 && bootstrap && bootstrap->bulk_events;
+    uint32_t header = boot_event ? 2 : type == 2 ? 4 : type == 3 ? 3 : 2;
     while (n) {
       uint32_t want = s.size < header ? header : s.wanted;
       if (want < s.size || want > s.bytes.size()) {
@@ -368,9 +405,10 @@ class Usb {
       p += take;
       n -= take;
       if (s.size == header && !s.wanted)
-        s.wanted = header + (type == 2 ? le16(s.bytes.data() + 2) : s.bytes[type == 3 ? 2 : 1]);
+        s.wanted = header + (type == 2 && !boot_event ? le16(s.bytes.data() + 2)
+                                                      : s.bytes[type == 3 ? 2 : 1]);
       if (s.wanted && s.size == s.wanted) {
-        packet(type, s.bytes.data(), s.size);
+        packet(boot_event ? 4 : type, s.bytes.data(), s.size);
         s.size = s.wanted = 0;
       }
     }
@@ -563,6 +601,60 @@ class Usb {
       return;
     }
   }
+  void bootstrap_pump() {
+    require(!stopping, "Intel firmware: initialization cancelled or USB transport failed");
+    events();
+    require(!stopping, "Intel firmware: initialization cancelled or USB transport failed");
+  }
+  void bootstrap_write(uint16_t opcode, const std::vector<uint8_t> &data, bool bulk) {
+    require(data.size() <= 255, "Intel firmware: command exceeds HCI capacity");
+    auto deadline = seconds() + 2.5;
+    while (control_out->submitted) {
+      require(seconds() < deadline, "Intel firmware: USB write completion timeout");
+      bootstrap_pump();
+    }
+    auto *v = control_out->native;
+    size_t offset = bulk ? 0 : sizeof(libusb_control_setup);
+    if (!bulk) {
+      libusb_control_setup setup{};
+      setup.bmRequestType = 0x20 | (acl.interface ? 1 : 0);
+      setup.wIndex = uint16_t(acl.interface);
+      setup.wLength = uint16_t(3 + data.size());
+      std::memcpy(control_out->buffer.data(), &setup, sizeof(setup));
+    }
+    auto *p = control_out->buffer.data() + offset;
+    put16(p, opcode);
+    p[2] = uint8_t(data.size());
+    std::copy(data.begin(), data.end(), p + 3);
+    v->endpoint = bulk ? acl.out : 0;
+    v->type = bulk ? LIBUSB_TRANSFER_TYPE_BULK : LIBUSB_TRANSFER_TYPE_CONTROL;
+    v->length = int(offset + 3 + data.size());
+    tx_packets++;
+    submit(control_out);
+    check(last_submit_error, "Cannot submit Intel firmware command");
+  }
+  void initialize_firmware() {
+    if (!IntelFirmware::supported(vid, pid))
+      return;
+    bootstrap =
+        std::make_unique<IntelFirmware>([this](uint16_t op, const std::vector<uint8_t> &data,
+                                               bool bulk) { bootstrap_write(op, data, bulk); },
+                                        [this] { bootstrap_pump(); },
+                                        [this](const char *state, unsigned progress) {
+                                          std::lock_guard<std::mutex> lock(init_mutex);
+                                          firmware_state = state;
+                                          firmware_progress = progress;
+                                        });
+    bootstrap->run(assets);
+    auto deadline = seconds() + 2.5;
+    while (control_out->submitted) {
+      require(seconds() < deadline, "Intel firmware: final USB write completion timeout");
+      bootstrap_pump();
+    }
+    bootstrap.reset();
+    // Bulk changes from event framing to ACL framing after the boot event.
+    splitters[2].size = splitters[2].wanted = 0;
+  }
   void run() {
     Priority priority;
     try {
@@ -586,7 +678,9 @@ class Usb {
       submit(make(normal, 2, acl.in, 4096));
       check(last_submit_error, "Cannot submit initial HCI USB reads");
       control_out = make(normal, 0, acl.out, 4104);
+      initialize_firmware();
       alive = true;
+      initializing = false;
       SetEvent(ready);
       while (!stopping) {
         events();
@@ -600,11 +694,14 @@ class Usb {
       {
         std::lock_guard<std::mutex> lock(init_mutex);
         init_error = e.what();
+        firmware_state = "failed";
       }
       stopping = true;
       SetEvent(ready);
     }
     alive = false;
+    initializing = false;
+    SetEvent(ready);
     target.transport_lost();
     stop_pacer = true;
     SetEvent(pace_wake);
@@ -642,16 +739,23 @@ class Usb {
   }
 
 public:
-  Usb(const fs::path &assets, HciTarget &t) : api(assets), target(t), dispatch(t) {}
+  Usb(const fs::path &p, HciTarget &t, bool preparing_driver = false)
+      : api(p), assets(p), driver_prepare(preparing_driver), target(t), dispatch(t) {}
   ~Usb() { close(); }
-  void open(uint16_t v, uint16_t p, unsigned i) {
+  void start(uint16_t v, uint16_t p, unsigned i) {
     require(!worker.joinable(), "USB owner already started");
     vid = v;
     pid = p;
     index = i;
+    initializing = true;
     worker = std::thread([this] { run(); });
-    if (WaitForSingleObject(ready, 10000) != WAIT_OBJECT_0)
-      TerminateProcess(GetCurrentProcess(), ERROR_TIMEOUT);
+  }
+  void open(uint16_t v, uint16_t p, unsigned i) {
+    start(v, p, i);
+    if (WaitForSingleObject(ready, 70000) != WAIT_OBJECT_0) {
+      close();
+      throw std::runtime_error("USB initialization timeout");
+    }
     std::string error;
     {
       std::lock_guard<std::mutex> lock(init_mutex);
@@ -691,6 +795,13 @@ public:
   }
   bool pop(SmallPacket &p) { return controls.pop(p); }
   bool active() const { return alive.load(); }
+  json startup() const {
+    std::lock_guard<std::mutex> lock(init_mutex);
+    return {{"starting", initializing.load()},
+            {"firmware_state", firmware_state},
+            {"firmware_progress", firmware_progress},
+            {"error", init_error}};
+  }
   const char *terminal_reason() const {
     if (control_overflows.load())
       return "control_backpressure";
@@ -703,16 +814,18 @@ public:
     return "stopped";
   }
   json snapshot() const {
-    return {{"active", active()},
-            {"rx_packets", rx_packets.load()},
-            {"tx_packets", tx_packets.load()},
-            {"iso_errors", iso_errors.load()},
-            {"control_overflows", control_overflows.load()},
-            {"tx_deadline_misses", deadline_misses.load()},
-            {"last_submit_error", last_submit_error.load()},
-            {"last_transfer_status", last_transfer_status.load()},
-            {"terminal_reason", active() ? "" : terminal_reason()},
-            {"single_owner", true}};
+    auto result = startup();
+    result.update({{"active", active()},
+                   {"rx_packets", rx_packets.load()},
+                   {"tx_packets", tx_packets.load()},
+                   {"iso_errors", iso_errors.load()},
+                   {"control_overflows", control_overflows.load()},
+                   {"tx_deadline_misses", deadline_misses.load()},
+                   {"last_submit_error", last_submit_error.load()},
+                   {"last_transfer_status", last_transfer_status.load()},
+                   {"terminal_reason", active() ? "" : terminal_reason()},
+                   {"single_owner", true}});
+    return result;
   }
 };
 } // namespace bh

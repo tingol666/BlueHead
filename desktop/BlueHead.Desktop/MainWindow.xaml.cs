@@ -664,7 +664,9 @@ public partial class MainWindow
         UpdateDriverActions();
         if (DriverPicker.SelectedItem is not DriverDevice device) return;
         var record = Drivers.ReadRecord(device.InstanceId);
-        DriverStatus.Text = $"当前驱动：{device.Service} · {(device.RebootRequired ? "需要重启 Windows 后生效" : device.Healthy ? "设备正常" : "设备需要检查")}\n恢复备份：{(record == null ? "首次操作时自动备份" : record.Stage)}";
+        var state = device.RebootRequired ? "请重启电脑后使用" : !device.Healthy ? "设备需要检查" :
+            device.Service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase) ? "USB 接口可用，开始接收时自动初始化固件" : "设备正常";
+        DriverStatus.Text = $"当前驱动：{device.Service} · {state}\n恢复备份：{(record == null ? "首次操作时自动备份" : "原厂驱动已备份，可随时恢复")}";
     }
     private async Task DriverOperation(string operation)
     {
@@ -674,7 +676,7 @@ public partial class MainWindow
         var detail = operation == "install" ? "将先备份原驱动，再将这个适配器交给 BlueHead。该适配器上的现有蓝牙连接会断开。" : "将停止使用专用驱动，把这个适配器恢复给 Windows 蓝牙。";
         if (MessageBox.Show(this, $"{device.Name}\n\n{detail}\n\n继续后 Windows 会请求管理员授权。", description, MessageBoxButton.OKCancel, MessageBoxImage.Information) != MessageBoxResult.OK) return;
         driverBusy = true; SetRunning(false); DriverProgress.Visibility = Visibility.Visible;
-        DriverResult.Text = "正在处理，请保持适配器连接…";
+        DriverResult.Text = operation == "restore" ? "正在恢复驱动并初始化系统蓝牙，请保持适配器连接…" : "正在启用专用接收，请保持适配器连接…";
         try
         {
             var path = Path.Combine(AppContext.BaseDirectory, "BlueHead.DriverHelper.exe");
@@ -683,7 +685,9 @@ public partial class MainWindow
             using var helper = Process.Start(start) ?? throw new IOException("恢复工具未能启动。");
             await helper.WaitForExitAsync();
             var record = Drivers.ReadRecord(device.InstanceId);
-            DriverResult.Text = helper.ExitCode == 0 ? (record?.RebootRequired == true ? "操作已完成，需要重启 Windows 后生效。" : "操作已完成，设备状态检查通过。") : record?.Error ?? "操作未完成，恢复工具中显示了原因。";
+            DriverResult.Text = helper.ExitCode == 0 ? (record?.RebootRequired == true ?
+                operation == "restore" ? "驱动恢复完成，请重启电脑。" : "专用驱动已启用，请重启电脑。" :
+                operation == "restore" ? "系统蓝牙已恢复，初始化检查通过。" : "专用接收已启用，开始接收时将自动初始化固件。") : record?.Error ?? "操作未完成，恢复工具中显示了原因。";
         }
         catch (Win32Exception error) when (error.NativeErrorCode == 1223) { DriverResult.Text = "管理员授权已取消，未开始更换。"; }
         catch (Exception error) { DriverResult.Text = error.Message; }

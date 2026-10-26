@@ -27,6 +27,15 @@ internal static class DeviceNative
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string Description;
         public char HardwareId;
     }
+    [StructLayout(LayoutKind.Sequential)] internal struct PropertyChange
+    { public uint HeaderSize, Function, State, Scope, HardwareProfile; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] internal struct InstallParameters
+    {
+        public uint Size, Flags, FlagsEx;
+        public IntPtr Window, Callback, Context, FileQueue;
+        public UIntPtr ClassReserved; public uint Reserved;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string DriverPath;
+    }
     [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern IntPtr SetupDiGetClassDevs(IntPtr guid, string? enumerator, IntPtr window, uint flags);
     [DllImport("setupapi.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetupDiEnumDeviceInfo(IntPtr set, uint index, ref DeviceInfo device);
     [DllImport("setupapi.dll", SetLastError = true)] internal static extern bool SetupDiDestroyDeviceInfoList(IntPtr set);
@@ -39,6 +48,9 @@ internal static class DeviceNative
     [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern bool SetupCopyOEMInf(string source, string? sourcePath, uint media, uint style, StringBuilder destination, int length, out int required, IntPtr component);
     [DllImport("newdev.dll", SetLastError = true)] internal static extern bool DiInstallDevice(IntPtr window, IntPtr set, ref DeviceInfo device, ref DriverInfo driver, uint flags, out bool reboot);
     [DllImport("cfgmgr32.dll")] internal static extern uint CM_Get_DevNode_Status(out uint status, out uint problem, uint instance, uint flags);
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetupDiSetClassInstallParams(IntPtr set, ref DeviceInfo device, ref PropertyChange parameters, int size);
+    [DllImport("setupapi.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetupDiCallClassInstaller(uint function, IntPtr set, ref DeviceInfo device);
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetupDiGetDeviceInstallParams(IntPtr set, ref DeviceInfo device, ref InstallParameters parameters);
     internal static DeviceInfo NewDevice() => new() { Size = (uint)Marshal.SizeOf<DeviceInfo>() };
     internal static DriverInfo NewDriver() => new() { Size = (uint)Marshal.SizeOf<DriverInfo>(), Description = "", Manufacturer = "", Provider = "" };
     internal static string Property(IntPtr set, ref DeviceInfo device, uint property)

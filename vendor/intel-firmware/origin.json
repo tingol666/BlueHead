@@ -1,0 +1,28 @@
+{
+  "project": "Intel Bluetooth firmware via linux-firmware",
+  "revision": "98b55c84e8da5c09dd9b8d21f5667c63db5993fa",
+  "upstream": "https://gitlab.com/kernel-firmware/linux-firmware",
+  "mirror": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware",
+  "firmware_version": "BT_Solar_REL82200_23.50.26292.82200",
+  "license": "LICENSES/LICENCE.ibt_firmware",
+  "license_sha256": "5181b0b51efc79d5acb2c9bb92042878fdbad97a92114d4ab5e32e2b5b52fce4",
+  "files": {
+    "ibt-1040-0041.sfi": {
+      "bytes": 721052,
+      "sha256": "f14d059858623283f9e1bca3c9f5c5edc272cf538959d8f194327e3a9af5a75a"
+    },
+    "ibt-1040-0041.ddc": {
+      "bytes": 9,
+      "sha256": "fe272982577efdc289cfe3e8bedafca607c0b7d6c9df1aab1880e22ef930d077"
+    }
+  },
+  "aliases": [
+    "ibt-0040-0041",
+    "ibt-1040-0041",
+    "ibt-0040-1050",
+    "ibt-1040-1050",
+    "ibt-0040-4150",
+    "ibt-1040-4150"
+  ],
+  "alias_evidence": "WHENCE: explicit aliases; ibt-0040-0041 and ibt-1040-0041 have identical upstream Git blobs f7445a5642b4db08a5c25f4dab80f227bf04deb2 (SFI) and 6e067796ed5e452f5914f576e750263123672c02 (DDC)."
+}

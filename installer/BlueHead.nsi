@@ -157,7 +157,10 @@ Function un.onInit
    nsExec::ExecToStack '"$INSTDIR\app\BlueHead.DriverHelper.exe" --restore-all-elevate'
    Pop $0
    Pop $1
-   ${If} $0 != 0
+   ${If} $0 == 3010
+    MessageBox MB_OK|MB_ICONINFORMATION "驱动恢复完成，请重启电脑。卸载将继续，原驱动恢复备份会保留。" /SD IDOK
+    SetRebootFlag true
+   ${ElseIf} $0 != 0
     MessageBox MB_OK|MB_ICONINFORMATION "蓝牙驱动尚未恢复，卸载已取消。请使用 BlueHead 的恢复工具处理后再重试。" /SD IDOK
     Abort
    ${EndIf}

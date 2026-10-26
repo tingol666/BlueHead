@@ -1,6 +1,6 @@
 # BlueHead 2.0.0 implementation status
 
-Status: native audio migration and the compatibility features below are implemented in a candidate undergoing final package validation. User hardware acceptance is required before publishing. The installed and published 1.2.4 builds remain the rollback baseline. This document records implementation boundaries, not radio qualification or a claim of Apple certification.
+Status: 2.0.0 release. Native audio migration and the compatibility features below are implemented. This document records implementation boundaries, not radio qualification or a claim of Apple certification. Actual device results and the remaining coverage are recorded separately in [TESTING.md](TESTING.md) and the release's `VALIDATION.md`.
 
 For the current component and recovery diagram see [ARCHITECTURE.md](ARCHITECTURE.md); for actual offline clock evidence see [AUDIO_AUDIT_2.0.md](AUDIO_AUDIT_2.0.md).
 
@@ -24,14 +24,16 @@ Voice/capture buffer settings are effective queue targets at render centre. Pre-
 
 Twenty real-native virtual-time clock cases passed: four independent dual-bus 30-minute cases, plus sixteen downlink 10-minute cases over 20/30/40/60 ms buffers, all at +/-100 or +/-500 ppm with +/-3 ms arrival jitter. No drops or underruns occurred in those cases. Additional tone and boundary tests, exact queue ranges, the initial superseded FIFO failure and reproducible evidence are documented in [AUDIO_AUDIT_2.0.md](AUDIO_AUDIT_2.0.md). This does not replace hardware testing or guarantee continuity outside the tested conditions.
 
-## Implemented compatibility paths, hardware acceptance pending
+## Implemented compatibility paths
 
 * Standard Apple media uses AAC-LC/LATM and SBC at 44.1/48 kHz, standard HFP microphone routing, interruption/resume handling and accurate SDP/EIR capabilities. No proprietary Apple service or fabricated vendor identity.
 * AVRCP provides per-peer playback commands, metadata/event handling, bounded continuation and timeout/cancellation cleanup. Standard 0-127 absolute volume remains independent from BlueHead's 0-200% gain. Unsupported browsing and cover-art features are not advertised.
 * HFP 1.9 provides LC3-SWB codec 3, 32 kHz mono, 7.5 ms/58-byte frames plus H2 and transparent eSCO host transport. mSBC/CVSD remain negotiated fallbacks. This is not LE Audio; Bluetooth version alone proves neither codec nor controller support.
 
-## Preserved invariants and release gate
+## Preserved invariants and release verification
 
-Keep duplex voice, media after hangup, input/output hot switch, default-device following, per-device/master gains and mutes, process-excluding computer-audio mixing, multipoint, automatic single-device handoff and recoverable driver replacement. Delayed opens and disconnected peers must not write into a new session. Device failures report a recoverable state instead of corrupting buffers. Native and desktop lifetime/failure checks exercise these boundaries; hardware behavior remains in the candidate acceptance checklist.
+Keep duplex voice, media after hangup, input/output hot switch, default-device following, per-device/master gains and mutes, process-excluding computer-audio mixing, multipoint, automatic single-device handoff and recoverable driver replacement. Delayed opens and disconnected peers must not write into a new session. Device failures report a recoverable state instead of corrupting buffers. Native and desktop lifetime/failure checks exercise these boundaries.
 
-The candidate includes source, build instructions, release notes, license and dependency material. Before finalizing a package, record the actual build, offline/regression/UI outcomes, package inventory and remaining hardware checks in its `VALIDATION.md`, following [BUILDING.md](BUILDING.md) and [TESTING.md](TESTING.md). The final frozen engine and desktop must be checked, not only source modules. Publish to GitHub only after user acceptance; exclude private pairing, logs, local driver backups, toolchains and build directories from the public source archive.
+On 2026-10-26 the user confirmed continuous media, duplex voice, input/output hot switching, media recovery after hangup and AVRCP control/display on build `bf80c7`. Later presentation changes replace missing remote metadata with a clear Chinese placeholder while preserving genuine English titles, and distinguish A2DP codec selection from automatically negotiated voice codecs. The compact layout and protocol/audio implementation remain intact. The dated hardware result is kept distinct from the later UI-only validation.
+
+Release materials include source, build instructions, notes, license and dependency information. Record the actual build, offline/regression/UI outcomes, package inventory and hardware scope in `VALIDATION.md`, following [BUILDING.md](BUILDING.md) and [TESTING.md](TESTING.md). Check the final frozen engine and desktop, not only source modules. Keep private pairing, logs, local driver backups, toolchains and build directories out of the public source archive.

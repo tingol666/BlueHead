@@ -1,6 +1,6 @@
 # BlueHead 2.0 native audio audit
 
-**Current status: the clock-mismatch and capture-lifecycle findings below are fixed in the 2.0.0 candidate and pass the stated offline regressions. Hardware acceptance is still pending.** Review and measurements: 2026-10-26.
+**Current status: the clock-mismatch and capture-lifecycle findings below are fixed in 2.0.0 and pass the stated offline regressions.** Review and measurements: 2026-10-26. The user has also confirmed basic audio and AVRCP operation on revision `bf80c7a`; the same release's `VALIDATION.md` records the exact verification scope.
 
 The tests exercise the compiled native mixer, media decoder, microphone/system uplink and capture worker in virtual time. They do not open physical audio or Bluetooth devices. Passing these tests does not establish radio interoperability or end-to-end latency. See [TESTING.md](TESTING.md) for acceptance scope and [DIAGNOSTICS.md](DIAGNOSTICS.md) for diagnostic operating modes.
 
@@ -48,7 +48,7 @@ An additional local 300-second steady-state profile, sampled after 60 seconds, o
 
 ## Earlier finding: byte FIFO drift (fixed)
 
-The initial, superseded `audio_uplink.c` path capped its byte FIFO at 90 ms and trimmed to 60 ms. It read exactly the requested byte count and filled shortages with zeroes, without matching independent capture and SCO clocks. The following table records that **initial failure**, not the current adaptive candidate:
+The initial, superseded `audio_uplink.c` path capped its byte FIFO at 90 ms and trimmed to 60 ms. It read exactly the requested byte count and filled shortages with zeroes, without matching independent capture and SCO clocks. The following table records that **initial failure**, not the current adaptive implementation:
 
 | Capture clock difference | Bulk trims | Largest trim | Zero-filled samples | Peak FIFO |
 | --- | ---: | ---: | ---: | ---: |
@@ -69,7 +69,7 @@ The complete `tests/test_native_boundaries.py` run passed 12 cases. Besides the 
 - Bounded malformed RTP, extension/padding/fragment lengths and aptX input do not overrun native output buffers; canaries remain unchanged.
 - A failed capture consumer marks the stream unhealthy; stopping and replacing its drain worker does not require an endpoint-list change.
 
-The deterministic malformed-input sample is not exhaustive fuzzing or sanitizer proof. Real codec negotiation, long hardware calls, endpoint hot switching, radio scheduling, driver changes and Apple interoperability still require their separate candidate acceptance checks.
+The deterministic malformed-input sample is not exhaustive fuzzing or sanitizer proof. These regressions do not cover long hardware calls, radio scheduling, driver changes or Apple interoperability. Actual device and application checks are recorded separately in [TESTING.md](TESTING.md) and the release's `VALIDATION.md`.
 
 ## Reproduction and evidence
 
@@ -91,4 +91,4 @@ $clockReports = Get-ChildItem work/clock-audit-reproduction -Recurse -Filter *.j
 $clockReports | ConvertTo-Json -Depth 8 | Set-Content work/native-clock-evidence.json -Encoding UTF8
 ```
 
-The development run also aggregated the 20 long-case records and supplementary profile into `work/native-clock-audit.json`. That ignored local evidence file and the ad hoc profile script are not source or runtime dependencies; the tracked tests and commands above reproduce the required gates. Final candidate test commands, outcomes, package hashes and unperformed hardware checks belong in the same release's `VALIDATION.md`.
+The development run also aggregated the 20 long-case records and supplementary profile into `work/native-clock-audit.json`. That ignored local evidence file and the ad hoc profile script are not source or runtime dependencies; the tracked tests and commands above reproduce the required gates. Release test commands, outcomes, package hashes and unperformed hardware checks belong in the same release's `VALIDATION.md`.

@@ -76,15 +76,15 @@
 
           <ComboBox x:Name="PlaybackModePicker" Grid.Column="1" SelectedIndex="0" SelectionChanged="PlaybackModeChanged" AutomationProperties.Name="出声方式，单设备自动接替或多设备同时播放"><ComboBox.ToolTip><ToolTip><TextBlock x:Name="MediaModeHint" Text="多设备声音一起播放，可分别调节音量。" MaxWidth="320"/></ToolTip></ComboBox.ToolTip><ComboBoxItem Content="多设备同时播放" Tag="mix"/><ComboBoxItem Content="单设备自动接替" Tag="single"/></ComboBox>
 
-          <TextBlock Grid.Column="3" Text="编码" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+          <TextBlock x:Name="MediaCodecLabel" Grid.Column="3" Text="媒体编码" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,8,0"/>
 
-          <ComboBox x:Name="CodecPicker" Grid.Column="4" SelectedIndex="0" SelectionChanged="CodecChanged" AutomationProperties.Name="媒体编码与码率"><ComboBox.ToolTip><ToolTip><TextBlock x:Name="CodecHint" Text="优先协商可用高清编码；多设备断续时可切换 AAC。" MaxWidth="320"/></ToolTip></ComboBox.ToolTip><ComboBoxItem Content="自动 · 优先高清" Tag="auto"/><ComboBoxItem Content="aptX HD · 高清" Tag="aptx_hd"/><ComboBoxItem Content="aptX" Tag="aptx"/><ComboBoxItem Content="AAC · 最高 320 kb/s" Tag="aac"/><ComboBoxItem Content="AAC · 最高 192 kb/s" Tag="aac_192"/><ComboBoxItem Content="SBC · 兼容优先" Tag="sbc"/><ComboBoxItem Content="LDAC · 实验" Tag="ldac"/></ComboBox>
+          <ComboBox x:Name="CodecPicker" Grid.Column="4" SelectedIndex="0" SelectionChanged="CodecChanged" AutomationProperties.Name="媒体编码与码率" ToolTipService.ShowOnDisabled="True"><ComboBox.ToolTip><ToolTip><TextBlock x:Name="CodecHint" Text="优先协商可用高清媒体编码；多设备断续时可切换 AAC。仅影响媒体播放，语音编码自动协商。" MaxWidth="320"/></ToolTip></ComboBox.ToolTip><ComboBoxItem Content="自动 · 优先高清" Tag="auto"/><ComboBoxItem Content="aptX HD · 高清" Tag="aptx_hd"/><ComboBoxItem Content="aptX" Tag="aptx"/><ComboBoxItem Content="AAC · 最高 320 kb/s" Tag="aac"/><ComboBoxItem Content="AAC · 最高 192 kb/s" Tag="aac_192"/><ComboBoxItem Content="SBC · 兼容优先" Tag="sbc"/><ComboBoxItem Content="LDAC · 实验" Tag="ldac"/></ComboBox>
 
-          <StackPanel x:Name="CodecApplyRow" Grid.Column="5" Visibility="Collapsed" Margin="8,0,0,0" VerticalAlignment="Center"><ui:Button x:Name="ApplyCodecButton" Content="应用" Click="ApplyCodecClick" Appearance="Primary" Padding="10,4"/></StackPanel>
+          <StackPanel x:Name="CodecApplyRow" Grid.Column="5" Visibility="Collapsed" Margin="8,0,0,0" VerticalAlignment="Center"><ui:Button x:Name="ApplyCodecButton" Content="应用" Click="ApplyCodecClick" Appearance="Primary" Padding="10,4" AutomationProperties.Name="应用媒体编码设置"/></StackPanel>
 
          </Grid>
 
-         <TextBlock x:Name="CodecApplyHint" Text="编码在下一次连接时生效。" Style="{StaticResource Caption}" Margin="0,6,0,0" Visibility="{Binding Visibility, ElementName=CodecApplyRow}"/>
+         <TextBlock x:Name="CodecApplyHint" Text="媒体编码在下一次连接时生效。" Style="{StaticResource Caption}" Margin="0,6,0,0" Visibility="{Binding Visibility, ElementName=CodecApplyRow}"/>
 
          <Border x:Name="MultipointNotice" Visibility="Collapsed" Background="#FFF7EB" CornerRadius="6" Padding="8,6" Margin="0,7,0,0"><DockPanel><ui:Button x:Name="LowerBitrateButton" DockPanel.Dock="Right" Content="切换 AAC 并重连" Click="LowerBitrateClick" Margin="8,0,0,0" Padding="8,4" VerticalAlignment="Center"/><TextBlock x:Name="MultipointText" Style="{StaticResource Caption}" Foreground="#946032" VerticalAlignment="Center"/></DockPanel></Border>
 
@@ -129,7 +129,7 @@
 
              <local:AudioLevel Label="发送到此设备" CompactLabel="麦克风发送" Hint="麦克风与已加入的电脑声音合并后，调节发给此设备的音量。" Icon="&#xE720;" Compact="True" Value="{Binding UplinkVolume, Mode=TwoWay}" ValueChanged="UplinkGainChanged" IsEnabled="{Binding CanMix}"/>
 
-             <ui:Button ToolTip="设备操作" AutomationProperties.Name="设备操作" Padding="6,4" MinHeight="26" BorderThickness="0" Background="Transparent" Margin="5,0,0,0"><ui:Button.Content><TextBlock Text="&#xE712;" FontFamily="Segoe Fluent Icons" FontSize="14"/></ui:Button.Content><ui:Button.ContextMenu><ContextMenu><MenuItem Header="设为麦克风发送设备" Click="SelectCallClick"/><MenuItem Header="连接语音通道" Click="CallAudioClick"/><Separator/><MenuItem Header="断开连接" Click="DisconnectClick"/></ContextMenu></ui:Button.ContextMenu><ui:Button.Style><Style TargetType="ui:Button" BasedOn="{StaticResource {x:Type ui:Button}}"><EventSetter Event="Click" Handler="DeviceMenuClick"/></Style></ui:Button.Style></ui:Button>
+             <ui:Button ToolTip="设备操作" AutomationProperties.Name="设备操作" Padding="6,4" MinHeight="26" BorderThickness="0" Background="Transparent" Margin="5,0,0,0"><ui:Button.Content><TextBlock Text="&#xE712;" FontFamily="Segoe Fluent Icons" FontSize="14"/></ui:Button.Content><ui:Button.ContextMenu><ContextMenu><MenuItem Header="设为麦克风发送设备" Click="SelectCallClick" IsEnabled="{Binding CanMix}"/><MenuItem Header="连接语音通道" Click="CallAudioClick" IsEnabled="{Binding CanMix}"/><Separator/><MenuItem Header="断开连接" Click="DisconnectClick"/></ContextMenu></ui:Button.ContextMenu><ui:Button.Style><Style TargetType="ui:Button" BasedOn="{StaticResource {x:Type ui:Button}}"><EventSetter Event="Click" Handler="DeviceMenuClick"/></Style></ui:Button.Style></ui:Button>
 
             </StackPanel>
 
@@ -208,7 +208,7 @@
 
        <TextBlock Text="蓝牙耳机" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="耳机名称" FontSize="12" Margin="0,20,0,8"/><TextBox x:Name="NameEntry" Text="BlueHead PC" MaxLength="80"/><TextBlock Text="显示在移动设备的蓝牙列表中" Style="{StaticResource Caption}" Margin="0,7,0,0"/>
 
-       <Grid Margin="0,22,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="蓝牙语音与麦克风"/><TextBlock Text="用于通话及支持蓝牙麦克风的录音、录像应用" Style="{StaticResource Caption}" Margin="0,5,12,0"/></StackPanel><CheckBox x:Name="CallsToggle" Grid.Column="1" IsChecked="True" Style="{StaticResource Switch}" VerticalAlignment="Center" AutomationProperties.Name="启用蓝牙语音与麦克风"/></Grid>
+       <Grid Margin="0,22,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="蓝牙语音与麦克风"/><TextBlock x:Name="VoiceCodecHint" Text="语音编码：自动协商；用于通话及支持蓝牙麦克风的录音、录像应用" Style="{StaticResource Caption}" Margin="0,5,12,0"/></StackPanel><CheckBox x:Name="CallsToggle" Grid.Column="1" IsChecked="True" Style="{StaticResource Switch}" VerticalAlignment="Center" AutomationProperties.Name="启用蓝牙语音与麦克风"/></Grid>
 
       </StackPanel></Border>
 
@@ -224,7 +224,7 @@
 
       <Expander x:Name="AdvancedAudio" Header="高级音频设置" Tag="缓冲、连接上限与声音混合说明" Style="{StaticResource SectionExpander}" Margin="0,18,0,0"><Border Style="{StaticResource Card}" Margin="0,8,0,0"><StackPanel>
 
-       <TextBlock Text="播放方式与编码" FontWeight="SemiBold"/><TextBlock Text="在首页同一行选择：单设备自动接替，或多设备同时播放；编码默认优先高清。单设备模式在当前设备停止传音后自动接替等待播放的设备，也可点击设备名旁的标记立即切换。语音使用中保留语音优先。" Style="{StaticResource Caption}" Margin="0,7,0,16"/>
+       <TextBlock Text="播放方式与媒体编码" FontWeight="SemiBold"/><TextBlock Text="在首页同一行选择：单设备自动接替，或多设备同时播放；媒体编码默认优先高清。专用接收的语音编码由双方自动协商，不随媒体编码选择改变。单设备模式在当前设备停止传音后自动接替等待播放的设备，也可点击设备名旁的标记立即切换。语音使用中保留语音优先。" Style="{StaticResource Caption}" Margin="0,7,0,16"/>
 
        <TextBlock Text="电脑声音混合" FontWeight="SemiBold"/><TextBlock Text="在首页“总音量”打开“加入电脑声音”即可实时启用，无需停止接收。" Style="{StaticResource Caption}" Margin="0,8,0,8"/>
 
@@ -260,7 +260,7 @@
 
        <TextBlock Text="声音与麦克风：让电脑成为蓝牙耳机，支持双向语音、电脑麦克风和多设备混音。需要把一个蓝牙适配器交给 BlueHead 使用。" Style="{StaticResource Caption}" Margin="0,12,0,0"/>
 
-       <TextBlock Text="仅接收声音：无需更换驱动，先在 Windows 蓝牙设置中配对；编码和播放设备由系统管理。" Style="{StaticResource Caption}" Margin="0,8,0,0"/>
+       <TextBlock Text="仅接收声音：无需更换驱动，先在 Windows 蓝牙设置中配对；媒体编码和播放设备由系统管理，此模式不提供蓝牙语音与麦克风。" Style="{StaticResource Caption}" Margin="0,8,0,0"/>
 
       </StackPanel></Border>
 

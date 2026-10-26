@@ -1,7 +1,7 @@
 # iPhone and iPad compatibility
 
-BlueHead implements standard Bluetooth Classic audio profiles. The 2.0.0
-candidate has offline protocol and native-audio regression coverage; it has not
+BlueHead implements standard Bluetooth Classic audio profiles. Version 2.0.0
+has offline protocol and native-audio regression coverage; it has not
 yet completed real iPhone/iPad acceptance testing. This page distinguishes an
 implemented path from a verified device/app combination.
 

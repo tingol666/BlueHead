@@ -56,7 +56,7 @@ public sealed class DeviceCard : INotifyPropertyChanged
     private double? durationMs, positionMs, standardVolume;
     private readonly HashSet<string> remoteControls = new(StringComparer.Ordinal);
     public bool HasRemoteMedia => remoteConnected;
-    public string TrackDescription => string.Join(" · ", new[] { trackTitle, trackArtist }.Where(value => value.Length > 0)) is { Length: > 0 } text ? text : "此设备的媒体控制";
+    public string TrackDescription => string.Join(" · ", new[] { DisplayMetadata(trackTitle), DisplayMetadata(trackArtist) }.Where(value => value.Length > 0)) is { Length: > 0 } text ? text : "暂无曲目信息";
     public string PlaybackAction => playbackStatus == "playing" ? "pause" : playbackStatus is "paused" or "stopped" ? "play" : "";
     public bool CanPrevious => remoteConnected && remoteControls.Contains("previous");
     public bool CanNext => remoteConnected && remoteControls.Contains("next");
@@ -69,7 +69,19 @@ public sealed class DeviceCard : INotifyPropertyChanged
         var time = TimeSpan.FromSeconds(Math.Min(31536000, milliseconds.Value / 1000));
         return $"{(long)time.TotalMinutes}:{time.Seconds:00}";
     }
-    public string RemoteDetails => $"{TrackDescription}{(trackAlbum.Length > 0 ? "\n专辑：" + trackAlbum : "")}\n播放位置：{Clock(positionMs)} / {Clock(durationMs)}\n设备标准音量：{(standardVolume is { } volume ? $"{volume * 100:0}%" : "未知")}（AVRCP，独立于接收增益）";
+    public string RemoteDetails => $"{TrackDescription}{(DisplayMetadata(trackAlbum) is { Length: > 0 } album ? "\n专辑：" + album : "")}\n{(positionMs is null && durationMs is null ? "设备未提供播放进度" : $"播放位置：{Clock(positionMs)} / {Clock(durationMs)}")}\n设备标准音量：{(standardVolume is { } volume ? $"{volume * 100:0}%" : "未知")}（AVRCP，独立于接收增益）";
+    private static string MetadataToken(string value) => new string(value.Where(character => !char.IsWhiteSpace(character) && character is not '_' and not '-').ToArray()).Trim('.').ToLowerInvariant();
+    private static bool UnprovidedMetadata(string value) => MetadataToken(value) is "notprovided" or "notprovide" or "notproivde" or "notproivded";
+    private static bool UnavailableMetadata(string value) => MetadataToken(value) is "unavailable" or "notavailable";
+    private string DisplayMetadata(string value)
+    {
+        if (UnprovidedMetadata(value)) return "";
+        // A real track may be called "Unavailable". Only fold ambiguous words
+        // when no other field supplies meaningful track context; match whole
+        // fields and never translate or remove fragments of real English names.
+        var hasContext = new[] { trackTitle, trackArtist, trackAlbum }.Any(text => text.Length > 0 && !UnprovidedMetadata(text) && !UnavailableMetadata(text));
+        return UnavailableMetadata(value) && !hasContext ? "" : value;
+    }
     private static string MetadataText(string value)
     {
         var text = value.Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' ').Trim();

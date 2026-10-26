@@ -4,11 +4,11 @@
 
 BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free endpoint for Windows. Listen to a mobile device on your computer and send the computer's microphone back over Bluetooth. No shared Wi-Fi or mobile companion app is required.
 
-**当前源码：2.0.0 待验收候选。** 本次重构尚未完成新包真机验收，也未发布到 GitHub Releases；公开最新版仍为 **1.2.4**。下面介绍 2.0.0 的实现与使用方式，不能把历史版本的实测结果当作本版验收。
+**2.0.0 正式版**：原生音频处理，适配 iPhone/iPad 标准音频、AVRCP 媒体控制和 HFP LC3-SWB。
 
 [下载已发布稳定版](https://github.com/tingol666/BlueHead/releases/latest) · [使用指南](docs/UI_GUIDE.md) · [构建源码](docs/BUILDING.md) · [验证范围](docs/TESTING.md) · [报告问题](https://github.com/tingol666/BlueHead/issues)
 
-![BlueHead 2.0.0 待验收界面；设备、曲目信息和连接均为演示数据](docs/images/home-demo.png)
+![BlueHead 2.0.0 界面；设备、曲目信息和连接均为演示数据](docs/images/home-demo.png)
 
 ## 可以做什么
 
@@ -18,7 +18,9 @@ BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free 
 - 接收期间切换电脑播放设备和麦克风；选择系统默认时跟随默认设备变化。
 - 按需把其他电脑应用的声音与实体麦克风混合发送，排除 BlueHead 自己播放的设备声音。
 - 在应用内备份原驱动、启用 WinUSB 专用接收或恢复系统蓝牙。
-- 新增 AVRCP 曲目信息、上一曲、播放/暂停、下一曲与标准音量同步；新增 HFP LC3-SWB 协商和语音处理。**这些新增功能及原有功能在 2.0.0 新包中均待真机验收。**
+- 适配 iPhone/iPad 标准 AAC/SBC 媒体与 HFP 双向语音。
+- 通过 AVRCP 显示媒体信息、控制上一曲/播放/暂停/下一曲，以及同步标准设备音量。
+- 支持 HFP LC3-SWB 协商和 32 kHz 超宽带语音，保留 mSBC/CVSD 回退。
 
 ## 运行环境与两种接收方式
 
@@ -37,9 +39,9 @@ BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free 
 2. 首页点击 **设置蓝牙接收**。需要麦克风时，选择“声音与麦克风”，按提示准备专用适配器。
 3. 回到音频中心，点击 **开始接收**；在移动设备蓝牙设置中连接界面显示的名称，开启媒体与通话音频。
 4. 播放媒体或开启支持蓝牙麦克风的应用。设备卡片的“播放 / 麦克风发送”调节该设备的增益；底部总控可调音量、静音及切换电脑声音设备。
-5. AVRCP 可用时，曲名和三个媒体按钮会出现在同一条紧凑信息行。状态未知或操作不受支持时，相应按钮禁用。
+5. AVRCP 可用时，曲名和三个媒体按钮显示在同一条紧凑信息行。设备没有提供有效元数据时显示“暂无曲目信息”；真实英文曲名保留原文。状态未知或操作不受支持时，相应按钮禁用。
 
-首页同一行选择 **出声方式** 和 **编码**。默认优先协商可用高清编码；更换编码需按提示应用并重新连接。多设备同时播放高清音频若断续，可切换 AAC，必要时使用最高 192 kb/s，或改用单设备自动接替。
+首页同一行选择 **出声方式** 和 **媒体编码**。媒体编码只影响 A2DP，语音编码由双方自动协商。默认优先使用可用高清媒体编码；更换后按提示应用并重新连接。多设备同时播放高清音频若断续，可切换 AAC，必要时使用最高 192 kb/s，或改用单设备自动接替。
 
 关闭窗口默认留在托盘；完全退出请右键托盘图标 → **退出**。恢复系统蓝牙前先停止接收，再到“蓝牙与驱动”。后台无法启动时，可单独运行 `BlueHead.exe --recovery`。
 
@@ -52,9 +54,9 @@ BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free 
 | 媒体 | A2DP：SBC、AAC、aptX、aptX HD，以双方实际协商为准 |
 | LDAC | 实验性、默认关闭，使用非 Sony 认证解码器 |
 | 双向语音 | HFP：CVSD 8 kHz、mSBC 16 kHz、LC3-SWB 32 kHz；一次一个语音来源 |
-| iPhone / iPad | 面向标准 AAC/SBC 媒体与 HFP 互通实现兼容路径；具体机型、系统版本和应用尚待本版真机验收 |
+| iPhone / iPad | 标准 AAC/SBC 媒体与 HFP 双向语音，配合 AVRCP 媒体信息和播放控制 |
 | Android / HarmonyOS | 取决于系统、设备和应用实际开放的 profile、编码与麦克风路由，不以系统名称保证全部功能 |
-| AVRCP | 曲目、播放状态、媒体控制与标准绝对音量；对端未提供的信息显示未知或不显示 |
+| AVRCP | 曲目、播放状态、媒体控制与标准绝对音量；无有效媒体信息时显示“暂无曲目信息” |
 | 电脑声音混合 | 进程排除采集要求 Windows build 20348+；Windows 10 22H2 不提供此项系统能力 |
 | 录音 / 录像 | 应用必须支持并选择蓝牙麦克风，电脑不能强制指定移动端应用的输入源 |
 
@@ -77,12 +79,12 @@ desktop/     WPF 界面、系统接口、独立驱动工具与离线兼容检查
 vendor/      固定版本上游源码、来源与校验信息
 tools/       构建、诊断、验证与打包工具
 tests/       协议、原生音频与生命周期回归
-installer/   安装、升级及卸载脚本
+installer/   安装及卸载脚本
 docs/        使用、架构、构建及验证说明
 licenses/    第三方许可证
 ```
 
-开发步骤见 [BUILDING](docs/BUILDING.md)，实现边界见 [ARCHITECTURE](docs/ARCHITECTURE.md)。公开源码不包含个人配对、日志、驱动备份或构建缓存；安装包和归档放在 Releases。2.0.0 只有在用户验收后才准备上传发布，1.2.4 保留为回退基线。
+开发步骤见 [BUILDING](docs/BUILDING.md)，实现边界见 [ARCHITECTURE](docs/ARCHITECTURE.md)，具体测试记录见 [TESTING](docs/TESTING.md) 与同版本 `VALIDATION.md`。公开源码不包含个人配对、日志、驱动备份或构建缓存；安装包、便携包和源码归档放在 Releases。
 
 ## 数据与问题反馈
 

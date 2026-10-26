@@ -52,6 +52,7 @@ public partial class MainWindow
     private int? systemAudioRequest;
     private bool systemAudioActive;
     private bool inventoryReceived;
+    private List<DriverDevice> driverInventory = [];
     private string? codecDraft;
     private bool mediaModePending, voiceInUse, mediaProtected, highMediaActive;
     private EngineSettings? restartWithCodec;
@@ -328,18 +329,25 @@ public partial class MainWindow
         }
     }
     private void UpdateDevices() { DeviceCount.Text = $"{State.Devices.Count} 台设备"; UpdateSetupState(); UpdateMediaControls(); }
-    internal bool NeedsBluetoothSetup => settings.mode != "native" && AdapterPicker.SelectedItem is not AdapterChoice;
+    internal bool AdapterNeedsRestart => settings.mode != "native" && AdapterPicker.SelectedItem is AdapterChoice adapter && Drivers.RequiresRestart(adapter.Transport, driverInventory);
+    internal bool NeedsBluetoothSetup => settings.mode != "native" && (AdapterPicker.SelectedItem is not AdapterChoice || AdapterNeedsRestart);
     private void UpdateSetupState()
     {
         if (!inventoryReceived) return;
         var setup = !running && NeedsBluetoothSetup;
+        var restart = AdapterNeedsRestart;
         SetupCard.Visibility = setup ? Visibility.Visible : Visibility.Collapsed;
         MediaProfileCard.Visibility = setup ? Visibility.Collapsed : Visibility.Visible;
         EmptyState.Visibility = State.Devices.Count == 0 && !setup ? Visibility.Visible : Visibility.Collapsed;
-        StartButton.Content = running ? "停止接收" : setup ? "设置蓝牙接收" : "开始接收";
+        StartButton.Content = running ? "停止接收" : restart ? "查看重启要求" : setup ? "设置蓝牙接收" : "开始接收";
+        SetupTitle.Text = restart ? "重启 Windows，完成蓝牙准备" : "开始之前，设置蓝牙接收";
+        SetupDescription.Text = restart ? "Windows 要求重新启动，适配器才能恢复接收。配对和设置会保留。" : "让移动设备把电脑识别为蓝牙耳机，需要先准备一个接收适配器。";
+        SetupAction.Content = restart ? "查看适配器状态" : "设置蓝牙接收";
+        SetupBenefits.Visibility = restart ? Visibility.Collapsed : Visibility.Visible;
+        SetupCaption.Text = restart ? "请在 Windows 开始菜单选择“重启”，然后重新打开 BlueHead。" : "只需在电脑收听？在下一步选择“与 Windows 共用蓝牙”，无需更换驱动。";
         if (running) return;
-        StatusTitle.Text = setup ? "待设置" : "准备就绪";
-        StatusDetail.Text = setup ? "首次使用：选择接收方式，并启用一个蓝牙适配器。" : "点击开始接收，然后在移动设备蓝牙列表连接耳机名称。";
+        StatusTitle.Text = restart ? "需要重启 Windows" : setup ? "待设置" : "准备就绪";
+        StatusDetail.Text = restart ? "蓝牙适配器尚未完成系统重启，暂时无法开始接收。" : setup ? "首次使用：选择接收方式，并启用一个蓝牙适配器。" : "点击开始接收，然后在移动设备蓝牙列表连接耳机名称。";
     }
     internal IEnumerable<AudioLevel> AudioEditors()
     {
@@ -366,7 +374,7 @@ public partial class MainWindow
     private async void SetupBluetoothClick(object sender, RoutedEventArgs e) { ShowPage("adapters"); await RefreshDrivers(); }
     private async void FinishBluetoothClick(object sender, RoutedEventArgs e)
     {
-        if (NeedsBluetoothSetup) { DriverResult.Text = "请先启用专用接收，或选择“仅接收声音”。"; return; }
+        if (NeedsBluetoothSetup) { DriverResult.Text = AdapterNeedsRestart ? "Windows 要求重启后才能使用该适配器。" : "请先启用专用接收，或选择“仅接收声音”。"; return; }
         if (await SaveSettings()) ShowPage("home");
     }
     private static string CodecName(string codec) => codec.ToLowerInvariant() switch
@@ -607,18 +615,25 @@ public partial class MainWindow
         if (offline || driverBusy) return;
         try
         {
-            var selected = (DriverPicker.SelectedItem as DriverDevice)?.InstanceId;
             var inventory = await Task.Run(Drivers.Enumerate);
-            DriverPicker.ItemsSource = inventory;
-            DriverPicker.SelectedItem = inventory.FirstOrDefault(item => item.InstanceId == selected) ?? inventory.FirstOrDefault();
+            ApplyDriverInventory(inventory);
             if (inventory.Count == 0) DriverStatus.Text = "未找到 USB 蓝牙 HCI 适配器。";
         }
         catch (Exception error) { DriverStatus.Text = "驱动检查失败：" + error.Message; }
     }
+    internal void ApplyDriverInventory(List<DriverDevice> inventory)
+    {
+        var selected = (DriverPicker.SelectedItem as DriverDevice)?.InstanceId;
+        driverInventory = inventory;
+        DriverPicker.ItemsSource = inventory;
+        DriverPicker.SelectedItem = inventory.FirstOrDefault(item => item.InstanceId == selected) ?? inventory.FirstOrDefault();
+        UpdateSetupState();
+    }
     private void UpdateDriverActions()
     {
         var device = DriverPicker.SelectedItem as DriverDevice;
-        InstallDriverButton.IsEnabled = !running && !driverBusy && device != null;
+        InstallDriverButton.IsEnabled = !running && !driverBusy && device != null && !device.RebootRequired;
+        InstallDriverButton.ToolTip = device?.RebootRequired == true ? "请先重启 Windows，完成当前驱动操作。" : null;
         RestoreDriverButton.IsEnabled = !running && !driverBusy && device?.HasBackup == true;
     }
     private void DriverSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -626,7 +641,7 @@ public partial class MainWindow
         UpdateDriverActions();
         if (DriverPicker.SelectedItem is not DriverDevice device) return;
         var record = Drivers.ReadRecord(device.InstanceId);
-        DriverStatus.Text = $"当前驱动：{device.Service} · {(device.Healthy ? "设备正常" : "设备需要检查")}\n恢复备份：{(record == null ? "首次操作时自动备份" : record.Stage)}";
+        DriverStatus.Text = $"当前驱动：{device.Service} · {(device.RebootRequired ? "需要重启 Windows 后生效" : device.Healthy ? "设备正常" : "设备需要检查")}\n恢复备份：{(record == null ? "首次操作时自动备份" : record.Stage)}";
     }
     private async Task DriverOperation(string operation)
     {

@@ -658,6 +658,33 @@ class Receiver:
             await self.device.set_discoverable(True)
             await self.device.set_connectable(True)
 
+    async def initialize_transport(self, device, config, transport, timeout=12):
+        """Bound setup independently of the media path and honor Stop mid-reset."""
+        async def initialize():
+            await device.power_on()
+            from .discovery import update_inquiry_power
+            await update_inquiry_power(device, config.name, self.settings.calls)
+            await self.advertise()
+
+        setup = asyncio.create_task(initialize())
+        stopped = asyncio.create_task(self.stop_event.wait())
+        terminated = asyncio.ensure_future(asyncio.shield(transport.source.terminated))
+        try:
+            await asyncio.wait([setup, stopped, terminated], timeout=timeout,
+                               return_when=asyncio.FIRST_COMPLETED)
+            if self.stop_event.is_set():
+                return False
+            if terminated.done():
+                raise ConnectionError("蓝牙适配器在启动时断开，请检查专用接收驱动或重新插拔适配器")
+            if setup.done():
+                await setup
+                return True
+            raise TimeoutError("蓝牙适配器启动超时，未收到完整初始化响应；请重新插拔适配器，内置适配器可重启 Windows 后重试")
+        finally:
+            for task in (setup, stopped, terminated):
+                task.cancel()
+            await asyncio.gather(setup, stopped, terminated, return_exceptions=True)
+
     async def run(self):
         if self.settings.mode == "native":
             from .native import NativeReceiver
@@ -696,10 +723,8 @@ class Receiver:
                     output_factory = RemoteOutput
                 self.output = output_factory(self.mixer, self.settings.output_device)
                 self.output.start()
-                await device.power_on()
-                from .discovery import update_inquiry_power
-                await update_inquiry_power(device, config.name, self.settings.calls)
-                await self.advertise()
+                if not await self.initialize_transport(device, config, transport):
+                    return
                 self.emit("status", message=f"已就绪：在移动设备蓝牙列表连接 {config.name}")
                 stopped = asyncio.create_task(self.stop_event.wait())
                 terminated = asyncio.ensure_future(asyncio.shield(transport.source.terminated))

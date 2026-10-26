@@ -40,6 +40,7 @@ struct HciTarget {
   X(libusb_cancel_transfer) \
   X(libusb_handle_events_timeout_completed) \
   X(libusb_get_version) \
+  X(libusb_error_name) \
   X(libusb_interrupt_event_handler)
 // clang-format on
 struct UsbApi {
@@ -164,6 +165,7 @@ class Usb {
   Setting acl;
   std::map<int, Setting> sco_settings;
   int sco_interface = -1, current_alt = 0, wanted_alt = 0;
+  bool acl_claimed = false, sco_claimed = false;
   struct ScoLink {
     uint16_t handle = 0xffff;
     uint8_t mode = 0;
@@ -190,6 +192,12 @@ class Usb {
   unsigned index = 0;
   std::atomic<uint64_t> rx_packets{0}, tx_packets{0}, iso_errors{0}, control_overflows{0},
       deadline_misses{0};
+  std::atomic<int> last_submit_error{0}, last_transfer_status{LIBUSB_TRANSFER_COMPLETED};
+  void check(int result, const char *stage) {
+    if (result < 0)
+      throw std::runtime_error(std::string(stage) + ": " + api.libusb_error_name(result) + " (" +
+                               std::to_string(result) + ")");
+  }
   static std::wstring lease_suffix(uint16_t v, uint16_t p, unsigned i) {
     char canonical[80];
     std::snprintf(canonical, sizeof(canonical), "usb:%04x:%04x#%u", v, p, i);
@@ -228,7 +236,7 @@ class Usb {
   void inspect() {
     libusb_device **list = nullptr;
     auto count = api.libusb_get_device_list(context, &list);
-    require(count >= 0, "USB enumeration failed");
+    check(static_cast<int>(std::min<ssize_t>(count, 0)), "USB enumeration failed");
     unsigned selected = 0;
     libusb_device *chosen = nullptr;
     libusb_device_descriptor descriptor{};
@@ -255,7 +263,8 @@ class Usb {
         result = api.libusb_get_config_descriptor(chosen, 0, &config);
     }
     api.libusb_free_device_list(list, 1);
-    require(result == 0 && config, "Adapter cannot be opened with WinUSB");
+    check(result, device ? "USB configuration unavailable" : "Cannot open WinUSB adapter");
+    require(config, "USB configuration unavailable");
     for (int i = 0; i < config->bNumInterfaces; i++)
       for (int j = 0; j < config->interface[i].num_altsetting; j++) {
         const auto &s = config->interface[i].altsetting[j];
@@ -300,13 +309,13 @@ class Usb {
       }
     api.libusb_free_config_descriptor(config);
     require(acl.interface >= 0, "No Bluetooth HCI USB interface");
-    require(api.libusb_claim_interface(device, acl.interface) == 0,
-            "HCI USB interface is busy or requires WinUSB");
+    check(api.libusb_claim_interface(device, acl.interface), "Cannot claim HCI USB interface");
+    acl_claimed = true;
     if (sco_interface >= 0) {
-      require(api.libusb_claim_interface(device, sco_interface) == 0,
-              "Voice USB interface is busy");
-      require(api.libusb_set_interface_alt_setting(device, sco_interface, 0) == 0,
-              "Cannot reset voice alternate setting");
+      check(api.libusb_claim_interface(device, sco_interface), "Cannot claim voice USB interface");
+      sco_claimed = true;
+      check(api.libusb_set_interface_alt_setting(device, sco_interface, 0),
+            "Cannot reset voice alternate setting");
     }
   }
   Transfer *make(std::vector<std::unique_ptr<Transfer>> &group, uint8_t type, uint8_t endpoint,
@@ -326,7 +335,9 @@ class Usb {
                      : (type == 4 ? LIBUSB_TRANSFER_TYPE_INTERRUPT : LIBUSB_TRANSFER_TYPE_BULK);
     v->buffer = t->buffer.data();
     v->length = static_cast<int>(t->buffer.size());
-    v->timeout = 0;
+    // Idle IN reads must remain pending. HCI command/ACL OUT has a deadline:
+    // an unresponsive controller must not hold the entire control queue forever.
+    v->timeout = type == 0 && !iso_count ? 2000 : 0;
     v->callback = complete;
     v->user_data = t.get();
     v->num_iso_packets = iso_count;
@@ -339,6 +350,7 @@ class Usb {
   void submit(Transfer *t) {
     int result = api.libusb_submit_transfer(t->native);
     if (result < 0) {
+      last_submit_error = result;
       stopping = true;
       return;
     }
@@ -470,6 +482,8 @@ class Usb {
     t->submitted = false;
     if (u->stopping || v->status == LIBUSB_TRANSFER_CANCELLED)
       return;
+    if (v->status != LIBUSB_TRANSFER_COMPLETED)
+      u->last_transfer_status = v->status;
     if (t == u->control_out || t->type == 0) {
       if (v->status != LIBUSB_TRANSFER_COMPLETED) {
         u->iso_errors++;
@@ -525,7 +539,11 @@ class Usb {
   }
   void events() {
     timeval timeout{0, 100000};
-    api.libusb_handle_events_timeout_completed(context, &timeout, nullptr);
+    int result = api.libusb_handle_events_timeout_completed(context, &timeout, nullptr);
+    if (result < 0 && result != LIBUSB_ERROR_INTERRUPTED) {
+      last_submit_error = result;
+      stopping = true;
+    }
   }
   void release(std::vector<std::unique_ptr<Transfer>> &group) {
     for (auto &t : group) {
@@ -658,6 +676,7 @@ class Usb {
       });
       submit(make(normal, 4, static_cast<uint8_t>(acl.in_size), 4096));
       submit(make(normal, 2, acl.in, 4096));
+      check(last_submit_error, "Cannot submit initial HCI USB reads");
       control_out = make(normal, 0, acl.out, 4104);
       alive = true;
       SetEvent(ready);
@@ -695,11 +714,11 @@ class Usb {
     release(iso);
     control_out = nullptr;
     if (device) {
-      if (sco_interface >= 0) {
+      if (sco_claimed) {
         api.libusb_set_interface_alt_setting(device, sco_interface, 0);
         api.libusb_release_interface(device, sco_interface);
       }
-      if (acl.interface >= 0)
+      if (acl_claimed)
         api.libusb_release_interface(device, acl.interface);
       api.libusb_close(device);
       device = nullptr;
@@ -737,6 +756,11 @@ public:
   }
   void close() {
     stopping = true;
+    {
+      std::lock_guard<std::mutex> lock(event_mutex);
+      if (context)
+        api.libusb_interrupt_event_handler(context);
+    }
     if (worker.joinable()) {
       if (WaitForSingleObject(done, 5000) != WAIT_OBJECT_0)
         TerminateProcess(GetCurrentProcess(), ERROR_TIMEOUT);
@@ -766,6 +790,8 @@ public:
             {"iso_errors", iso_errors.load()},
             {"control_overflows", control_overflows.load()},
             {"tx_deadline_misses", deadline_misses.load()},
+            {"last_submit_error", last_submit_error.load()},
+            {"last_transfer_status", last_transfer_status.load()},
             {"single_owner", true}};
   }
 };

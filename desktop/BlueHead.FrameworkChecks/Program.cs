@@ -36,6 +36,10 @@ internal static class Program
     private static async Task Run(string root)
     {
         checks["x64_process"] = Environment.Is64BitProcess && IntPtr.Size == 8;
+        var restartAdapter = new DriverDevice(@"USB\VID_8087&PID_0033\offline", "offline", "WinUSB", "offline.inf", "", false, false) { RebootRequired = true };
+        checks["restart_matches_selected_adapter"] = Drivers.RequiresRestart("usb:8087:0033#0", [restartAdapter]) && !Drivers.RequiresRestart("usb:1111:2222#0", [restartAdapter]);
+        checks["duplicate_usb_models_do_not_guess_instance_order"] = !Drivers.RequiresRestart("usb:8087:0033#0", [restartAdapter, restartAdapter with { InstanceId = @"USB\VID_8087&PID_0033\another", RebootRequired = false }]);
+        checks["driver_restart_state_roundtrips"] = JsonSerializer.Deserialize<DriverDevice>(JsonSerializer.Serialize(restartAdapter))?.RebootRequired == true && restartAdapter.DisplayName.Contains("需要重启 Windows");
         checks["same_legacy_driver_record_hash"] = FrameworkCompat.HashPrefix(@"USB\VID_8087&PID_0033\5&ABC&0&10") == "CF044A274D54482A6C8165B5";
         var arguments = new[] { "", "plain", "with spaces", "中英🙂", "\tline\n", @"C:\ends with slash\", "a\\\"b", "a\"b\\", @"USB\VID_8087&PID_0033\5&ABC&0&10", "&|<>^%" };
         using (var child = Start(new[] { "--echo" }.Concat(arguments).ToArray()))

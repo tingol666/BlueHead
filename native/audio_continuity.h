@@ -56,16 +56,19 @@ static uint32_t bhc_period(BhContinuity *c, uint32_t maximum) {
         continue;
       informative = 1;
       double score = vx * vy > 1e-20 ? (xy - sx * sy / 128) / sqrt(vx * vy) : -1;
-      double error = vx + vy - 2 * (xy - sx * sy / 128);
+      /* Preserve differences between window means: a short shift of a bass
+       * waveform can have near-perfect centered correlation without being a
+       * period. Normalize raw mismatch by AC energy so DC cannot hide it. */
+      double error = xx + yy - 2 * xy;
       if (error > .3 * (vx + vy))
         score = -1;
       correlation = fmin(correlation, score);
     }
     if (!informative)
       correlation = -1;
-    /* Prefer the shortest similarly good period; arbitrary long repeats
-     * can smear a transient even when a harmonic also correlates. */
-    if (correlation > best + .005) {
+    /* Prefer the shortest genuinely equivalent period. Loose score ties
+     * select false short periods for bass and audibly change its pitch. */
+    if (correlation > best + .000001) {
       best = correlation;
       lag = candidate;
     }

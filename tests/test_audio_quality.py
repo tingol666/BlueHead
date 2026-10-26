@@ -162,6 +162,28 @@ def test_dc_biased_uncorrelated_stereo_does_not_masquerade_as_periodic_audio():
         api.bh_mix_free(mixer)
 
 
+@pytest.mark.parametrize('frequency', [55, 95, 150, 440, 1000, 7500, 16000])
+def test_short_periodic_gap_preserves_bass_pitch_and_stereo_phase(frequency):
+    api, initial = setup()
+    api.bh_mix_free(initial)
+    for phase in np.linspace(0, 2*np.pi, 16, endpoint=False):
+        mixer = api.bh_mix_create()
+        try:
+            samples = np.arange(2400)
+            tone = .2*np.sin(samples*2*np.pi*frequency/48000 + phase)
+            add(api, mixer, np.column_stack((tone, -tone)))
+            take(api, mixer, 2400)
+            # The first 72 frames are real PCM in the limiter lookahead.
+            # Compare only the predicted continuation, before its finite fade.
+            gap = take(api, mixer, 240)[72:]
+            expected = .2*np.sin(np.arange(2400, 2568)*2*np.pi*frequency/48000 + phase)
+            error = np.sqrt(np.mean((gap[:, 0] - expected)**2)) / .2
+            assert error < .015, (frequency, phase, error)
+            np.testing.assert_allclose(gap[:, 1], -gap[:, 0], atol=1e-7)
+        finally:
+            api.bh_mix_free(mixer)
+
+
 @pytest.mark.parametrize('rate', [44100, 48000, 96000, 192000])
 def test_production_format_conversion_preserves_mixed_spectrum_across_arbitrary_chunks(rate):
     pcm = music(24000)

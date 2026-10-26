@@ -80,6 +80,16 @@ internal static class Program
         Capture(window, Path.Combine(folder, "first-use.png"));
         Event("""{"event":"inventory","adapters":[{"transport":"usb:8087:0033#0","name":"Intel AX211"}],"audio":[{"index":1,"name":"电脑耳机（界面示例）","max_output_channels":2,"max_input_channels":0},{"index":2,"name":"麦克风（界面示例）","max_output_channels":0,"max_input_channels":1}]}""");
         checks["prepared_adapter_shows_start_and_pairing"] = !window.SetupCard.IsVisible && !window.NeedsBluetoothSetup && window.EmptyState.IsVisible && Equals(window.StartButton.Content, "开始接收");
+        var restartAdapter = new DriverDevice(@"USB\VID_8087&PID_0033\offline", "Intel AX211", "WinUSB", "offline.inf", "", false, false) { RebootRequired = true };
+        window.ApplyDriverInventory([restartAdapter]); Pump();
+        checks["pending_restart_is_visible_on_home"] = window.AdapterNeedsRestart && window.SetupCard.IsVisible && window.StatusTitle.Text == "需要重启 Windows" && Equals(window.StartButton.Content, "查看重启要求");
+        checks["restart_requirement_is_not_shown_as_healthy"] = window.DriverStatus.Text.Contains("需要重启 Windows") && !window.InstallDriverButton.IsEnabled;
+        checks["restart_card_hides_redundant_setup_benefits"] = window.SetupBenefits.Visibility == Visibility.Collapsed;
+        window.StartButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent)); Pump();
+        checks["pending_restart_start_button_does_not_start_receiver"] = !window.SelfTestCommands.Any(command => command.Text("command") == "start");
+        window.ShowPage("home"); Capture(window, Path.Combine(folder, "restart-required.png"));
+        window.ApplyDriverInventory([restartAdapter with { RebootRequired = false, Healthy = true }]); Pump();
+        checks["cleared_restart_restores_normal_start"] = !window.AdapterNeedsRestart && !window.SetupCard.IsVisible && Equals(window.StartButton.Content, "开始接收");
         checks["labels_distinguish_mobile_devices_and_computer_inputs"] = window.PlaybackGain.Label == "设备声音" && window.MicrophoneGain.Label == "电脑麦克风" && window.SystemGain.Label == "电脑声音";
         checks["codec_and_playback_mode_share_home_row"] = window.CodecPicker.IsVisible && window.PlaybackModePicker.IsVisible && Math.Abs(window.CodecPicker.TranslatePoint(new(0,0),window).Y - window.PlaybackModePicker.TranslatePoint(new(0,0),window).Y) < 2;
         checks["media_selector_and_automatic_voice_codec_are_distinguished"] = window.MediaCodecLabel.Text == "媒体编码" && window.VoiceCodecHint.Text.StartsWith("语音编码：自动协商");

@@ -36,7 +36,9 @@ internal static class BluetoothRadio
         }
         return false;
     }
-    public static bool IsReady(string instance)
+    public static bool IsReady(string instance) => Query(instance);
+    public static bool AnyReady() => Query(null);
+    private static bool Query(string? instance)
     {
         var guid = RadioInterface;
         var set = SetupDiGetClassDevs(ref guid, null, IntPtr.Zero, 2 | 16); // PRESENT | DEVICEINTERFACE
@@ -54,7 +56,7 @@ internal static class BluetoothRadio
                 try
                 {
                     Marshal.WriteInt32(memory, IntPtr.Size == 8 ? 8 : 6);
-                    if (!SetupDiGetDeviceInterfaceDetail(set, ref data, memory, required, out _, ref device) || !Matches(device.Instance, instance)) continue;
+                    if (!SetupDiGetDeviceInterfaceDetail(set, ref data, memory, required, out _, ref device) || (instance != null && !Matches(device.Instance, instance))) continue;
                     var path = Marshal.PtrToStringUni(IntPtr.Add(memory, 4));
                     if (string.IsNullOrEmpty(path)) continue;
                     using var radio = CreateFile(path!, 0, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);

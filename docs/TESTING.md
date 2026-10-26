@@ -26,7 +26,7 @@ work/publish-desktop/BlueHead.exe --self-test C:\Temp\BlueHead-ui
 | 进程退出 | 系统打开卡住时daemon控制线程不阻止退出；正常退出清理自有后台及子进程 |
 | HFP | CVSD/mSBC/LC3-SWB协商、H2/SCO分片、丢包/坏帧、双向字节处理、语音结束清理 |
 | AVRCP | 命令生命周期、元数据边界、断开/迟到响应、播放状态、标准音量与本地增益隔离 |
-| UI | 原紧凑两行、默认尺寸/DPI、实时状态、热切换确认、音量/静音、AVRCP22px行、未知状态禁用、正确LC3-SWB名称 |
+| UI | 原紧凑两行、默认尺寸/DPI、实时状态、共用/专用引导、已恢复不可重复操作、多适配器与待重启状态、热切换确认、音量/静音、AVRCP22px行、未知状态禁用、正确LC3-SWB名称 |
 | 包 | 版本一致性、DLL导入、无运行时PyAV/NumPy/sounddevice、无自包含coreCLR、必需恢复文件及许可证完整 |
 
 `tests/test_audio_device.py`的native callback harness不初始化音频设备。它在内存中验证真实 DLL、原生 ASRC／兼容 Speex 转换、采集队列与释放顺序；卡住控制线程的检查在独立进程中退出。只读inventory可以枚举端点，但不等同声音测试。
@@ -39,7 +39,7 @@ dotnet run --project desktop/BlueHead.FrameworkChecks/BlueHead.FrameworkChecks.c
 work/publish-helper/BlueHead.DriverHelper.exe --self-test
 ```
 
-FrameworkChecks仅操作自己的临时文件和子进程：Windows参数引用、UTF-8、退出事件竞态、job子树清理、原恢复hash、原子替换和目录逃逸。helper self-test只读枚举适配器，不能证明驱动更换恢复成功。UI截图明确标注演示数据，不表示真实手机已连接。
+FrameworkChecks包含共用／专用接收和驱动操作可用性的纯状态策略；其余仅操作自己的临时文件和子进程：Windows参数引用、UTF-8、退出事件竞态、job子树清理、原恢复hash、原子替换和目录逃逸。helper self-test只读枚举适配器，不能证明驱动更换恢复成功。UI截图明确标注演示数据，不表示真实手机已连接。
 
 ## 扩展设备覆盖与后续硬件回归
 

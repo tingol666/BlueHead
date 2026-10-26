@@ -1,4 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
   <ItemGroup><ProjectReference Include="../BlueHead.Platform/BlueHead.Platform.csproj" /></ItemGroup>
+<ItemGroup><Compile Include="../BlueHead.Desktop/BluetoothSetup.cs" Link="BluetoothSetup.cs" /></ItemGroup>
 </Project>

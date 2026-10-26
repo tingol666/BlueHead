@@ -30,7 +30,7 @@
 
       <Button x:Name="NavHome" Style="{StaticResource Nav}" Click="HomeClick" AutomationProperties.Name="音频中心"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE80F;" Style="{StaticResource NavIcon}"/><TextBlock Text="音频中心"/></StackPanel></Button>
 
-      <Button x:Name="NavAdapters" Style="{StaticResource Nav}" Click="AdaptersClick" AutomationProperties.Name="蓝牙与驱动"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE702;" Style="{StaticResource NavIcon}"/><TextBlock Text="蓝牙与驱动"/></StackPanel></Button>
+      <Button x:Name="NavAdapters" Style="{StaticResource Nav}" Click="AdaptersClick" AutomationProperties.Name="蓝牙设置"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE702;" Style="{StaticResource NavIcon}"/><TextBlock Text="蓝牙设置"/></StackPanel></Button>
 
       <Button x:Name="NavSettings" Style="{StaticResource Nav}" Click="SettingsClick" AutomationProperties.Name="设置"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" Style="{StaticResource NavIcon}"/><TextBlock Text="设置"/></StackPanel></Button>
 
@@ -68,6 +68,8 @@
 
        <StackPanel>
 
+        <Border x:Name="SharedModeNotice" Background="#EEF8F7" CornerRadius="8" Padding="10,7" Margin="0,0,0,8" Visibility="Collapsed"><DockPanel><ui:Button Content="使用电脑麦克风 ↗" DockPanel.Dock="Right" Click="DedicatedSetupClick" Padding="6,3" Margin="8,0,0,0" Background="Transparent" BorderThickness="0" Foreground="{StaticResource Accent}" VerticalAlignment="Center"/><TextBlock Text="共用 Windows 蓝牙 · 仅接收媒体。麦克风与混音需专用接收。" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center" TextWrapping="Wrap"/></DockPanel></Border>
+
         <Border x:Name="MediaProfileCard" Style="{StaticResource Card}" Padding="12,8" Margin="0,0,0,8"><StackPanel>
 
          <Grid x:Name="PlaybackOptionsRow"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="170"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="230"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -76,9 +78,13 @@
 
           <ComboBox x:Name="PlaybackModePicker" Grid.Column="1" SelectedIndex="0" SelectionChanged="PlaybackModeChanged" AutomationProperties.Name="出声方式，单设备自动接替或多设备同时播放"><ComboBox.ToolTip><ToolTip><TextBlock x:Name="MediaModeHint" Text="多设备声音一起播放，可分别调节音量。" MaxWidth="320"/></ToolTip></ComboBox.ToolTip><ComboBoxItem Content="多设备同时播放" Tag="mix"/><ComboBoxItem Content="单设备自动接替" Tag="single"/></ComboBox>
 
+          <TextBlock x:Name="SharedPlaybackValue" Grid.Column="1" Text="Windows 管理" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Visibility="Collapsed"/>
+
           <TextBlock x:Name="MediaCodecLabel" Grid.Column="3" Text="媒体编码" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,8,0"/>
 
           <ComboBox x:Name="CodecPicker" Grid.Column="4" SelectedIndex="0" SelectionChanged="CodecChanged" AutomationProperties.Name="媒体编码与码率" ToolTipService.ShowOnDisabled="True"><ComboBox.ToolTip><ToolTip><TextBlock x:Name="CodecHint" Text="优先协商可用高清媒体编码；多设备断续时可切换 AAC。仅影响媒体播放，语音编码自动协商。" MaxWidth="320"/></ToolTip></ComboBox.ToolTip><ComboBoxItem Content="自动 · 优先高清" Tag="auto"/><ComboBoxItem Content="aptX HD · 高清" Tag="aptx_hd"/><ComboBoxItem Content="aptX" Tag="aptx"/><ComboBoxItem Content="AAC · 最高 320 kb/s" Tag="aac"/><ComboBoxItem Content="AAC · 最高 192 kb/s" Tag="aac_192"/><ComboBoxItem Content="SBC · 兼容优先" Tag="sbc"/><ComboBoxItem Content="LDAC · 实验" Tag="ldac"/></ComboBox>
+
+          <TextBlock x:Name="SharedCodecValue" Grid.Column="4" Text="Windows 自动选择" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Visibility="Collapsed"/>
 
           <StackPanel x:Name="CodecApplyRow" Grid.Column="5" Visibility="Collapsed" Margin="8,0,0,0" VerticalAlignment="Center"><ui:Button x:Name="ApplyCodecButton" Content="应用" Click="ApplyCodecClick" Appearance="Primary" Padding="10,4" AutomationProperties.Name="应用媒体编码设置"/></StackPanel>
 
@@ -166,7 +172,7 @@
 
       </ScrollViewer>
 
-      <Border Grid.Row="2" Style="{StaticResource Card}" Margin="0,8,0,0" Padding="10,7"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <Border x:Name="DedicatedAudioFooter" Grid.Row="2" Style="{StaticResource Card}" Margin="0,8,0,0" Padding="10,7"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
 
        <TextBlock Text="总音量" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,10,0"/>
 
@@ -198,17 +204,22 @@
 
       </Grid></Border>
 
+      <Border x:Name="SharedAudioFooter" Grid.Row="2" Style="{StaticResource Card}" Padding="10,7" Margin="0,8,0,0" Visibility="Collapsed"><DockPanel><ui:Button Content="声音设置 ↗" DockPanel.Dock="Right" Click="WindowsSoundClick" Padding="7,3" Background="Transparent" BorderThickness="0" Foreground="{StaticResource Accent}"/><TextBlock Text="播放设备与音量由 Windows 管理" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/></DockPanel></Border>
+
      </Grid>
 
      <ScrollViewer x:Name="SettingsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel>
 
       <TextBlock Text="设置" Style="{StaticResource Heading}"/><TextBlock Text="日常选项保持简单，更多参数按需调整。" Foreground="{StaticResource Muted}" Margin="0,7,0,22"/>
 
+      <Border x:Name="SharedSettingsNotice" Background="#EEF8F7" CornerRadius="8" Padding="10,8" Margin="0,0,0,12" Visibility="Collapsed"><DockPanel><ui:Button Content="切换专用接收 ↗" DockPanel.Dock="Right" Click="DedicatedSetupClick" Padding="6,3" Background="Transparent" BorderThickness="0" Foreground="{StaticResource Accent}"/><TextBlock Text="共用模式仅收听媒体。电脑麦克风、混音及编码选择需专用接收。" FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap" VerticalAlignment="Center"/></DockPanel></Border>
+
       <Border Style="{StaticResource Card}"><StackPanel>
 
-       <TextBlock Text="蓝牙耳机" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="耳机名称" FontSize="12" Margin="0,20,0,8"/><TextBox x:Name="NameEntry" Text="BlueHead PC" MaxLength="80"/><TextBlock Text="显示在移动设备的蓝牙列表中" Style="{StaticResource Caption}" Margin="0,7,0,0"/>
+       <StackPanel x:Name="SharedNameFields" Visibility="Collapsed"><TextBlock Text="系统蓝牙" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="设备配对与电脑蓝牙名称在 Windows 中管理。" Style="{StaticResource Caption}" Margin="0,8,0,8"/><ui:Button Content="打开 Windows 蓝牙 ↗" Click="WindowsBluetoothClick" HorizontalAlignment="Left" Padding="8,4"/></StackPanel>
+       <StackPanel x:Name="DedicatedNameFields"><TextBlock Text="蓝牙耳机" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="耳机名称" FontSize="12" Margin="0,20,0,8"/><TextBox x:Name="NameEntry" Text="BlueHead PC" MaxLength="80"/><TextBlock Text="显示在移动设备的蓝牙列表中" Style="{StaticResource Caption}" Margin="0,7,0,0"/></StackPanel>
 
-       <Grid Margin="0,22,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="蓝牙语音与麦克风"/><TextBlock x:Name="VoiceCodecHint" Text="语音编码：自动协商；用于通话及支持蓝牙麦克风的录音、录像应用" Style="{StaticResource Caption}" Margin="0,5,12,0"/></StackPanel><CheckBox x:Name="CallsToggle" Grid.Column="1" IsChecked="True" Style="{StaticResource Switch}" VerticalAlignment="Center" AutomationProperties.Name="启用蓝牙语音与麦克风"/></Grid>
+       <Grid x:Name="VoiceSettingsRow" Margin="0,22,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="蓝牙语音与麦克风"/><TextBlock x:Name="VoiceCodecHint" Text="语音编码：自动协商；用于通话及支持蓝牙麦克风的录音、录像应用" Style="{StaticResource Caption}" Margin="0,5,12,0"/></StackPanel><CheckBox x:Name="CallsToggle" Grid.Column="1" IsChecked="True" Style="{StaticResource Switch}" VerticalAlignment="Center" AutomationProperties.Name="启用蓝牙语音与麦克风"/></Grid>
 
       </StackPanel></Border>
 
@@ -250,41 +261,34 @@
 
      </StackPanel></ScrollViewer>
 
-     <ScrollViewer x:Name="AdaptersPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel>
-
-      <TextBlock Text="蓝牙与驱动" Style="{StaticResource Heading}"/><TextBlock Text="完成一次准备，之后即可在首页开始接收。" Foreground="{StaticResource Muted}" Margin="0,7,0,24"/>
-
-      <Border Style="{StaticResource Card}"><StackPanel>
-
-       <TextBlock Text="1  选择使用方式" FontWeight="SemiBold" FontSize="16"/><ComboBox x:Name="ModePicker" SelectedIndex="0" Margin="0,16,0,0" SelectionChanged="ModeChanged"><ComboBoxItem Content="声音与麦克风 · 专用蓝牙接收" Tag="advanced"/><ComboBoxItem Content="仅接收声音 · 与 Windows 共用蓝牙" Tag="native"/></ComboBox>
-
-       <TextBlock Text="声音与麦克风：让电脑成为蓝牙耳机，支持双向语音、电脑麦克风和多设备混音。需要把一个蓝牙适配器交给 BlueHead 使用。" Style="{StaticResource Caption}" Margin="0,12,0,0"/>
-
-       <TextBlock Text="仅接收声音：无需更换驱动，先在 Windows 蓝牙设置中配对；媒体编码和播放设备由系统管理，此模式不提供蓝牙语音与麦克风。" Style="{StaticResource Caption}" Margin="0,8,0,0"/>
-
+     <Grid x:Name="AdaptersPage" Visibility="Collapsed"><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><ScrollViewer x:Name="AdaptersScroll" VerticalScrollBarVisibility="Auto" Padding="0,0,2,0"><StackPanel>
+      <DockPanel><ui:Button x:Name="DriverStopButton" DockPanel.Dock="Right" Content="停止接收以切换" Click="StopForSetupClick" Visibility="Collapsed" Padding="9,4"/><TextBlock Text="蓝牙接收设置" Style="{StaticResource Heading}"/></DockPanel><TextBlock Text="选择需要的功能，再按提示准备适配器。" Foreground="{StaticResource Muted}" Margin="0,6,0,14"/>
+      <Border Style="{StaticResource Card}" Padding="16"><StackPanel>
+       <TextBlock Text="1  我想怎样接收" FontWeight="SemiBold" FontSize="15"/>
+       <ComboBox x:Name="ModePicker" SelectedIndex="0" Margin="0,10,0,0" SelectionChanged="ModeChanged" AutomationProperties.Name="希望使用的蓝牙接收方式"><ComboBoxItem Content="声音和麦克风 · 专用适配器" Tag="advanced"/><ComboBoxItem Content="只收听媒体 · 共用 Windows 蓝牙" Tag="native"/></ComboBox>
+       <TextBlock x:Name="ModeDescription" Text="专用接收支持电脑麦克风、媒体编码与多设备混音，需要独占一个适配器。" Style="{StaticResource Caption}" Margin="0,8,0,0"/>
       </StackPanel></Border>
-
-      <Border Style="{StaticResource Card}" Margin="0,16,0,0"><StackPanel>
-
-       <TextBlock FontWeight="SemiBold" FontSize="16"><TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Text" Value="2  准备接收适配器"/><Style.Triggers><DataTrigger Binding="{Binding SelectedIndex, ElementName=ModePicker}" Value="1"><Setter Property="Text" Value="2  恢复系统蓝牙（如需）"/></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock><TextBlock Margin="0,10,0,14"><TextBlock.Style><Style TargetType="TextBlock" BasedOn="{StaticResource Caption}"><Setter Property="Text" Value="选择内置或外置蓝牙，点击“启用专用接收”。应用会备份原驱动，可随时恢复。"/><Style.Triggers><DataTrigger Binding="{Binding SelectedIndex, ElementName=ModePicker}" Value="1"><Setter Property="Text" Value="此前启用过专用接收，可在这里恢复给 Windows。系统蓝牙正常时可直接跳过。"/></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock>
-
-       <ComboBox x:Name="DriverPicker" DisplayMemberPath="DisplayName" SelectionChanged="DriverSelectionChanged" AutomationProperties.Name="准备接收的蓝牙适配器"/>
-
-       <TextBlock x:Name="DriverStatus" Text="正在读取驱动状态…" Style="{StaticResource Caption}" Margin="0,10,0,14"/>
-
-       <WrapPanel><ui:Button x:Name="InstallDriverButton" Content="启用专用接收" Appearance="Primary" Click="InstallDriverClick" Margin="0,0,10,8"><ui:Button.Style><Style TargetType="ui:Button" BasedOn="{StaticResource {x:Type ui:Button}}"><Style.Triggers><DataTrigger Binding="{Binding SelectedIndex, ElementName=ModePicker}" Value="1"><Setter Property="Visibility" Value="Collapsed"/></DataTrigger></Style.Triggers></Style></ui:Button.Style></ui:Button><ui:Button x:Name="RestoreDriverButton" Content="恢复系统蓝牙" Click="RestoreDriverClick" Margin="0,0,0,8"/></WrapPanel>
-
-       <ProgressBar x:Name="DriverProgress" Height="4" IsIndeterminate="True" Visibility="Collapsed" Margin="0,8,0,0"/>
-
-       <TextBlock x:Name="DriverResult" Text="此操作需要管理员授权，该适配器上原有的蓝牙连接会暂时断开。" Style="{StaticResource Caption}" Margin="0,8,0,0"/>
-
-       <Expander Header="接收适配器与恢复工具" Style="{StaticResource Details}" Margin="0,18,0,0"><StackPanel Margin="0,14,0,0"><TextBlock Text="启用后自动选择可用适配器；有多个时可在这里更换。" Style="{StaticResource Caption}" Margin="0,0,0,10"/><ComboBox x:Name="AdapterPicker" DisplayMemberPath="Name" AutomationProperties.Name="接收适配器"/><WrapPanel Margin="0,12,0,0"><ui:Button Content="刷新设备" Click="RefreshClick" Margin="0,0,10,0"/><ui:Button Content="打开独立恢复工具" Click="RecoveryClick"/></WrapPanel></StackPanel></Expander>
-
+      <Border Style="{StaticResource Card}" Padding="16" Margin="0,10,0,0"><StackPanel>
+       <DockPanel><ui:Button DockPanel.Dock="Right" Content="刷新状态" Click="RefreshClick" Padding="7,3"/><TextBlock x:Name="DriverStepTitle" Text="2  准备蓝牙适配器" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/></DockPanel>
+       <TextBlock x:Name="DriverStepDescription" Text="选择用于接收的内置或外置蓝牙。" Style="{StaticResource Caption}" Margin="0,7,0,10"/>
+       <ComboBox x:Name="DriverPicker" DisplayMemberPath="DisplayName" SelectionChanged="DriverSelectionChanged" AutomationProperties.Name="要准备的蓝牙适配器"/>
+       <TextBlock x:Name="DriverStateTitle" Text="正在检查适配器…" FontWeight="SemiBold" FontSize="13" Margin="0,10,0,4"/>
+       <TextBlock x:Name="DriverStatus" Text="正在读取状态…" Style="{StaticResource Caption}"/>
+       <WrapPanel Margin="0,10,0,0"><ui:Button x:Name="InstallDriverButton" Content="启用专用接收" Appearance="Primary" Click="InstallDriverClick" Padding="10,4" Margin="0,0,8,0"/><ui:Button x:Name="RestoreDriverButton" Content="恢复系统蓝牙" Click="RestoreDriverClick" Padding="10,4"/></WrapPanel>
+       <ProgressBar x:Name="DriverProgress" Height="3" IsIndeterminate="True" Visibility="Collapsed" Margin="0,10,0,0"/>
+       <TextBlock x:Name="DriverResult" Text="" Style="{StaticResource Caption}" Margin="0,8,0,0"/>
+       <Expander Header="更多与恢复工具" Style="{StaticResource Details}" Margin="0,12,0,0"><StackPanel Margin="0,8,0,0">
+        <TextBlock Text="接收入口（多个适配器时确认）" Style="{StaticResource Caption}" Margin="0,0,0,6"/>
+        <ComboBox x:Name="AdapterPicker" DisplayMemberPath="Name" SelectionChanged="AdapterChoiceChanged" AutomationProperties.Name="BlueHead 专用接收入口"/>
+        <TextBlock x:Name="DriverNativeDetails" Style="{StaticResource Caption}" FontSize="11" Margin="0,7,0,0"/>
+        <WrapPanel Margin="0,9,0,0"><ui:Button Content="Windows 蓝牙设置 ↗" Click="WindowsBluetoothClick" Padding="7,3" Margin="0,0,8,0"/><ui:Button Content="独立恢复工具" Click="RecoveryClick" Padding="7,3"/></WrapPanel>
+       </StackPanel></Expander>
       </StackPanel></Border>
-
-      <ui:Button Content="完成，回到音频中心" Appearance="Primary" HorizontalAlignment="Left" Padding="12,5" Margin="0,22,0,18" Click="FinishBluetoothClick"/>
-
      </StackPanel></ScrollViewer>
+     <StackPanel Grid.Row="1">
+      <ui:Button x:Name="FinishBluetoothButton" Content="完成，回到音频中心" IsEnabled="False" Appearance="Primary" HorizontalAlignment="Left" Padding="12,5" Margin="0,14,0,8" Click="FinishBluetoothClick"/>
+      <TextBlock x:Name="FinishBluetoothHint" Style="{StaticResource Caption}" Margin="0,0,0,12"/>
+     </StackPanel></Grid>
 
      <ScrollViewer x:Name="HelpPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel>
 
@@ -298,7 +302,7 @@
 
     </Grid>
 
-    <DockPanel Grid.Row="2" Margin="0,16,0,0"><TextBlock x:Name="FooterStatus" Text="本机蓝牙 · 无需同一 Wi-Fi" Style="{StaticResource Caption}"/><TextBlock DockPanel.Dock="Right" x:Name="EngineState" Text="后台准备中" HorizontalAlignment="Right" Style="{StaticResource Caption}"/></DockPanel>
+    <Grid Grid.Row="2" Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><ui:Button x:Name="ModeStatusButton" Content="蓝牙设置 ⌄" Click="SetupBluetoothClick" Padding="0,0,8,0" MinHeight="18" FontSize="11" Background="Transparent" BorderThickness="0" Foreground="{StaticResource Accent}"/><TextBlock x:Name="FooterStatus" Grid.Column="1" Text="本机蓝牙 · 无需同一 Wi-Fi" Style="{StaticResource Caption}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" VerticalAlignment="Center"/><TextBlock Grid.Column="2" x:Name="EngineState" Text="后台准备中" HorizontalAlignment="Right" Style="{StaticResource Caption}" Margin="8,0,0,0" VerticalAlignment="Center"/></Grid>
 
    </Grid>
 

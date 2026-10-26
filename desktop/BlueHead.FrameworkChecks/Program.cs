@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using BlueHead.Platform;
+using BlueHead.Desktop;
 
 internal static class Program
 {
@@ -40,6 +41,22 @@ internal static class Program
         checks["restart_matches_selected_adapter"] = Drivers.RequiresRestart("usb:8087:0033#0", [restartAdapter]) && !Drivers.RequiresRestart("usb:1111:2222#0", [restartAdapter]);
         checks["duplicate_usb_models_do_not_guess_instance_order"] = !Drivers.RequiresRestart("usb:8087:0033#0", [restartAdapter, restartAdapter with { InstanceId = @"USB\VID_8087&PID_0033\another", RebootRequired = false }]);
         checks["driver_restart_state_roundtrips"] = JsonSerializer.Deserialize<DriverDevice>(JsonSerializer.Serialize(restartAdapter))?.RebootRequired == true && restartAdapter.DisplayName.Contains("需要重启 Windows");
+        var dedicated = restartAdapter with { RebootRequired = false, Healthy = true, HasBackup = true };
+        var system = dedicated with { Service = "ibtusb", SystemRadioReady = true };
+        checks["system_driver_with_backup_cannot_be_restored_again"] = !BluetoothSetup.Adapter(system).CanRestore && BluetoothSetup.Adapter(system).CanInstall;
+        checks["dedicated_driver_is_not_reinstalled_to_initialize_firmware"] = !BluetoothSetup.Adapter(dedicated).CanInstall && BluetoothSetup.Adapter(dedicated).CanRestore;
+        checks["missing_backup_does_not_offer_driver_restore"] = !BluetoothSetup.Adapter(dedicated with { HasBackup = false }).CanRestore;
+        checks["restored_pending_restart_disables_both_driver_actions"] = !BluetoothSetup.Adapter(system with { RebootRequired = true }).CanInstall && !BluetoothSetup.Adapter(system with { RebootRequired = true }).CanRestore;
+        checks["winusb_pending_restart_retains_safe_restore_path"] = BluetoothSetup.Adapter(dedicated with { RebootRequired = true }).CanRestore;
+        checks["shared_mode_requires_system_driver_when_only_winusb_exists"] = BluetoothSetup.Reception(true, true, false, true, dedicated, false, true).Stage == BluetoothSetupStage.SystemRestoreRequired;
+        checks["shared_mode_can_use_another_system_radio"] = BluetoothSetup.Reception(true, true, false, true, dedicated with { RebootRequired = true }, true, true).Ready;
+        checks["dedicated_intent_does_not_claim_system_driver_ready"] = BluetoothSetup.Reception(false, true, false, true, system, true, false).Stage == BluetoothSetupStage.DedicatedRequired;
+        checks["native_intent_after_failed_radio_initialization_requests_restart"] = BluetoothSetup.Reception(true, true, false, false, system with { RebootRequired = true, SystemRadioReady = false }, false, false).Stage == BluetoothSetupStage.RestartRequired;
+        checks["no_system_radio_opens_windows_settings_instead_of_receiver"] = BluetoothSetup.Reception(true, true, false, false, null, false, false).Stage == BluetoothSetupStage.SystemBluetoothRequired;
+        checks["uninspected_driver_state_is_not_pretended_ready"] = !BluetoothSetup.Reception(false, false, false, true, dedicated, false, true).Ready;
+        checks["failed_readiness_check_has_explicit_retry"] = BluetoothSetup.Reception(true, false, true, false, null, false, false).Stage == BluetoothSetupStage.CheckFailed;
+        checks["unhealthy_dedicated_interface_is_not_claimed_ready"] = BluetoothSetup.Reception(false, true, false, true, dedicated with { Healthy = false }, false, true).Stage == BluetoothSetupStage.Unavailable;
+        checks["driver_metadata_null_service_is_safe_for_display"] = BluetoothSetup.Adapter(system with { Service = null! }).CanInstall;
         var bound = new DriverObservation(true, false, true, false, false);
         checks["driver_binding_is_not_radio_readiness"] = DriverReadiness.Evaluate(bound, false, TimeSpan.Zero, false) == DriverReadinessAction.Wait;
         checks["recovery_checks_exact_target_radio_before_success"] = DriverReadiness.Evaluate(bound with { RadioReady = true }, false, TimeSpan.Zero, false) == DriverReadinessAction.Ready;

@@ -13,8 +13,9 @@ namespace BlueHead.Platform;
 public record DriverDevice(string InstanceId, string Name, string Service, string Inf, string HardwareIds, bool Healthy, bool HasBackup)
 {
     public bool RebootRequired { get; init; }
+    public bool? SystemRadioReady { get; init; }
     public override string ToString() => DisplayName;
-    public string DisplayName => $"{Name} · {(RebootRequired ? "需要重启 Windows" : Service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase) ? "专用接收" : "系统蓝牙")}";
+    public string DisplayName => $"{Name} · {(RebootRequired ? "需要重启 Windows" : string.Equals(Service, "WinUSB", StringComparison.OrdinalIgnoreCase) ? "专用接收" : "系统蓝牙")}";
 }
 public sealed class DriverRecord
 {
@@ -33,17 +34,20 @@ public sealed class DriverRecord
 }
 public static partial class Drivers
 {
-    public static bool RequiresRestart(string transport, IEnumerable<DriverDevice> devices)
+    public static IReadOnlyList<DriverDevice> MatchTransport(string transport, IEnumerable<DriverDevice> devices)
     {
         var match = Regex.Match(transport, @"^usb:([0-9a-f]{4}):([0-9a-f]{4})#\d+(?:\+sco=0)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
-        if (!match.Success) return false;
+        if (!match.Success) return Array.Empty<DriverDevice>();
         var prefix = $@"USB\VID_{match.Groups[1].Value}&PID_{match.Groups[2].Value}";
-        var matching = devices.Where(device => device.InstanceId.StartsWith(prefix + @"\", StringComparison.OrdinalIgnoreCase)
+        return devices.Where(device => device.InstanceId.StartsWith(prefix + @"\", StringComparison.OrdinalIgnoreCase)
             || device.InstanceId.StartsWith(prefix + "&MI_", StringComparison.OrdinalIgnoreCase)).ToArray();
-        // USB enumeration order can differ between SetupAPI and libusb. Only
-        // gate an unambiguous physical adapter; list per-device state otherwise.
-        return matching.Length == 1 && matching[0].RebootRequired;
     }
+    public static bool RequiresRestart(string transport, IEnumerable<DriverDevice> devices)
+    {
+        var matching = MatchTransport(transport, devices);
+        return matching.Count == 1 && matching[0].RebootRequired;
+    }
+    public static bool SystemRadioAvailable() => BluetoothRadio.AnyReady();
     public static string Store => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "BlueHead", "Drivers");
     private static readonly Regex instancePattern = new(@"^USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}(?:&MI_[0-9A-F]{2})?\\[^\r\n]{1,200}$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     private static Regex InstancePattern() => instancePattern;
@@ -91,7 +95,9 @@ public static partial class Drivers
                 if (!restart && !service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase) &&
                     record?.Stage == "restored_restart_required" && record.RebootRequired)
                     restart = !BluetoothRadio.IsReady(instance);
-                result.Add(new(instance, name, service, DeviceNative.DriverInf(set, ref device), hardware.Replace('\0', ';'), queried && problem == 0 && (status & 8) != 0 && !restart, record != null) { RebootRequired = restart });
+                var healthy = queried && problem == 0 && (status & 8) != 0 && !restart;
+                bool? radioReady = service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase) ? null : healthy && BluetoothRadio.IsReady(instance);
+                result.Add(new(instance, name, service, DeviceNative.DriverInf(set, ref device), hardware.Replace('\0', ';'), healthy, record != null) { RebootRequired = restart, SystemRadioReady = radioReady });
             }
             return result;
         }

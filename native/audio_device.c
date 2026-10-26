@@ -52,6 +52,8 @@ struct BhAudioDevice {
     uint32_t direction, rate, channels, output_rate, conversion;
     int initialized, offline, offline_active;
     atomic_ullong callbacks, frames, errors, max_ticks, notifications;
+    atomic_ullong previous_tick, max_gap, max_excess, gap_events;
+    atomic_uint previous_frames;
     LARGE_INTEGER frequency;
     atomic_uintptr_t ready_event;
 };
@@ -112,6 +114,15 @@ static void record_max(atomic_ullong *destination, uint64_t value) {
 static void process_audio(BhAudioDevice *stream, const float *input, float *output, uint32_t count) {
     if (!stream || !stream->state || !count) return;
     LARGE_INTEGER before, after; QueryPerformanceCounter(&before);
+    uint64_t previous = atomic_exchange_explicit(&stream->previous_tick, before.QuadPart, memory_order_relaxed);
+    uint32_t previous_frames = atomic_exchange_explicit(&stream->previous_frames, count, memory_order_relaxed);
+    if (previous && previous_frames && (uint64_t)before.QuadPart >= previous) {
+        uint64_t gap = ((uint64_t)before.QuadPart - previous) * 1000000 / stream->frequency.QuadPart;
+        uint64_t expected = (uint64_t)previous_frames * 1000000 / stream->rate;
+        uint64_t excess = gap > expected ? gap - expected : 0;
+        record_max(&stream->max_gap, gap); record_max(&stream->max_excess, excess);
+        if (excess > 2000) atomic_fetch_add_explicit(&stream->gap_events, 1, memory_order_relaxed);
+    }
     uint32_t at = 0;
     while (at < count) {
         uint32_t take = count-at < CHUNK ? count-at : CHUNK;
@@ -143,6 +154,8 @@ static BhAudioDevice *allocate_stream(BhDeviceContext *context, uint32_t directi
     stream->owner = context; stream->direction = direction; QueryPerformanceFrequency(&stream->frequency);
     atomic_init(&stream->callbacks, 0); atomic_init(&stream->frames, 0); atomic_init(&stream->errors, 0);
     atomic_init(&stream->ready_event, 0);
+    atomic_init(&stream->previous_tick, 0); atomic_init(&stream->previous_frames, 0);
+    atomic_init(&stream->max_gap, 0); atomic_init(&stream->max_excess, 0); atomic_init(&stream->gap_events, 0);
     atomic_init(&stream->max_ticks, 0); atomic_init(&stream->notifications, 0); return stream;
 }
 static int create_state(BhAudioDevice *stream, void *mixer) {
@@ -208,6 +221,7 @@ BH_DEVICE_API int bh_device_stop(BhAudioDevice *stream) {
     int result;
     if (stream->offline) { stream->offline_active = 0; result = MA_SUCCESS; }
     else result = ma_device_stop(&stream->device);
+    if (result == MA_SUCCESS) atomic_store_explicit(&stream->previous_tick, 0, memory_order_relaxed);
     /* The caller serializes this with the capture consumer. Never replay speech
      * buffered before a stop/restart or a failed route transaction. */
     if (result == MA_SUCCESS && stream->direction == BH_CAPTURE) stream->owner->capture_reset(stream->state);
@@ -223,6 +237,15 @@ BH_DEVICE_API int bh_device_close(BhAudioDevice *stream) {
     stream->owner->streams--; free(stream); return MA_SUCCESS;
 }
 BH_DEVICE_API int bh_device_active(BhAudioDevice *stream) { return stream ? (stream->offline ? stream->offline_active : (int)ma_device_is_started(&stream->device)) : 0; }
+BH_DEVICE_API uint64_t bh_device_timing(BhAudioDevice *stream, int field) {
+    if (!stream) return 0;
+    switch (field) {
+        case 0: return atomic_load_explicit(&stream->max_gap, memory_order_relaxed);
+        case 1: return atomic_load_explicit(&stream->max_excess, memory_order_relaxed);
+        case 2: return atomic_load_explicit(&stream->gap_events, memory_order_relaxed);
+        default: return 0;
+    }
+}
 BH_DEVICE_API int bh_device_stats(BhAudioDevice *stream, BhDeviceStats *out) {
     if (!stream || !out || out->size != sizeof(*out)) return MA_INVALID_ARGS;
     memset(out, 0, sizeof(*out)); out->size = sizeof(*out); out->abi = BH_DEVICE_ABI; out->direction = stream->direction;

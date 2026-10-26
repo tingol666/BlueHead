@@ -9,6 +9,7 @@
 #include <math.h>
 #include <stdatomic.h>
 #include "audio_continuity.h"
+#include "audio_quality.h"
 #define API __declspec(dllexport)
 #define INPUTS 8
 #define CAPACITY 48064u
@@ -25,12 +26,11 @@ typedef struct {
   uint32_t target, maximum;
   atomic_uint continuity_mode, continuity_min, continuity_max, target_view, jitter_view;
   atomic_ullong concealed, concealed_silence, merged, rebuffers, expanded, accelerated;
-  uint64_t last_arrival, last_stretch;
-  uint32_t previous_frames, adaptive_target, starve_frames, deficit_frames;
+  uint64_t last_arrival;
+  uint32_t previous_frames, adaptive_target, adaptive_decay, starve_frames, deficit_frames;
   double jitter_peak;
-  int32_t retarget_remaining;
-  uint64_t target_changed_at;
   BhContinuity continuity;
+  BhSourceQuality quality;
   /* Render-only state. */
   uint32_t seen_epoch, history_count;
   uint64_t cursor, available, rendered;
@@ -45,6 +45,9 @@ typedef struct Mixer {
   atomic_uint master, clock_period, clock_limit;
   atomic_int call;
   atomic_uint enhanced;
+  atomic_ullong limited;
+  BhMixQuality quality;
+  float scratch[CAPACITY * 2], delayed[CAPACITY * 2];
   LARGE_INTEGER qpc_frequency;
   float sinc[PHASES + 1][TAPS];
 } Mixer;
@@ -85,6 +88,8 @@ API Mixer *bh_mix_create(void) {
   atomic_init(&m->clock_period, bits(0));
   atomic_init(&m->clock_limit, bits(.0005f));
   atomic_init(&m->enhanced, 0);
+  atomic_init(&m->limited, 0);
+  bhq_reset_envelope(&m->quality);
   QueryPerformanceFrequency(&m->qpc_frequency);
   const double pi = 3.14159265358979323846;
   for (int p = 0; p <= PHASES; p++) {
@@ -192,12 +197,12 @@ API int bh_mix_add(Mixer *m, uint32_t target, uint32_t maximum) {
       atomic_store(&s->rebuffers, 0);
       atomic_store(&s->expanded, 0);
       atomic_store(&s->accelerated, 0);
-      s->last_arrival = s->last_stretch = 0;
-      s->previous_frames = s->adaptive_target = s->starve_frames = s->deficit_frames = 0;
-      s->retarget_remaining = 0;
-      s->target_changed_at = 0;
+      s->last_arrival = 0;
+      s->previous_frames = s->adaptive_target = s->adaptive_decay = 0;
+      s->starve_frames = s->deficit_frames = 0;
       s->jitter_peak = 0;
       bhc_reset(&s->continuity);
+      memset(&s->quality, 0, sizeof(s->quality));
       atomic_store(&s->active, 1);
       LeaveCriticalSection(&s->producer);
       index = i;
@@ -500,7 +505,10 @@ API uint64_t bh_mix_value(Mixer *m, int index, int field) {
   if (!m)
     return 0;
   if (index < 0)
-    return field == 0 ? atomic_load(&m->underruns) : 0;
+    return field == 0   ? atomic_load(&m->underruns)
+           : field == 1 ? (atomic_load(&m->enhanced) ? BHQ_LOOKAHEAD : 0)
+           : field == 2 ? atomic_load(&m->limited)
+                        : 0;
   if (index >= INPUTS)
     return 0;
   Input *s = &m->input[index];

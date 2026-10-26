@@ -35,6 +35,11 @@ BH_DEVICE_API int bh_device_stop(BhAudioDevice *device);
 BH_DEVICE_API int bh_device_close(BhAudioDevice *device);
 BH_DEVICE_API int bh_device_active(BhAudioDevice *device);
 BH_DEVICE_API int bh_device_stats(BhAudioDevice *device, BhDeviceStats *output);
+/* Additional counters preserve the version-1 stats structure ABI. Fields:
+ * 0=max callback arrival gap us, 1=max excess over previous block duration us,
+ * 2=arrival gaps exceeding previous block duration by more than 2ms.
+ * These are observations, not proof that the WASAPI endpoint underflowed. */
+BH_DEVICE_API uint64_t bh_device_timing(BhAudioDevice *device, int field);
 /* Exactly one consumer; does not call COM or enter the device control thread. */
 BH_DEVICE_API int bh_device_read(BhAudioDevice *device, int16_t *output, uint32_t capacity);
 /* In-memory callback harness. Never initializes miniaudio or opens audio devices. */

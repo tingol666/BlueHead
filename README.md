@@ -84,7 +84,7 @@ docs/        使用、架构、构建及验证说明
 licenses/    第三方许可证
 ```
 
-开发步骤见 [BUILDING](docs/BUILDING.md)，实现边界见 [ARCHITECTURE](docs/ARCHITECTURE.md)，具体测试记录见 [TESTING](docs/TESTING.md) 与同版本 `VALIDATION.md`。公开源码不包含个人配对、日志、驱动备份或构建缓存；安装包、便携包和源码归档放在 Releases。
+开发步骤见 [BUILDING](docs/BUILDING.md)，实现边界见 [ARCHITECTURE](docs/ARCHITECTURE.md)，音质约束与耳机参考设计见 [音频质量](docs/AUDIO_QUALITY_2.0.1.md)，具体测试记录见 [TESTING](docs/TESTING.md) 与同版本 `VALIDATION.md`。公开源码不包含个人配对、日志、驱动备份或构建缓存；安装包、便携包和源码归档放在 Releases。
 
 ## 数据与问题反馈
 

@@ -187,14 +187,30 @@ class Host {
       return name + ":" + j.value("bus", std::string());
     if (name == "mute")
       return name;
+    if (name == "gain")
+      return name + ":" + j.value("key", std::string()) + ":" +
+             j.value("direction", std::string("down"));
     return {};
   }
   void enqueue(const std::string &line) {
     auto request = json::parse(line);
     auto key = coalesce_key(request), name = request.value("command", std::string());
     std::lock_guard<std::mutex> lock(queue_mutex);
-    if (name == "stop" || name == "shutdown")
-      queue.clear();
+    if (name == "stop" || name == "shutdown") {
+      // Native quiesce has already stopped sound. Keep the latest volume/mute
+      // intent so a fast exit cannot discard settings before Python saves them.
+      // Other queued actions must not restart or reopen a stopped receiver.
+      std::deque<std::string> retained;
+      std::vector<std::string> seen;
+      for (auto it = queue.rbegin(); it != queue.rend(); ++it) {
+        auto parameter = coalesce_key(json::parse(*it));
+        if (parameter.empty() || std::find(seen.begin(), seen.end(), parameter) != seen.end())
+          continue;
+        seen.push_back(parameter);
+        retained.push_front(*it);
+      }
+      queue.swap(retained);
+    }
     if (!key.empty()) {
       for (auto it = queue.rbegin(); it != queue.rend(); ++it) {
         auto pending = json::parse(*it);

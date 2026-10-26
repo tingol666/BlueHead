@@ -36,15 +36,33 @@ static uint32_t bhc_period(BhContinuity *c, uint32_t maximum) {
   double best = -1;
   uint32_t lag = 0;
   for (uint32_t candidate = 32; candidate <= limit; candidate += 2) {
-    double xy = 0, xx = 0, yy = 0;
-    for (uint32_t j = 1; j <= 128; j++)
-      for (int ch = 0; ch < 2; ch++) {
+    double correlation = 1;
+    int informative = 0;
+    for (int ch = 0; ch < 2; ch++) {
+      double xy = 0, xx = 0, yy = 0, sx = 0, sy = 0;
+      for (uint32_t j = 1; j <= 128; j++) {
         double a = bhc_at(c, j, ch), b = bhc_at(c, j + candidate, ch);
         xy += a * b;
         xx += a * a;
         yy += b * b;
+        sx += a;
+        sy += b;
       }
-    double correlation = xx * yy > 1e-16 ? xy / sqrt(xx * yy) : 0;
+      /* DC/one dominant channel must not turn unpitched stereo detail into
+       * a repeated buzz. Score AC correlation independently in both channels,
+       * and reject mismatched energy even if normalized correlation is high. */
+      double vx = fmax(0, xx - sx * sx / 128), vy = fmax(0, yy - sy * sy / 128);
+      if (vx + vy < 1e-12)
+        continue;
+      informative = 1;
+      double score = vx * vy > 1e-20 ? (xy - sx * sy / 128) / sqrt(vx * vy) : -1;
+      double error = vx + vy - 2 * (xy - sx * sy / 128);
+      if (error > .3 * (vx + vy))
+        score = -1;
+      correlation = fmin(correlation, score);
+    }
+    if (!informative)
+      correlation = -1;
     /* Prefer the shortest similarly good period; arbitrary long repeats
      * can smear a transient even when a harmonic also correlates. */
     if (correlation > best + .005) {
@@ -53,7 +71,7 @@ static uint32_t bhc_period(BhContinuity *c, uint32_t maximum) {
     }
   }
   c->confidence = (float)best;
-  if (best < .65)
+  if (best < .85)
     return 0;
   for (uint32_t i = 0; i < lag; i++)
     for (int ch = 0; ch < 2; ch++)

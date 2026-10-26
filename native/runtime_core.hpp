@@ -292,6 +292,8 @@ class Core final : public HciTarget {
   std::atomic<uint64_t> device_reopens{0};
   std::atomic<bool> microphone_active{false}, system_active{false}, output_active{false};
   json device_error = json::object();
+  std::mutex diagnostic_mutex;
+  json device_diagnostics = json::object();
   uint32_t media_buffer = 2880, voice_buffer = 1440;
   fs::path assets;
   int key_input(const std::string &key) {
@@ -529,7 +531,38 @@ class Core final : public HciTarget {
   }
   std::string default_output, default_input;
   bool inventory_known = false;
+  void cache_device_diagnostics() {
+    // Only the audio-control owner dereferences stream pointers. The RPC
+    // snapshot reads this copy and cannot race a hot switch or close.
+    json result = json::object();
+    for (auto direction : {"output", "microphone"}) {
+      auto *stream = std::strcmp(direction, "output") == 0 ? output : capture;
+      BhDeviceStats stats{};
+      stats.size = sizeof(stats);
+      if (!stream || api.bh_device_stats(stream, &stats) != 0)
+        continue;
+      result[direction] = {{"sample_rate", stats.sample_rate},
+                           {"channels", stats.channels},
+                           {"output_rate", stats.output_rate},
+                           {"conversion", stats.conversion},
+                           {"active", stats.active},
+                           {"callbacks", stats.callbacks},
+                           {"frames", stats.frames},
+                           {"errors", stats.errors},
+                           {"max_callback_us", stats.max_callback_us},
+                           {"max_callback_gap_us", api.bh_device_timing(stream, 0)},
+                           {"max_callback_excess_us", api.bh_device_timing(stream, 1)},
+                           {"callback_gap_events", api.bh_device_timing(stream, 2)},
+                           {"notifications", stats.notifications},
+                           {"dropped_frames", stats.dropped_frames},
+                           {"queued_frames", stats.queued_frames},
+                           {"filter_latency_frames", stats.filter_latency_frames}};
+    }
+    std::lock_guard<std::mutex> lock(diagnostic_mutex);
+    device_diagnostics = std::move(result);
+  }
   void check_devices() {
+    cache_device_diagnostics();
     if (offline)
       return;
     output_active = output && api.bh_device_active(output);
@@ -1288,18 +1321,27 @@ public:
     json sources = json::object();
     for (const auto &pair : keys) {
       int id = pair.second;
-      sources[pair.first] = {{"queued_frames", api.bh_mix_value(mixer, id, 0)},
-                             {"dropped_frames", api.bh_mix_value(mixer, id, 1)},
-                             {"underruns", api.bh_mix_value(mixer, id, 3)},
-                             {"prefill_frames", api.bh_mix_value(mixer, id, 4)},
-                             {"adaptive_target_ms", api.bh_mix_value(mixer, id, 5) / 48.0},
-                             {"jitter_ms", api.bh_mix_value(mixer, id, 6) / 48.0},
-                             {"concealed_frames", api.bh_mix_value(mixer, id, 7)},
-                             {"concealed_silent_frames", api.bh_mix_value(mixer, id, 8)},
-                             {"merged_frames", api.bh_mix_value(mixer, id, 9)},
-                             {"rebuffer_events", api.bh_mix_value(mixer, id, 10)},
-                             {"expanded_frames", api.bh_mix_value(mixer, id, 11)},
-                             {"accelerated_frames", api.bh_mix_value(mixer, id, 12)}};
+      sources[pair.first] = {
+          {"queued_frames", api.bh_mix_value(mixer, id, 0)},
+          {"dropped_frames", api.bh_mix_value(mixer, id, 1)},
+          {"underruns", api.bh_mix_value(mixer, id, 3)},
+          {"prefill_frames", api.bh_mix_value(mixer, id, 4)},
+          {"adaptive_target_ms", api.bh_mix_value(mixer, id, 5) / 48.0},
+          {"jitter_ms", api.bh_mix_value(mixer, id, 6) / 48.0},
+          {"concealed_frames", api.bh_mix_value(mixer, id, 7)},
+          {"concealed_silent_frames", api.bh_mix_value(mixer, id, 8)},
+          {"merged_frames", api.bh_mix_value(mixer, id, 9)},
+          {"rebuffer_events", api.bh_mix_value(mixer, id, 10)},
+          {"expanded_frames", api.bh_mix_value(mixer, id, 11)},
+          {"accelerated_frames", api.bh_mix_value(mixer, id, 12)},
+          {"drift_ppm", static_cast<int64_t>(api.bh_mix_value(mixer, id, 2)) - 1000}};
+      if (pair.first.rfind("call:", 0) != 0)
+        sources[pair.first]["media"] = media[id]->snapshot();
+    }
+    json devices;
+    {
+      std::lock_guard<std::mutex> lock(diagnostic_mutex);
+      devices = device_diagnostics;
     }
     json up = json::object();
     for (int bus = 0; bus < 2; bus++)
@@ -1311,6 +1353,11 @@ public:
           {"prefill_frames", api.bh_up_value(uplink, bus, 4)}};
     return {{"version", version},
             {"native_runtime", true},
+            {"quality",
+             {{"limiter_lookahead_ms", api.bh_mix_value(mixer, -1, 1) / 48.0},
+              {"limited_frames", api.bh_mix_value(mixer, -1, 2)},
+              {"uplink_limiter_lookahead_ms", api.bh_up_value(uplink, -1, 1) / 48.0},
+              {"uplink_limited_frames", api.bh_up_value(uplink, -1, 2)}}},
             {"gains",
              {{"playback", playback_gain.load()},
               {"effective_playback", api.bh_mix_master_value(mixer)},
@@ -1321,6 +1368,7 @@ public:
             {"system_active", system_active.load()},
             {"output_active", output_active.load()},
             {"sources", sources},
+            {"devices", devices},
             {"usb", usb ? usb->snapshot() : json{{"active", false}}},
             {"microphone_frames", bridge_frames.load()},
             {"system_frames", system_frames.load()},

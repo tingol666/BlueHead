@@ -13,6 +13,7 @@ from . import __version__
 from .backend import Runner, Settings, usb_adapters
 from .diagnostics import MetadataOnly
 from .audio_runtime import on_audio_thread
+from .quality_log import AudioCounters
 
 PROTOCOL_VERSION = 1
 MAX_COMMAND = 65536
@@ -78,6 +79,7 @@ class Engine:
     def __init__(self, directory, output):
         self.directory = Path(directory)
         self.output = output
+        self.audio_counters = AudioCounters(self.directory)
         self.write_lock = threading.Lock()
         self.settings_lock = threading.RLock()
         self.runner = Runner(self.emit)
@@ -104,6 +106,8 @@ class Engine:
                 self.runner.stop()
         if event not in ("inventory", "telemetry", "gain", "master_gain", "avrcp"):
             logging.getLogger(__name__).info("%s %s", event, values)
+        if event == 'telemetry':
+            self.audio_counters.record(values.get('audio', {}))
         if event == "audio_device" and values.get("success"):
             setattr(self.settings, values["direction"] + "_device", values["device"])
             setattr(self.settings, values["direction"] + "_endpoint_id", values.get("endpoint_id"))

@@ -46,6 +46,7 @@ namespace bh {
   X(bh_capture_read, int, (void *, int16_t *, uint32_t)) \
   X(bh_mix_master_value, float, (void *))
 #define DEVICE_APIS(X) \
+  X(bh_device_timing,uint64_t,(BhAudioDevice*,int)) \
   X(bh_device_offline_process,int,(BhAudioDevice*,const float*,float*,uint32_t)) \
   X(bh_device_offline,BhAudioDevice*,(BhDeviceContext*,uint32_t,void*,uint32_t,uint32_t,uint32_t,int*)) \
   X(bh_device_context_create, BhDeviceContext *, (const wchar_t *, int *)) \

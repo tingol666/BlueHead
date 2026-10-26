@@ -1,6 +1,10 @@
 """Actual native stereo PCM concealment, recovery and clock matching."""
 import ctypes as C
+import base64
+import json
 import math
+from pathlib import Path
+import struct
 
 import numpy as np
 import pytest
@@ -133,6 +137,73 @@ def test_native_rtp_timestamp_and_sequence_wrap_keep_a_continuous_timeline():
         decoder.close()
 
 
+@pytest.mark.parametrize('codec,packet_frames,missing_packets', [('aac', 1024, 1),
+                                                               ('aptx_hd', 1024, 1),
+                                                               ('sbc', 128, 10)])
+def test_rtp_loss_keeps_complete_time_even_beyond_waveform_prediction_budget(codec, packet_frames, missing_packets):
+    vectors = json.loads((Path(__file__).parents[1] / 'bluehead/assets/selfcheck_vectors.json').read_text('utf-8'))
+    vector = next(v for v in vectors['vectors'] if v['codec'] == codec)
+    decoder = NativeMedia(Format(codec, 48000, 2))
+    decoder.api.bh_media_continuity.argtypes = [C.c_void_p, C.c_int]
+    decoder.api.bh_media_continuity(decoder.handle, 1)
+    produced = 0
+    try:
+        for sequence in range(120):
+            if 30 <= sequence < 30 + missing_packets:
+                continue
+            data = bytearray(base64.b64decode(vector['packets'][sequence % len(vector['packets'])]))
+            struct.pack_into('>HI', data, 2, sequence, sequence * packet_frames)
+            decoder.decode_packet(bytes(data))
+            produced += len(decoder.read_pcm()) // 8
+        # A 21.33ms AAC/aptX HD packet is not a stream reset. Beyond 20ms
+        # prediction may be silent, but it must still occupy its actual time.
+        assert decoder.value(10) == missing_packets * packet_frames
+        assert decoder.value(11) == 0
+        assert produced == decoder.frames + missing_packets * packet_frames
+    finally:
+        decoder.close()
+
+
+def test_aac_repeated_packet_loss_does_not_accumulate_clock_debt_over_two_virtual_minutes():
+    vectors = json.loads((Path(__file__).parents[1] / 'bluehead/assets/selfcheck_vectors.json').read_text('utf-8'))
+    packets = next(v['packets'] for v in vectors['vectors'] if v['codec'] == 'aac')
+    api = core()
+    api.bh_mix_test_write_at.argtypes = [C.c_void_p, C.c_int, C.c_void_p, C.c_uint, C.c_ulonglong]
+    frequency = C.c_longlong()
+    C.windll.kernel32.QueryPerformanceFrequency(C.byref(frequency))
+    mixer = api.bh_mix_create()
+    source = api.bh_mix_add(mixer, 2880, 8640)
+    api.bh_mix_continuity(mixer, source, 1, 1440, 5760)
+    decoder = NativeMedia(Format('aac', 48000, 2))
+    decoder.api.bh_media_continuity.argtypes = [C.c_void_p, C.c_int]
+    decoder.api.bh_media_continuity(decoder.handle, 1)
+    packet_index, lost = 0, 0
+    try:
+        for block in range(12000):
+            now = block * .01
+            while (arrival := packet_index * 1024 / (48000 * .9995) +
+                   .003 * math.sin(packet_index * 1.113)) <= now:
+                if packet_index and packet_index % 31 == 0:
+                    lost += 1
+                else:
+                    data = bytearray(base64.b64decode(packets[packet_index % len(packets)]))
+                    struct.pack_into('>HI', data, 2, packet_index & 65535, packet_index * 1024)
+                    decoder.decode_packet(bytes(data))
+                    pcm = decoder.read_pcm()
+                    if pcm:
+                        api.bh_mix_test_write_at(mixer, source, pcm, len(pcm) // 8,
+                                               1000000 + int(arrival * frequency.value))
+                packet_index += 1
+            render(api, mixer)
+        assert lost > 100
+        assert decoder.value(10) == lost * 1024
+        assert api.bh_mix_value(mixer, source, 1) == 0
+        assert api.bh_mix_value(mixer, source, 3) == 0
+    finally:
+        decoder.close()
+        api.bh_mix_free(mixer)
+
+
 @pytest.mark.parametrize("ppm", [-500, 500])
 def test_native_continuity_clock_with_stereo_tone_10_virtual_minutes(ppm):
     api = core()
@@ -163,5 +234,39 @@ def test_native_continuity_clock_with_stereo_tone_10_virtual_minutes(ppm):
         spectrum = np.abs(np.fft.rfft(signal[:, 0]))
         measured = np.argmax(spectrum) * 48000 / len(signal)
         assert abs(measured - 1000) < 1
+    finally:
+        api.bh_mix_free(mixer)
+
+
+def test_jitter_retarget_preserves_a_continuous_sample_timeline_without_missing_audio():
+    # A ramp reveals temporal seams hidden by a periodic sine-only check.
+    # The other channel carries a real tone. No packet or sample is missing.
+    api = core()
+    api.bh_mix_test_write_at.argtypes = [C.c_void_p, C.c_int, C.c_void_p, C.c_uint, C.c_ulonglong]
+    frequency = C.c_longlong()
+    C.windll.kernel32.QueryPerformanceFrequency(C.byref(frequency))
+    mixer = api.bh_mix_create()
+    source = api.bh_mix_add(mixer, 2880, 8640)
+    api.bh_mix_continuity(mixer, source, 1, 1440, 5760)
+    pieces, packet_index = [], 1
+    try:
+        for block in range(3000):
+            now = block * .01
+            while packet_index * .01 + .003 * math.sin(packet_index * 1.113) <= now:
+                frame = np.arange((packet_index - 1) * 480, packet_index * 480)
+                data = np.column_stack((frame * 1e-7, .12 * np.sin(frame * 2 * np.pi * 1000 / 48000))).astype('f4')
+                arrival = packet_index * .01 + .003 * math.sin(packet_index * 1.113)
+                api.bh_mix_test_write_at(mixer, source, data.ctypes.data, 480,
+                                       1000000 + int(arrival * frequency.value))
+                packet_index += 1
+            pieces.append(render(api, mixer))
+        audio = np.concatenate(pieces)
+        signal = audio[3 * 48000:28 * 48000, 0]
+        # A short window separates temporal seams from float32 filter rounding.
+        advance = (signal[32:] - signal[:-32]) / (32e-7)
+        assert advance.min() > .8
+        assert advance.max() < 1.2
+        assert api.bh_mix_value(mixer, source, 1) == 0
+        assert api.bh_mix_value(mixer, source, 3) == 0
     finally:
         api.bh_mix_free(mixer)

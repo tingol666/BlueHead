@@ -176,13 +176,15 @@ static void timestamp_gap(BhMedia *m, uint32_t timestamp) {
   uint64_t scaled = (uint64_t)(uint32_t)missing * m->output_rate + m->gap_fraction;
   uint32_t frames = (uint32_t)(scaled / m->rate);
   m->gap_fraction = (uint32_t)(scaled % m->rate);
-  if (frames > (uint32_t)m->output_rate / 50) {
-    m->timeline_resets++;
-    frames = (uint32_t)m->output_rate / 50;
-  }
+  /* The waveform predictor fades within 20ms; the missing *timeline* must
+   * still keep its full duration. A normal 1024-sample AAC/aptX HD packet is
+   * 21.33ms at 48kHz. Capping that duration to 20ms silently loses 64 frames
+   * per packet loss and eventually exhausts the render queue. bhc_missing()
+   * emits silence beyond its finite prediction budget instead of stretching
+   * fabricated audio indefinitely. Large seeks were handled above. */
   m->pending_gap += frames;
-  if (m->pending_gap > (uint32_t)m->output_rate / 50)
-    m->pending_gap = (uint32_t)m->output_rate / 50;
+  if (m->pending_gap > (uint32_t)m->output_rate / 5)
+    m->pending_gap = (uint32_t)m->output_rate / 5;
   /* Some parsers still hold the previous good frame. Insert the gap only
    * after that frame, before publishing the next frame on the timeline. */
   m->pending_gap_after = m->source_expected;

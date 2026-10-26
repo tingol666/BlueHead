@@ -29,6 +29,7 @@ typedef struct {
     uint32_t rate, offset, remaining;
     float source[BLOCK * 2];
     atomic_int halted;
+    int muted;
     atomic_ullong calls, frames, statuses, errors, max_ticks;
     LARGE_INTEGER frequency;
 } Render;
@@ -81,6 +82,14 @@ API int bh_render_process(Render *r, float *output, uint32_t frames) {
     if (atomic_load_explicit(&r->halted, memory_order_acquire)) { memset(output, 0, frames * 2 * sizeof(float)); return 0; }
     float master = bh_mix_master_value(r->mixer);
     if (!r->resampler) return bh_mix_render(r->mixer, output, frames, master);
+    if (master == 0 && !r->muted) {
+        /* Discard already rendered, unmuted conversion input and filter tail.
+         * A true mute must also cover the native-format fallback's lookahead. */
+        r->offset = r->remaining = 0;
+        speex_resampler_reset_mem(r->resampler);
+        speex_resampler_skip_zeros(r->resampler);
+    }
+    r->muted = master == 0;
     uint32_t produced = 0;
     while (produced < frames) {
         if (!r->remaining) {
@@ -96,6 +105,7 @@ API int bh_render_process(Render *r, float *output, uint32_t frames) {
         }
         r->offset += input; r->remaining -= input; produced += available;
     }
+    if (master == 0) memset(output, 0, frames * 2 * sizeof(float));
     return 1;
 }
 

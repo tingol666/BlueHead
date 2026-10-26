@@ -364,3 +364,63 @@ with NativeClient(spawn=True) as client:
         if child.poll() is None:
             child.kill()
             child.wait(5)
+
+
+@pytest.mark.parametrize("stop_first", [False, True])
+def test_native_fast_exit_persists_last_device_master_and_mute_intent(tmp_path, stop_first):
+    # Exercise the actual host and Python settings file, including the race
+    # between native stdin, its forwarding thread, and interpreter startup.
+    for attempt in range(3):
+        directory = tmp_path / str(attempt)
+        commands = [
+            {"command": "master_gain", "bus": "playback", "gain": .4},
+            {"command": "master_gain", "bus": "microphone", "gain": 1.7},
+            {"command": "master_gain", "bus": "system", "gain": .6},
+            {"command": "mute", "muted": True},
+            {"command": "gain", "key": "offline-device", "direction": "down", "gain": .55},
+            {"command": "gain", "key": "offline-device", "direction": "up", "gain": 1.8},
+            *([{"command": "stop"}] if stop_first else []),
+            {"command": "shutdown"},
+        ]
+        result = subprocess.run(
+            [str(ROOT / "bluehead/assets/BlueHead.Runtime.exe"), "--engine", "--source-root", str(ROOT),
+             "--data-dir", str(directory)],
+            input="".join(json.dumps({"protocol": 1, **command}) + "\n" for command in commands),
+            capture_output=True, text=True, encoding="utf-8", timeout=12,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        assert result.returncode == 0, result.stderr
+        saved = json.loads((directory / "settings.json").read_text("utf-8"))
+        assert saved["playback_gain"] == .4
+        assert saved["microphone_gain"] == 1.7
+        assert saved["system_gain"] == .6
+        assert saved["microphone_muted"] is True
+        assert saved["device_volumes"]["offline-device"] == {"down": .55, "up": 1.8}
+
+
+def test_native_diagnostics_survive_endpoint_close_and_contain_media_counters():
+    with NativeClient(spawn=True) as client:
+        source(client)
+        ticket = client.request("test_audio_switch", direction="output")
+        client.wait_audio(ticket)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            snapshot = client.request("snapshot")
+            if snapshot["devices"].get("output"):
+                break
+            time.sleep(.02)
+        assert snapshot["devices"]["output"]["sample_rate"] == 48000
+        assert "max_callback_us" in snapshot["devices"]["output"]
+        assert "max_callback_excess_us" in snapshot["devices"]["output"]
+        assert snapshot['quality']['limiter_lookahead_ms'] == 1.5
+        assert "lost_packets" in snapshot["sources"]["test"]["media"]
+        assert "drift_ppm" in snapshot["sources"]["test"]
+        ticket = client.request("test_audio_switch", direction="output", start=False)
+        client.wait_audio(ticket)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            snapshot = client.request("snapshot")
+            if "output" not in snapshot["devices"]:
+                break
+            time.sleep(.02)
+        assert "output" not in snapshot["devices"]

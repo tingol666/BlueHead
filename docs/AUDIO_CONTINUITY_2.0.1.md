@@ -2,6 +2,10 @@
 
 2.0.1 把持续音频路径放到独立 C++ 进程。验证分为算法、进程隔离、实际 USB 接口及移动设备验收；每次构建的实际结果以同版本 `VALIDATION.md` 为准。
 
+音质、前瞻限幅、增益平滑和耳机参考设计的取舍见 [音质与连续性约束](AUDIO_QUALITY_2.0.1.md)。正常收包不再复制/跳过周期波形追赶缓冲，缺口补偿只在实际短缺时介入。
+
+音质、前瞻限幅、增益平滑和耳机参考设计的取舍见 [音质与连续性约束](AUDIO_QUALITY_2.0.1.md)。正常收包不再复制/跳过周期波形追赶缓冲，缺口补偿只在实际短缺时介入。
+
 ## 可复现的离线检查
 
 先按 [BUILDING](BUILDING.md) 构建原生组件，再运行：
@@ -27,10 +31,10 @@
 
 旧策略开关只用于同一原生回放框架内的比较，不冒充旧版完整程序。固定压缩样本经过真实 HCI 重组、解码、PCM 队列及渲染；声音端点为内存中的合成端点，不打开蓝牙、扬声器或麦克风。
 
-长测示例：
+30 分钟后台压力测示例（无需实机播放或人工值守）：
 
 ```powershell
-.venv\Scripts\python.exe tools/native_soak.py --seconds 28800 --codec sbc --drop-every 31 --jitter-ms 3 --clock-ppm -500 --gil-stall-ms 2000 --snapshot work/soak/assets --report work/soak/result.json
+.venv\Scripts\python.exe tools/native_soak.py --seconds 1800 --codec sbc --drop-every 31 --jitter-ms 3 --clock-ppm -500 --gil-stall-ms 2000 --snapshot work/soak/assets --report work/soak/result.json
 ```
 
 `--snapshot` 保存本次原生输入的独立副本；报告记录逐文件 SHA256、计数、内存及 CPU 时间。测试临时阻止自动睡眠，结束时释放；创建报告同名的 `.stop` 文件可中止。中止或仍在运行的报告不能计为通过。

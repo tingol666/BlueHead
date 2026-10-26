@@ -19,3 +19,13 @@ desktop/**/obj/
 *.log
 
 tools/legacy/
+
+# Rebuilt from native/ and fixed vendor sources; Release binaries are separate.
+bluehead/assets/*.exe
+bluehead/assets/*.dll
+!bluehead/assets/libusb-1.0.dll
+tests/ldac_encoder.dll
+*.o
+*.a
+/ffmpeg-build.json
+/vendor/ffmpeg/build.json

@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+from native_build import compiler as find_compiler
 
 native_only = "--native-only" in sys.argv[1:]
 if any(argument != "--native-only" for argument in sys.argv[1:]):
@@ -30,12 +31,10 @@ assert hashlib.sha256(source.read_bytes()).hexdigest() == metadata["sha256"]
 if not (build / "ffmpeg-9.0.2/configure").exists():
     with tarfile.open(source) as archive:
         archive.extractall(build, filter="data")
-compiler = shutil.which("gcc") or "D:/Code/MSYS2/ucrt64/bin/gcc.exe"
+compiler = find_compiler()
 msys = Path(compiler).resolve().parents[2]
 bash = msys / "usr/bin/bash.exe"
-make = root / "work/toolchain/make.exe"
-if not make.exists():
-    make = msys / "usr/bin/make.exe"
+make = Path(os.environ.get("MAKE") or shutil.which("make") or str(msys / "usr/bin/make.exe"))
 if not bash.exists() or not make.exists():
     raise SystemExit("MSYS2 UCRT64 GCC, bash and GNU make are required")
 
@@ -88,7 +87,7 @@ if native_only:
                             for p in assets.glob("*.dll") if p.name in {
                                 "avcodec-63.dll", "avutil-61.dll", "swresample-7.dll", "libwinpthread-1.dll"}},
               "scope": "Native audio-only LGPL libraries; no PyAV runtime"}
-    (root / "vendor/ffmpeg/build.json").write_text(json.dumps(report, indent=2) + "\n", "utf-8")
+    (build / "build-report.json").write_text(json.dumps(report, indent=2) + "\n", "utf-8")
     print(json.dumps(report))
     raise SystemExit(0)
 
@@ -134,6 +133,6 @@ for path in libraries.glob(".load-order*"):
 report = {"version": "9.0.2", "source_sha256": metadata["sha256"], "patches": [], "configure": flags,
           "libraries": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in libraries.glob("*.dll")},
           "scope": "Audio-only LGPL build; external video/GPL libraries not included"}
-(root / "vendor/ffmpeg/build.json").write_text(json.dumps(report, indent=2) + "\n", "utf-8")
+(build / "build-report.json").write_text(json.dumps(report, indent=2) + "\n", "utf-8")
 subprocess.run([sys.executable, "-c", "import av; print(av.ffmpeg_version_info); assert all(v['license'].startswith('LGPL') for v in av._core.library_meta.values())"], check=True)
 print(json.dumps({"audio_ffmpeg": True, "dll_count": len(report["libraries"]), "bytes": sum(p.stat().st_size for p in libraries.glob('*.dll'))}))

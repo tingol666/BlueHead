@@ -41,6 +41,18 @@ def test_source_allowlist_prunes_private_cache_and_backup_material(source):
     assert selected == {"README.md", "docs/guide.md"}
 
 
+def test_source_excludes_generated_binaries_but_keeps_pinned_external_runtime(source):
+    assets = source / 'bluehead/assets'
+    assets.mkdir(parents=True)
+    for name in ('BlueHead.Runtime.exe', 'bluehead_audio.dll', 'libusb-1.0.dll'):
+        (assets / name).write_bytes(b'Synthetic material, never executed')
+    (source / 'docs/example.OBJ').write_bytes(b'Generated')
+    (source / 'licenses/gcc').mkdir(parents=True)
+    (source / 'licenses/gcc/COPYING.LIB').write_text('Required license text', 'utf-8')
+    selected = {relative.as_posix() for _, relative in release.public_sources()}
+    assert selected == {'README.md', 'bluehead/assets/libusb-1.0.dll', 'licenses/gcc/COPYING.LIB'}
+
+
 @pytest.mark.parametrize("directory", ["Data", "WORK", "Local", ".VENV", "Archive", "BUILD", "Dist", "OUTPUTS"])
 def test_installer_tree_rejects_private_directories_even_when_empty(source, tmp_path, directory):
     candidate = assemble(tmp_path)

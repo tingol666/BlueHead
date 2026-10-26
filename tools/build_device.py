@@ -1,7 +1,7 @@
 """Build pinned, WASAPI-only device I/O; no downloads or hardware operations."""
 from pathlib import Path
+from native_build import compiler as find_compiler, includes
 import hashlib
-import shutil
 import subprocess
 
 root = Path(__file__).resolve().parents[1]
@@ -13,9 +13,9 @@ expected = {
 for name, digest in expected.items():
     if hashlib.sha256((vendor / name).read_bytes()).hexdigest() != digest:
         raise RuntimeError("Modified pinned miniaudio 0.11.25 source: " + name)
-compiler = shutil.which("gcc") or "D:/Code/MSYS2/ucrt64/bin/gcc.exe"
+compiler = find_compiler()
 subprocess.run([
     compiler, "-shared", "-m64", "-std=c11", "-O3", "-Wall", "-Wextra", "-Werror",
-    "-static-libgcc", "-Wl,--no-insert-timestamp", "-s", "-I", str(vendor),
-    "-o", str(root / "bluehead/assets/bluehead_device.dll"), str(root / "native/audio_device.c"),
+    *includes(), "-static-libgcc", "-Wl,--no-insert-timestamp", "-s", "-I", str(vendor),
+    "-o", str(root / "bluehead/assets/bluehead_device.dll"), str(root / "native/platform/windows/audio_device.c"),
 ], check=True)

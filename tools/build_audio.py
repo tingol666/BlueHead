@@ -1,5 +1,6 @@
 """Build the allocation-free render core with MinGW-w64."""
 from pathlib import Path
+from native_build import compiler as find_compiler, includes
 import hashlib
 import json
 import shutil
@@ -7,7 +8,7 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
-gcc = shutil.which("gcc") or "D:/Code/MSYS2/ucrt64/bin/gcc.exe"
+gcc = find_compiler()
 vendor = root / "vendor/speexdsp"
 origin = json.loads((vendor / "origin.json").read_text("utf-8"))
 for component in (vendor, root / "vendor/pipewire-rate-control"):
@@ -18,12 +19,12 @@ for component in (vendor, root / "vendor/pipewire-rate-control"):
 with tempfile.TemporaryDirectory(prefix="bluehead-audio-") as build:
     objects = []
     ffmpeg = root / "work/ffmpeg-audio/install"
-    for source in (root / "native/audio_mixer.c", root / "native/audio_realtime.c",
-                   root / "native/media_engine.c", root / "native/audio_uplink.c", vendor / "resample.c"):
+    for source in (root / "native/audio/audio_mixer.c", root / "native/audio/audio_realtime.c",
+                   root / "native/codecs/media_engine.c", root / "native/audio/audio_uplink.c", vendor / "resample.c"):
         output = str(Path(build) / (source.stem + ".o"))
         flags = ["-Wno-sign-compare"] if source.parent == vendor else []
         subprocess.run([gcc, "-c", "-std=c11", "-O3", "-Wall", "-Wextra", "-Werror", *flags,
-                        "-DOUTSIDE_SPEEX", "-DRANDOM_PREFIX=bluehead_speex", "-DFLOATING_POINT", "-DUSE_SSE", "-DUSE_SSE2",
+                        *includes(), "-DOUTSIDE_SPEEX", "-DRANDOM_PREFIX=bluehead_speex", "-DFLOATING_POINT", "-DUSE_SSE", "-DUSE_SSE2",
                         "-I", str(vendor), "-I", str(ffmpeg / "include"), "-o", output, str(source)], check=True)
         objects.append(output)
     subprocess.run([gcc, "-shared", "-static-libgcc", "-Wl,--no-insert-timestamp", "-s",

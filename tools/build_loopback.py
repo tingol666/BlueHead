@@ -1,14 +1,15 @@
 """Build the Windows process-excluding capture DLL with MinGW-w64."""
 from pathlib import Path
+from native_build import compiler as find_compiler, includes
 import shutil
 import subprocess
 
 root = Path(__file__).resolve().parents[1]
-compiler = shutil.which("g++") or "D:/Code/MSYS2/ucrt64/bin/g++.exe"
+compiler = find_compiler(cxx=True)
 subprocess.run([compiler, "-shared", "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
-                "-static-libgcc", "-static-libstdc++", "-Wl,--no-insert-timestamp",
+                *includes(), "-static-libgcc", "-static-libstdc++", "-Wl,--no-insert-timestamp",
                 "-o", str(root / "bluehead/assets/bluehead_loopback.dll"),
-                str(root / "native/process_loopback.cpp"), "-lole32", "-lmmdevapi", "-lavrt", "-luuid"], check=True)
+                str(root / "native/platform/windows/process_loopback.cpp"), "-lole32", "-lmmdevapi", "-lavrt", "-luuid"], check=True)
 
 notices = Path(compiler).resolve().parents[1] / "share/licenses/gcc-libs"
 if notices.is_dir():

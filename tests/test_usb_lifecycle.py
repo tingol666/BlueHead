@@ -6,6 +6,7 @@ import shutil
 import subprocess
 
 import pytest
+from tools.native_build import includes
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,8 +26,8 @@ def usb_probe(tmp_path_factory):
                     str(ROOT / 'tests/native_usb_fake.c'), '-o', str(output / 'libusb-1.0.dll')], check=True)
     executable = output / 'usb-lifecycle.exe'
     subprocess.run([compiler, '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-municode',
-                    '-static', '-Wl,--no-insert-timestamp', '-I', str(include),
-                    '-I', str(ROOT / 'vendor/nlohmann-json'), '-I', str(ROOT / 'native'),
+                    '-static', '-Wl,--no-insert-timestamp',
+                    *includes(include, ROOT / 'vendor/nlohmann-json'),
                     str(ROOT / 'tests/native_usb_lifecycle.cpp'), '-o', str(executable),
                     '-lbcrypt', '-lavrt'], check=True)
     return executable

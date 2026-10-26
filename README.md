@@ -4,7 +4,7 @@
 
 BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free endpoint for Windows. Listen to a mobile device on your computer and send the computer's microphone back over Bluetooth. No shared Wi-Fi or mobile companion app is required.
 
-**2.0.1**：独立 C++ 实时音频后台、自适应缓冲和短缺口平滑恢复；保留 iPhone/iPad 标准音频、AVRCP 媒体控制和 HFP LC3-SWB。
+**2.1.1**：统一原生音频时间线、float 音频链路、分级异常恢复和清晰的组件边界；保留 iPhone/iPad 标准音频、AVRCP 媒体控制和 HFP LC3-SWB。
 
 [下载已发布稳定版](https://github.com/tingol666/BlueHead/releases/latest) · [使用指南](docs/UI_GUIDE.md) · [构建源码](docs/BUILDING.md) · [验证范围](docs/TESTING.md) · [报告问题](https://github.com/tingol666/BlueHead/issues)
 
@@ -68,13 +68,13 @@ AVRCP 的标准设备音量为 0%–100%，与本地 0%–200% 接收增益独�
 
 ## 技术栈与源码
 
-2.0.1 由独立 `BlueHead.Runtime.exe` 统一持有 USB/HCI、媒体解码、SCO 双向收发、PCM 桥接、混音、重采样和 WASAPI 音频流。已经建立的专用接收音频在 C/C++ 中持续运行，PCM 不经过 Python 或界面。Python 3.13 保留 Bumble 的配对、SDP、AVDTP/AVRCP、HFP 协商和应用控制；新连接、重新协商及部分控制操作仍需要它运行。
+2.1.1 由独立 `BlueHead.Runtime.exe` 统一持有 USB/HCI、媒体解码、SCO 双向收发、PCM 桥接、混音、重采样和 WASAPI 音频流。已经建立的专用接收音频在 C/C++ 中持续运行，PCM 不经过 Python 或界面。Python 3.13 保留 Bumble 的配对、SDP、AVDTP/AVRCP、HFP 协商和应用控制；新连接、重新协商及部分控制操作仍需要它运行。
 
 运行时不再依赖 PyAV、NumPy 或 sounddevice。原生组件包括音频专用 FFmpeg、SpeexDSP、miniaudio、liblc3，以及可独立替换的 SpanDSP PLC 动态库。界面仍为 C#/WPF，不裁剪 WPF/COM。
 
 ```text
-bluehead/    Python 蓝牙信令、会话及原生控制接口
-native/      C++ 运行时、USB/HCI、原生音频链路及连续性算法
+bluehead/    蓝牙信令、会话；native_control/ 为控制接口
+native/      audio/、codecs/、runtime/、transport/、platform/、include/
 desktop/     WPF 界面、系统接口、独立驱动工具与离线兼容检查
 vendor/      固定版本上游源码、来源与校验信息
 tools/       构建、诊断、验证与打包工具
@@ -84,7 +84,7 @@ docs/        使用、架构、构建及验证说明
 licenses/    第三方许可证
 ```
 
-开发步骤见 [BUILDING](docs/BUILDING.md)，实现边界见 [ARCHITECTURE](docs/ARCHITECTURE.md)，音质约束与耳机参考设计见 [音频质量](docs/AUDIO_QUALITY_2.0.1.md)，具体测试记录见 [TESTING](docs/TESTING.md) 与同版本 `VALIDATION.md`。公开源码不包含个人配对、日志、驱动备份或构建缓存；安装包、便携包和源码归档放在 Releases。
+开发步骤见 [BUILDING](docs/BUILDING.md)，实现边界见 [ARCHITECTURE](docs/ARCHITECTURE.md)，音质约束与耳机参考设计见 [音频质量](docs/AUDIO_QUALITY.md)，具体测试记录见 [TESTING](docs/TESTING.md) 与同版本 `VALIDATION.md`。公开源码不包含个人配对、日志、驱动备份或构建缓存；安装包、便携包和源码归档放在 Releases。
 
 ## 数据与问题反馈
 
@@ -93,3 +93,11 @@ licenses/    第三方许可证
 报告问题请附准确版本、Windows 版本、适配器、来源设备及复现步骤。诊断报告只导出匿名计数；请勿公开配对密钥、设备地址、完整恢复记录或含个人信息的原始日志。
 
 项目默认采用 [Apache-2.0](LICENSE)，有单独许可声明的文件与第三方组件按其各自许可分发，见 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)。项目与 Microsoft、Google、Apple、Sony、Qualcomm 无隶属或认证关系。
+
+## 源码与发布物
+
+GitHub 源码只保留实现、测试、构建工具、使用说明、必要资源和固定依赖／许可证。
+BlueHead 自有 EXE/DLL、FFmpeg 编译产物、测试编码器、完整安装包及本机日志／设置不进入源码树；
+从干净检出运行 `tools/build_all_native.py` 可构建原生组件。唯一保留的外部二进制依赖 libusb 有完整来源与 SHA-256 记录。
+安装包、绿色版、源码归档和校验值单独通过 Releases 提供。开发与发布步骤见 [构建说明](docs/BUILDING.md)，
+组件边界见 [架构说明](docs/ARCHITECTURE.md)，音频恢复规则见 [恢复设计](docs/RECOVERY.md)。

@@ -5,7 +5,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-import shutil
+from native_build import compiler as find_compiler, includes
 import subprocess
 import tempfile
 
@@ -21,7 +21,7 @@ def verify_vendor(vendor: Path) -> None:
 
 
 def build(output: Path | None = None, compiler: str | None = None, ffmpeg: Path | None = None) -> Path:
-    gcc = compiler or shutil.which("gcc") or "D:/Code/MSYS2/ucrt64/bin/gcc.exe"
+    gcc = compiler or find_compiler()
     vendor = ROOT / "vendor/liblc3"
     speex = ROOT / "vendor/speexdsp"
     plc = ROOT / "vendor/spandsp-plc"
@@ -67,13 +67,13 @@ def build(output: Path | None = None, compiler: str | None = None, ffmpeg: Path 
         )
         objects = []
         for source in [
-            ROOT / "native/voice_engine.c",
+            ROOT / "native/codecs/voice_engine.c",
             speex / "resample.c",
             *(vendor / "src" / (name + ".c") for name in SOURCES),
         ]:
             obj = directory / (source.stem + ".o")
             flags = (
-                ["-Werror"] if source.parent == ROOT / "native" else ["-Wno-unused-parameter", "-Wno-sign-compare"]
+                ["-Werror"] if source.is_relative_to(ROOT / "native") else ["-Wno-unused-parameter", "-Wno-sign-compare"]
             )
             subprocess.run(
                 [
@@ -83,6 +83,7 @@ def build(output: Path | None = None, compiler: str | None = None, ffmpeg: Path 
                     "-Wall",
                     "-Wextra",
                     *flags,
+                    *includes(),
                     "-DLC3_PLUS=0",
                     "-DLC3_PLUS_HR=0",
                     "-ffunction-sections",

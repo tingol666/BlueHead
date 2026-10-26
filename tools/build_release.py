@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from sync_version import check
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text("utf-8"))["project"]["version"]
@@ -22,6 +23,7 @@ def copy_tree(source, destination):
 
 
 def main():
+    check()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--assemble-only", action="store_true")
     parser.add_argument("--desktop", type=Path, default=ROOT / "work/publish-desktop")
@@ -34,10 +36,8 @@ def main():
     if portable.exists():
         raise SystemExit("Output already exists. Choose a fresh release directory; never overwrite a running application.")
     if not args.assemble_only:
-        run(sys.executable, ROOT / "tools/build_ffmpeg.py", "--native-only")
-        for name in ("build_icon", "build_native", "build_audio", "build_voice", "build_device", "build_ldac_media",
-                     "build_loopback", "build_wdi", "build_runtime", "collect_notices"):
-            run(sys.executable, ROOT / "tools" / (name + ".py"))
+        run(sys.executable, ROOT / "tools/build_all_native.py")
+        run(sys.executable, ROOT / "tools/collect_notices.py")
         dotnet = shutil.which("dotnet") or str(ROOT / "work/toolchain/dotnet/dotnet.exe")
         for project, output in (("Desktop", args.desktop), ("DriverHelper", args.helper)):
             run(dotnet, "publish", ROOT / f"desktop/BlueHead.{project}/BlueHead.{project}.csproj", "-c", "Release",

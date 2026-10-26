@@ -19,6 +19,8 @@
 
 首次恢复依赖需要联网。上游源码/摘要保存在vendor，NuGet各项目使用packages.lock.json。开发锁文件中PyAV、NumPy和sounddevice可用于历史回归与离线对照，不等于发布包运行时需要它们。
 
+GNU make 可在 PATH 中提供，也可通过 `MAKE` 环境变量指定绝对路径；脚本不会依赖项目 `work/` 中遗留的工具副本。
+
 ```powershell
 py -3.13 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.lock.txt
@@ -27,7 +29,16 @@ $env:PATH = 'C:\msys64\ucrt64\bin;C:\msys64\usr\bin;' + $env:PATH
 
 ## 原生模块
 
-主要顺序如下；完整发布脚本还会处理进程排除采集、驱动库、启动器等模块。只从固定源码构建，不能用来源不明的DLL替换。
+干净检出不包含 BlueHead 自有 EXE/DLL、FFmpeg 生成物或测试编码器。先从固定源码构建，不能依赖开发机残留文件：
+
+```powershell
+.venv\Scripts\python.exe tools/sync_version.py --check
+.venv\Scripts\python.exe tools/build_all_native.py
+```
+
+这会完成 FFmpeg、音频／语音／设备库、实验 LDAC、进程排除采集、诊断库、驱动库和原生后台。`bluehead/assets/libusb-1.0.dll` 是保留的外部运行依赖，来源、源码归档及 SHA-256 在 `vendor/libusb/source.json`；构建和打包均检查它。其他本机编译产物只放在忽略目录或忽略文件中，不提交到 GitHub 源码。
+
+只改某个模块时可按下面顺序单独构建；头文件路径和编译器发现统一在 `tools/native_build.py`。`CC`／`CXX` 或 PATH 可指定工具链。
 
 ```powershell
 .venv\Scripts\python.exe tools/build_ffmpeg.py --native-only
@@ -42,6 +53,8 @@ $env:PATH = 'C:\msys64\ucrt64\bin;C:\msys64\usr\bin;' + $env:PATH
 FFmpeg直接供原生媒体/语音模块调用，发布只保留avcodec、avutil和swresample。`--native-only`不需要修改PyAV wheel；开发对照环境与发布依赖分离。对应源码、构建配置和许可必须随可再分发源码材料保留。
 
 C++ 运行时使用固定 nlohmann/json 3.12.0 解析控制消息；构建时核对 vendored 头文件、许可证及 libusb 源码归档的摘要。EXE 的版本资源、原生握手与桌面版本均由项目版本生成。
+
+修改版本时只编辑 `pyproject.toml` 的 project.version，再运行 `tools/sync_version.py`；提交生成的 Python／MSBuild 常量。CI 和发布入口检查一致性。构建记录写到 `work/`，不会把本机绝对路径或构建诊断提交到源码。
 
 SpeexDSP固定版本及摘要用于有状态SRC；miniaudio0.11.25仅编译WASAPI；liblc3固定v1.1.3；SpanDSP PLC作为独立可替换动态库。不要为减少文件数把有许可证边界的库随意静态合并。libusb/libwdi继续保留其源码、修改及替换条件。
 
@@ -68,7 +81,7 @@ dotnet publish desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj -c Rel
 .venv\Scripts\python.exe tools/build_release.py --output ..\releases\2.0.1
 ```
 
-构建输出需使用新目录，不能覆盖运行中的日常程序。原生时钟长测、频率/幅度门槛和逐用例JSON的复现命令见[AUDIO_AUDIT_2.0.md](AUDIO_AUDIT_2.0.md)；它们使用虚拟时间及真实DLL，不打开声卡或蓝牙。依赖清点、离线后台自检、微基准与需使用者安排的硬件探针，其运行范围见[DIAGNOSTICS.md](DIAGNOSTICS.md)。完整验收矩阵见[TESTING.md](TESTING.md)。
+构建输出需使用新目录，不能覆盖运行中的日常程序。原生时钟长测、频率/幅度门槛和逐用例JSON的复现命令见[AUDIO_CORE.md](AUDIO_CORE.md)；它们使用虚拟时间及真实DLL，不打开声卡或蓝牙。依赖清点、离线后台自检、微基准与需使用者安排的硬件探针，其运行范围见[DIAGNOSTICS.md](DIAGNOSTICS.md)。完整验收矩阵见[TESTING.md](TESTING.md)。
 
 ### 必须先写同版本VALIDATION
 

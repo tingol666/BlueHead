@@ -1,16 +1,20 @@
 # 验证与验收
 
-2.0.1 的原生进程隔离、连续性算法和故障注入方法见 [AUDIO_CONTINUITY_2.0.1.md](AUDIO_CONTINUITY_2.0.1.md)。每次构建的实际结果、包摘要及验收状态记录在同版本 `VALIDATION.md`。
+2.1.1 的分层与所有权见 [ARCHITECTURE.md](ARCHITECTURE.md)，音频时间线和音质检查见 [AUDIO_CORE.md](AUDIO_CORE.md)，异常分类及恢复见 [RECOVERY.md](RECOVERY.md)。每次构建的实际结果、包摘要及验收状态记录在同版本 `VALIDATION.md`。
 
 默认自动化检查使用虚拟控制器、固定压缩样本和合成 PCM。真实计时回放、虚拟时钟长测、纯 UI 检查与实际移动设备验收分别记录。运行中的长测不计为通过；历史设备反馈也不扩写成本版验收。
 
 ## 不触硬件的检查
 
 ```powershell
+.venv\Scripts\python.exe tools/sync_version.py --check
+.venv\Scripts\python.exe tools/build_all_native.py
 .venv\Scripts\python.exe -m pytest tests -q --tb=short
 .venv\Scripts\python.exe -m ruff check bluehead tools tests launch.py engine_launch.py
-work/publish-desktop-201/BlueHead.exe --self-test C:\Temp\BlueHead-ui-201
+work/publish-desktop-211/BlueHead.exe --self-test C:\Temp\BlueHead-ui-211
 ```
+
+提交源码前运行 `tools/audit_sources.py --report work/source-audit.json`，同时验证 Git 索引与源码白名单一致。生成的 EXE/DLL 不属于 GitHub 源码，但完整包必须包含全部运行组件；这两个边界分别验证，不能通过精简源码把发布依赖遗漏。
 
 协议测试应使用虚拟控制器、固定压缩样本和生成PCM。不可把打开真实播放、麦克风、USB或驱动绑定加入默认CI。
 

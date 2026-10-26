@@ -9,7 +9,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text("utf-8"))["project"]["version"]
 FILES = {".clang-format", ".gitattributes", ".gitignore", "README.md", "README.txt", "LICENSE", "THIRD_PARTY_NOTICES.txt", "CHANGELOG.md",
-         "CONTRIBUTING.md", "pyproject.toml", "requirements.lock.txt", "requirements-runtime.lock.txt", "dependencies.json", "ffmpeg-build.json",
+         "CONTRIBUTING.md", "pyproject.toml", "requirements.lock.txt", "requirements-runtime.lock.txt", "dependencies.json",
          "global.json", "NuGet.Config", "launch.py", "engine_launch.py"}
 FOLDERS = {".github", "bluehead", "desktop", "docs", "installer", "licenses", "native", "tests", "tools", "vendor"}
 EXCLUDED = {"bin", "obj", "__pycache__", ".git", ".pytest_cache", ".ruff_cache", "legacy",
@@ -17,6 +17,8 @@ EXCLUDED = {"bin", "obj", "__pycache__", ".git", ".pytest_cache", ".ruff_cache",
 PRIVATE = {"pairing.json", "settings.json", "recovery.json", "desktop.json"}
 PRIVATE_SUFFIXES = {".pyc", ".pdb", ".log", ".dmp", ".user", ".suo", ".bak", ".tmp",
                     ".key", ".pem", ".pfx", ".p12"}
+GENERATED_SUFFIXES = {".dll", ".exe", ".a", ".o", ".obj", ".lib"}
+SOURCE_BINARIES = {"bluehead/assets/libusb-1.0.dll"}
 
 
 def digest(path):
@@ -29,6 +31,14 @@ def private_path(relative):
     parts = tuple(part.casefold() for part in relative.parts)
     return (any(part in EXCLUDED or part in PRIVATE for part in parts) or
             relative.suffix.casefold() in PRIVATE_SUFFIXES)
+
+
+def generated_source(relative):
+    name = relative.as_posix().casefold()
+    if relative.name.casefold().startswith(("copying", "license", "notice")):
+        return False
+    return (name == "vendor/ffmpeg/build.json" or
+            (relative.suffix.casefold() in GENERATED_SUFFIXES and name not in SOURCE_BINARIES))
 
 
 def checked_location(path, boundary):
@@ -49,6 +59,8 @@ def tree_files(directory, boundary, *, source):
             if source:
                 continue
             raise RuntimeError("Private or build material in assembled release: " + str(relative))
+        if source and generated_source(relative):
+            continue
         checked_location(path, boundary)
         if path.is_dir():
             yield from tree_files(path, boundary, source=source)

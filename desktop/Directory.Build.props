@@ -1,4 +1,5 @@
 <Project>
+  <Import Project="$(MSBuildThisFileDirectory)BlueHead.Version.props" />
   <PropertyGroup>
     <TargetFramework>net48</TargetFramework>
     <LangVersion>latest</LangVersion>
@@ -6,8 +7,6 @@
     <Prefer32Bit>false</Prefer32Bit>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>2.0.1</Version>
-    <InformationalVersion>2.0.1</InformationalVersion>
     <Company>BlueHead contributors</Company>
     <Product>BlueHead</Product>
     <Copyright>Copyright BlueHead contributors</Copyright>

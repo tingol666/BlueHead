@@ -376,7 +376,7 @@ internal static class Program
         Event("""{"event":"telemetry","audio":{},"devices":[{"key":"remote-demo","media":{},"call":{"active":true,"codec":"lc3_swb","rate":32000,"rx_bitrate":64000,"tx_bitrate":64000,"microphone_active":true}}]}"""); Pump();
         checks["hfp_lc3_swb_uses_correct_codec_label_and_32khz"] = remote.MediaDescription.Contains("HFP / LC3-SWB · 32 kHz");
         checks["voice_details_preserve_actual_codec_alongside_auto_negotiation"] = remote.LiveDetails.Contains("语音编码：自动协商") && remote.LiveDetails.Contains("当前 LC3-SWB · 32 kHz");
-        checks["version_is_201_release"] = AppVersion.Number == "2.0.1" && window.Title == "BlueHead 2.0.1" && AppVersion.Label == "2.0.1";
+        checks["version_is_211_release"] = AppVersion.Number == "2.1.1" && window.Title == "BlueHead 2.1.1" && AppVersion.Label == "2.1.1";
         Event("""{"event":"avrcp","key":"remote-demo","connected":false,"controls":false}"""); Pump();
         checks["avrcp_disconnect_clears_metadata_and_reclaims_row"] = !remoteRow.IsVisible && !remote.HasRemoteMedia && !remote.TrackDescription.Contains("示例曲目");
         Event("""{"event":"device","key":"remote-demo","state":"已断开"}""");

@@ -12,7 +12,10 @@ import json
 def test_version_agrees_across_python_desktop_and_engine(tmp_path):
     root = Path(__file__).resolve().parents[1]
     project = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))
-    props = ET.parse(root / "desktop/Directory.Build.props").getroot()
+    build = ET.parse(root / "desktop/Directory.Build.props").getroot()
+    assert any(item.attrib.get('Project') == '$(MSBuildThisFileDirectory)BlueHead.Version.props'
+               for item in build.findall('Import'))
+    props = ET.parse(root / "desktop/BlueHead.Version.props").getroot()
     assert __version__ == project["project"]["version"] == props.findtext("PropertyGroup/Version")
     assert props.findtext("PropertyGroup/InformationalVersion") == __version__
     stream = StringIO()

@@ -60,7 +60,7 @@ that Bluetooth input route.
 
 ## Native audio path
 
-`native/voice_engine.c` owns codec state, H2 synchronization, fragmented input,
+`native/codecs/voice_engine.c` owns codec state, H2 synchronization, fragmented input,
 sequence loss tracking, packet-status handling and the bounded PCM queue.
 `bluehead/voice.py` only moves owned byte buffers and serializes lifetime. Every
 voice codec supplies mono signed 16-bit PCM at 48 kHz to the native mixer and

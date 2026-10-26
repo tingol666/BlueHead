@@ -249,7 +249,7 @@ class MediaSession:
 class Receiver:
     def __init__(self, settings, directory: Path, emit, mixer=None):
         self.settings, self.directory, self.emit = settings, directory, emit
-        from .native_runtime import current, RemoteMixer
+        from .native_control import current, RemoteMixer
         client = current() if mixer is None and settings.mode == "advanced" else None
         self.mixer = mixer or (RemoteMixer(client, settings.buffer_ms, settings.call_buffer_ms) if client else
                                Mixer(buffer_ms=settings.buffer_ms, call_buffer_ms=settings.call_buffer_ms))
@@ -576,7 +576,7 @@ class Receiver:
             old.close()
         factory = MediaSession
         if getattr(self.mixer, "remote", False):
-            from .native_runtime import RemoteMediaSession
+            from .native_control import RemoteMediaSession
             factory = RemoteMediaSession
         session = factory(key, self.mixer, self.emit, lambda: self.competing_with(key))
         self.sessions[key] = session
@@ -721,7 +721,7 @@ class Receiver:
                 self.attach(device)
                 output_factory = AudioOutput
                 if getattr(self.mixer, "remote", False):
-                    from .native_runtime import RemoteOutput
+                    from .native_control import RemoteOutput
                     output_factory = RemoteOutput
                 self.output = output_factory(self.mixer, self.settings.output_device)
                 self.output.start()

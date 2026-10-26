@@ -18,8 +18,26 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc make diffutils
       - name: Install fixed Python dependencies
         run: python -m pip install -r requirements.lock.txt
+      - name: Build native components from source
+        shell: pwsh
+        env:
+          MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $nativeTool = Join-Path $env:MSYS2_ROOT 'ucrt64\bin'
+          $nativeShell = Join-Path $env:MSYS2_ROOT 'usr\bin'
+          $env:PATH = "$nativeTool;$nativeShell;" + $env:PATH
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $nativeTool
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $nativeShell
+          python tools/sync_version.py --check
+          python tools/build_all_native.py
       - name: Lint and protocol/audio regression checks
         run: |
           python -m ruff check bluehead tools tests launch.py engine_launch.py

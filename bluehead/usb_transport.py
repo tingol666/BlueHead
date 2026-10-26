@@ -6,7 +6,7 @@ from .windows_usb import load_libusb, open_usb_transport
 
 async def open_transport(spec):
     if spec.startswith('usb:'):
-        from .native_runtime import current, NativeTransport
+        from .native_control import current, NativeTransport
         client = current()
         if client is not None:
             return NativeTransport(client, spec)

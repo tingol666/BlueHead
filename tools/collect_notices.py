@@ -72,7 +72,8 @@ with os.add_dll_directory(str(assets)):
                                    "configuration": configuration_function().decode("utf-8")}
         if not library_records[prefix]["license"].startswith("LGPL"):
             raise RuntimeError("Unexpected runtime FFmpeg license")
-(root / "ffmpeg-build.json").write_text(json.dumps(library_records, indent=2), "utf-8")
+(root / "work").mkdir(exist_ok=True)
+(root / "work/ffmpeg-libraries.json").write_text(json.dumps(library_records, indent=2), "utf-8")
 for folder, names in {"miniaudio": ["LICENSE"], "speexdsp": ["COPYING"], "liblc3": ["LICENSE"], "pipewire-rate-control": ["LICENSE"],
                       "nlohmann-json": ["LICENSE.MIT"], "spandsp-plc": ["COPYING", "AUTHORS"]}.items():
     destination = licenses / folder

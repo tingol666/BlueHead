@@ -44,7 +44,7 @@ replacement = needle + '''
 '''
 (build / "libwdi.c").write_text(original.replace(needle, replacement), "utf-8")
 resources = [
-    ("winusb.inf.in", (root / "native/winusb-modern.inf.in").read_bytes()),
+    ("winusb.inf.in", (root / "native/platform/windows/winusb-modern.inf.in").read_bytes()),
     ("winusb.cat.in", b"# Only the generated INF is catalogued; WinUSB is an inbox driver.\n"),
 ]
 embedded = ["#include <stdint.h>", "#include <stddef.h>"]

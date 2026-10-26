@@ -1,8 +1,8 @@
 """Build the native USB/audio runtime from pinned local dependencies."""
 from pathlib import Path
+from native_build import compiler as find_compiler, includes
 import hashlib
 import json
-import shutil
 import subprocess
 import tarfile
 import tomllib
@@ -23,7 +23,7 @@ if hashlib.sha256(usb_source.read_bytes()).hexdigest() != usb_origin["source_sha
 with tarfile.open(usb_source) as package:
     member = next(m for m in package.getmembers() if m.name.endswith("/libusb/libusb.h"))
     (BUILD / "libusb.h").write_bytes(package.extractfile(member).read())
-compiler = shutil.which("g++") or "D:/Code/MSYS2/ucrt64/bin/g++.exe"
+compiler = find_compiler(cxx=True)
 version = tomllib.loads((ROOT / "pyproject.toml").read_text("utf-8"))["project"]["version"]
 numeric = ",".join(str(int(p)) for p in version.split(".")) + ",0"
 (BUILD / "runtime_version.h").write_text(f'#define BH_RUNTIME_VERSION "{version}"\n', "utf-8")
@@ -56,8 +56,8 @@ subprocess.run([str(windres), str(BUILD / "runtime.rc"), str(BUILD / "runtime.o"
 subprocess.run([
     compiler, "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-municode",
     "-static", "-static-libgcc", "-static-libstdc++", "-Wl,--no-insert-timestamp", "-s",
-    "-I", str(vendor), "-I", str(BUILD), "-I", str(ROOT / "native"),
-    str(ROOT / "native/runtime_main.cpp"), str(BUILD / "runtime.o"),
+    *includes(vendor, BUILD),
+    str(ROOT / "native/runtime/runtime_main.cpp"), str(BUILD / "runtime.o"),
     "-o", str(ROOT / "bluehead/assets/BlueHead.Runtime.exe"),
     "-ladvapi32", "-lavrt", "-lole32", "-lbcrypt",
 ], check=True)

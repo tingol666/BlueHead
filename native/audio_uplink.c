@@ -8,6 +8,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdatomic.h>
+#include "audio_timeline.h"
 #define API __declspec(dllexport)
 #define LIMIT 34560u
 typedef struct {
@@ -22,10 +23,13 @@ void bh_mix_remove(Mixer *, int);
 void bh_mix_clear(Mixer *, int);
 void bh_mix_gain(Mixer *, int, float);
 void bh_mix_write_s16_mono(Mixer *, int, const int16_t *, uint32_t);
+void bh_mix_write_f32_mono(Mixer *, int, const float *, uint32_t);
 int bh_mix_render(Mixer *, float *, uint32_t, float);
 uint64_t bh_mix_value(Mixer *, int, int);
 int bh_mix_clock_config(Mixer *, float, float);
 int bh_mix_continuity(Mixer *, int, int, uint32_t, uint32_t);
+int bh_mix_timeline(Mixer *, int, int);
+void bh_mix_observe(Mixer *, int, uint64_t, uint64_t);
 static unsigned bits(float f) {
   unsigned u;
   memcpy(&u, &f, 4);
@@ -187,6 +191,35 @@ API void bh_up_write(Uplink *u, int bus, const uint8_t *data, uint32_t size) {
   r->size += size;
   LeaveCriticalSection(&u->lock);
 }
+API int bh_up_write_f32(Uplink *u, int bus, const float *data, uint32_t frames) {
+  if (!u || !data || bus < 0 || bus > 1 ||
+      !atomic_load_explicit(&u->adaptive, memory_order_acquire))
+    return -1;
+  if (frames > 4320) {
+    atomic_fetch_add(&u->excess[bus], frames - 4320);
+    data += frames - 4320;
+    frames = 4320;
+  }
+  bh_mix_write_f32_mono(u->clock, u->input[bus], data, frames);
+  return (int)frames;
+}
+static int render_adaptive(Uplink *u, uint32_t frames) {
+  float mg = number(atomic_load(&u->mic_gain)), sg = number(atomic_load(&u->system_gain)),
+        dg = number(atomic_load(&u->device_gain));
+  bh_mix_gain(u->clock, u->input[0], mg);
+  bh_mix_gain(u->clock, u->input[1], sg);
+  return bh_mix_render(u->clock, u->stereo, frames, atomic_load(&u->muted) ? 0 : dg);
+}
+API int bh_up_read_f32(Uplink *u, float *output, uint32_t frames) {
+  if (!u || !output || frames > LIMIT / 2 ||
+      !atomic_load_explicit(&u->adaptive, memory_order_acquire))
+    return -1;
+  if (render_adaptive(u, frames) < 0)
+    return -1;
+  for (uint32_t i = 0; i < frames; i++)
+    output[i] = u->stereo[i * 2];
+  return (int)frames;
+}
 static uint32_t take(Ring *r, uint8_t *out, uint32_t size) {
   uint32_t count = size < r->size ? size : r->size,
            first = count < LIMIT - r->read ? count : LIMIT - r->read;
@@ -206,9 +239,7 @@ API int bh_up_read(Uplink *u, uint8_t *output, uint32_t size) {
   if (atomic_load_explicit(&u->adaptive, memory_order_acquire)) {
     if (size & 1)
       return -1;
-    bh_mix_gain(u->clock, u->input[0], mg);
-    bh_mix_gain(u->clock, u->input[1], sg);
-    if (bh_mix_render(u->clock, u->stereo, size / 2, muted ? 0 : dg) < 0)
+    if (render_adaptive(u, size / 2) < 0)
       return -1;
     for (uint32_t i = 0; i < size / 2; i++) {
       float value = u->stereo[i * 2] * 32768;
@@ -261,7 +292,7 @@ API int bh_up_read(Uplink *u, uint8_t *output, uint32_t size) {
 /* fields: queued frames, dropped frames, drift+1000 ppm, underrun events,
  * initial/recovery prefill frames. Only explicit starvation enters rebuffer. */
 API uint64_t bh_up_value(Uplink *u, int bus, int field) {
-  if (!u || bus < -1 || bus > 1 || field < 0 || field > 4)
+  if (!u || bus < -1 || bus > 1 || field < 0 || field > 18)
     return 0;
   if (bus == -1)
     return bh_mix_value(u->clock, -1, field);
@@ -274,8 +305,14 @@ API uint64_t bh_up_value(Uplink *u, int bus, int field) {
 API int bh_up_continuity(Uplink *u, int enabled) {
   if (!u)
     return -1;
-  for (int bus = 0; bus < 2; bus++)
+  for (int bus = 0; bus < 2; bus++) {
     if (bh_mix_continuity(u->clock, u->input[bus], enabled, 720, 2880) < 0)
       return -1;
+    bh_mix_timeline(u->clock, u->input[bus], enabled ? BHT_CAPTURE : BHT_GENERIC);
+  }
   return 0;
+}
+API void bh_up_observe(Uplink *u, int bus, uint64_t position, uint64_t arrival) {
+  if (u && bus >= 0 && bus < 2)
+    bh_mix_observe(u->clock, u->input[bus], position, arrival);
 }

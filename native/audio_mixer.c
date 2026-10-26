@@ -10,6 +10,7 @@
 #include <stdatomic.h>
 #include "audio_continuity.h"
 #include "audio_quality.h"
+#include "audio_timeline.h"
 #define API __declspec(dllexport)
 #define INPUTS 8
 #define CAPACITY 48064u
@@ -25,18 +26,23 @@ typedef struct {
   atomic_uint active, readers, gain, enabled, epoch, drift_view;
   uint32_t target, maximum;
   atomic_uint continuity_mode, continuity_min, continuity_max, target_view, jitter_view;
+  atomic_uint gap_owner;
+  atomic_ullong expired, presentation, deadline_searches, recovery_discarded;
   atomic_ullong concealed, concealed_silence, merged, rebuffers, expanded, accelerated;
   uint64_t last_arrival;
   uint32_t previous_frames, adaptive_target, adaptive_decay, starve_frames, deficit_frames;
   double jitter_peak;
   BhContinuity continuity;
   BhSourceQuality quality;
+  BhAudioArrival arrival;
+  BhAudioClock clock;
+  double deadline_debt;
   /* Render-only state. */
   uint32_t seen_epoch, history_count;
   uint64_t cursor, available, rendered;
   float history[64], gate;
-  int buffering;
-  double phase, drift, clock_average, clock_correction;
+  int buffering, recover_late;
+  double phase, drift;
 } Input;
 typedef struct Mixer {
   CRITICAL_SECTION lifecycle;
@@ -127,6 +133,11 @@ API Mixer *bh_mix_create(void) {
     atomic_init(&s->continuity_max, 0);
     atomic_init(&s->target_view, 0);
     atomic_init(&s->jitter_view, 0);
+    atomic_init(&s->gap_owner, BHT_GENERIC);
+    atomic_init(&s->expired, 0);
+    atomic_init(&s->presentation, 0);
+    atomic_init(&s->deadline_searches, 0);
+    atomic_init(&s->recovery_discarded, 0);
     atomic_init(&s->concealed, 0);
     atomic_init(&s->concealed_silence, 0);
     atomic_init(&s->merged, 0);
@@ -185,9 +196,16 @@ API int bh_mix_add(Mixer *m, uint32_t target, uint32_t maximum) {
       s->cursor = s->available = s->rendered = 0;
       s->gate = 1;
       s->buffering = 1;
+      s->recover_late = 0;
       s->phase = s->drift = 0;
-      s->clock_average = target;
-      s->clock_correction = 1;
+      bht_clock_reset(&s->clock, target);
+      memset(&s->arrival, 0, sizeof(s->arrival));
+      s->deadline_debt = 0;
+      atomic_store(&s->gap_owner, BHT_GENERIC);
+      atomic_store(&s->expired, 0);
+      atomic_store(&s->presentation, 0);
+      atomic_store(&s->deadline_searches, 0);
+      atomic_store(&s->recovery_discarded, 0);
       atomic_store(&s->continuity_mode, 0);
       atomic_store(&s->target_view, target);
       atomic_store(&s->jitter_view, 0);
@@ -235,6 +253,7 @@ API void bh_mix_clear(Mixer *m, int index) {
   s->last_arrival = 0;
   s->previous_frames = 0;
   s->jitter_peak = 0;
+  memset(&s->arrival, 0, sizeof(s->arrival));
   atomic_store(&s->jitter_view, 0);
   atomic_fetch_add(&s->epoch, 1);
   LeaveCriticalSection(&s->producer);
@@ -251,7 +270,8 @@ API void bh_mix_call(Mixer *m, int index) {
   if (m)
     atomic_store(&m->call, index);
 }
-static void write_timed(Mixer *m, int index, const float *pcm, uint32_t frames, uint64_t arrival) {
+static void write_timed(Mixer *m, int index, const float *pcm, uint32_t frames, uint64_t arrival,
+                        int mono) {
   if (!m || !pcm || index < 0 || index >= INPUTS || !frames)
     return;
   Input *s = &m->input[index];
@@ -262,10 +282,10 @@ static void write_timed(Mixer *m, int index, const float *pcm, uint32_t frames, 
   }
   if (frames > s->maximum) {
     atomic_fetch_add(&s->dropped, frames - s->maximum);
-    pcm += (frames - s->maximum) * 2;
+    pcm += (frames - s->maximum) * (mono ? 1 : 2);
     frames = s->maximum;
   }
-  if (atomic_load(&s->continuity_mode)) {
+  if (atomic_load(&s->continuity_mode) && atomic_load(&s->gap_owner) == BHT_GENERIC) {
     LARGE_INTEGER now;
     if (arrival)
       now.QuadPart = (LONGLONG)arrival;
@@ -295,20 +315,28 @@ static void write_timed(Mixer *m, int index, const float *pcm, uint32_t frames, 
     return;
   }
   uint32_t at = (uint32_t)(w % CAPACITY), first = frames < CAPACITY - at ? frames : CAPACITY - at;
-  memcpy(s->pcm + at * 2, pcm, first * 2 * sizeof(float));
-  memcpy(s->pcm, pcm + first * 2, (frames - first) * 2 * sizeof(float));
+  if (mono) {
+    for (uint32_t i = 0; i < frames; i++) {
+      float value = isfinite(pcm[i]) ? pcm[i] : 0;
+      uint32_t frame = (at + i) % CAPACITY;
+      s->pcm[frame * 2] = s->pcm[frame * 2 + 1] = value;
+    }
+  } else {
+    memcpy(s->pcm + at * 2, pcm, first * 2 * sizeof(float));
+    memcpy(s->pcm, pcm + first * 2, (frames - first) * 2 * sizeof(float));
+  }
   if (w - r + frames > s->maximum)
     atomic_store_explicit(&s->trim, w + frames - s->maximum, memory_order_release);
   atomic_store_explicit(&s->write, w + frames, memory_order_release);
   LeaveCriticalSection(&s->producer);
 }
 API void bh_mix_write(Mixer *m, int index, const float *pcm, uint32_t frames) {
-  write_timed(m, index, pcm, frames, 0);
+  write_timed(m, index, pcm, frames, 0, 0);
 }
 /* Offline virtual-clock harness. Production writes always use the real QPC. */
 API void bh_mix_test_write_at(Mixer *m, int index, const float *pcm, uint32_t frames,
                               uint64_t arrival) {
-  write_timed(m, index, pcm, frames, arrival);
+  write_timed(m, index, pcm, frames, arrival, 0);
 }
 API void bh_mix_write_s16_mono(Mixer *m, int index, const int16_t *pcm, uint32_t frames) {
   if (!m || !pcm || frames > CAPACITY)
@@ -323,6 +351,24 @@ API void bh_mix_write_s16_mono(Mixer *m, int index, const int16_t *pcm, uint32_t
     pcm += take;
     frames -= take;
   }
+}
+API void bh_mix_write_f32_mono(Mixer *m, int index, const float *pcm, uint32_t frames) {
+  write_timed(m, index, pcm, frames, 0, 1);
+}
+API int bh_mix_timeline(Mixer *m, int index, int owner) {
+  if (!m || index < 0 || index >= INPUTS || owner < BHT_GENERIC || owner > BHT_CAPTURE)
+    return -1;
+  atomic_store_explicit(&m->input[index].gap_owner, owner, memory_order_release);
+  return 0;
+}
+API void bh_mix_observe(Mixer *m, int index, uint64_t position, uint64_t arrival) {
+  if (!m || index < 0 || index >= INPUTS)
+    return;
+  Input *s = &m->input[index];
+  EnterCriticalSection(&s->producer);
+  double jitter = bht_arrival(&s->arrival, position, arrival, m->qpc_frequency.QuadPart);
+  atomic_store_explicit(&s->jitter_view, (unsigned)jitter, memory_order_release);
+  LeaveCriticalSection(&s->producer);
 }
 static float sample(Input *s, int offset, int channel) {
   if (offset < 0) {
@@ -366,19 +412,10 @@ static void save_history(Input *s, uint32_t consumed) {
  * Units are frames; duration and period use the same 48kHz clock. */
 static double clock_update(Input *s, uint32_t duration, double target, double period,
                            double limit) {
-  double beta = duration / period;
-  if (beta > .5)
-    beta = .5;
-  double old = s->clock_average;
-  double average = beta * ((double)s->available - s->phase) + (1 - beta) * old;
-  s->clock_correction += (average - old) / (3 * period) + beta * (old - target) / (27 * period);
-  if (s->clock_correction > 1 + limit)
-    s->clock_correction = 1 + limit;
-  if (s->clock_correction < 1 - limit)
-    s->clock_correction = 1 - limit;
-  s->clock_average = average;
-  s->drift = s->clock_correction - 1;
-  return s->clock_correction;
+  double ratio =
+      bht_clock_update(&s->clock, (double)s->available - s->phase, duration, target, period, limit);
+  s->drift = ratio - 1;
+  return ratio;
 }
 static int render_legacy(Mixer *m, float *output, uint32_t count, float master) {
   if (!m || !output || count > CAPACITY || !isfinite(master))
@@ -428,8 +465,7 @@ static int render_legacy(Mixer *m, float *output, uint32_t count, float master) 
       continue;
     }
     if (s->buffering) {
-      s->clock_average = clock_target;
-      s->clock_correction = 1;
+      bht_clock_reset(&s->clock, clock_target);
       s->drift = 0;
     }
     s->buffering = 0;
@@ -542,5 +578,17 @@ API uint64_t bh_mix_value(Mixer *m, int index, int field) {
     return atomic_load(&s->expanded);
   if (field == 12)
     return atomic_load(&s->accelerated);
+  if (field == 13)
+    return atomic_load(&s->expired);
+  if (field == 14)
+    return atomic_load(&s->gap_owner);
+  if (field == 15)
+    return atomic_load(&s->write);
+  if (field == 16)
+    return atomic_load(&s->presentation);
+  if (field == 17)
+    return atomic_load(&s->deadline_searches);
+  if (field == 18)
+    return atomic_load(&s->recovery_discarded);
   return atomic_load(&s->drift_view);
 }

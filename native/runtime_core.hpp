@@ -4,6 +4,7 @@
 #include "runtime_ldac.hpp"
 #include "runtime_usb.hpp"
 #include "runtime_stream_guard.hpp"
+#include "audio_timeline.h"
 #include <deque>
 #include <future>
 #include <fstream>
@@ -18,6 +19,17 @@ class Core final : public HciTarget {
   std::mutex replay_mutex;
   json replay_result = json::object();
   std::unique_ptr<HciDispatch> test_dispatch;
+  std::atomic<uint32_t> bridge_stall{0}, voice_stall{0};
+  std::atomic<uint64_t> injected_stalls{0};
+  void test_pause(std::atomic<uint32_t> &request) {
+    auto ms = request.exchange(0);
+    if (!ms)
+      return;
+    injected_stalls++;
+    auto until = ticks() + frequency() * ms / 1000;
+    while (!quitting && ticks() < until)
+      Sleep(1);
+  }
   struct Media {
     Core &core;
     int input;
@@ -29,6 +41,8 @@ class Core final : public HciTarget {
     Handle wake{CreateEventW(nullptr, FALSE, FALSE, nullptr)};
     std::thread worker;
     std::atomic<bool> stop{false}, paused{true}, restart{false};
+    std::atomic<uint32_t> stall{0};
+    BhPacketClock packet_clock{};
     std::atomic<uint32_t> handle{0xffff}, cid{0xffff}, epoch{1}, producers{0};
     uint32_t lease = 0;
     std::atomic<uint64_t> packets{0}, drops{0}, decoded{0}, errors{0}, coded{0}, lost{0},
@@ -75,6 +89,7 @@ class Core final : public HciTarget {
       }
       retire();
       codec = code;
+      packet_clock = {};
       rate = hz;
       channels = ch;
       key = k;
@@ -132,9 +147,11 @@ class Core final : public HciTarget {
       while (!stop) {
         WaitForSingleObject(wake, INFINITE);
         while (!stop && queue.pop(p)) {
+          core.test_pause(stall);
           if (paused || p.epoch != epoch)
             continue;
           if (restart.exchange(false)) {
+            packet_clock = {};
             meter_start = meter_bytes = 0;
             bitrate = 0;
             if (decoder)
@@ -156,6 +173,12 @@ class Core final : public HciTarget {
                 update_guard(p.arrival, frames, stats[5] >= lost ? stats[5] - lost.load() : 0,
                              stats[3] >= errors ? stats[3] - errors.load() : 0);
                 if (frames) {
+                  if (p.size >= 12 && (p.data[0] >> 6) == 2) {
+                    uint32_t stamp = (uint32_t(p.data[4]) << 24) | (uint32_t(p.data[5]) << 16) |
+                                     (uint32_t(p.data[6]) << 8) | p.data[7];
+                    core.api.bh_mix_observe(core.mixer, input,
+                                            bht_packet(&packet_clock, stamp, rate), p.arrival);
+                  }
                   core.api.bh_mix_write(core.mixer, input, ldac_pcm.get(), frames);
                   decoded += frames;
                   last_decoded = ticks();
@@ -186,7 +209,7 @@ class Core final : public HciTarget {
           if (!paused && p.epoch == epoch) {
             update_guard(p.arrival, real_frames, core.api.bh_media_value(decoder, 5) - before_lost,
                          failed);
-            core.api.bh_media_drain_mixer(decoder, core.mixer, input);
+            core.api.bh_media_drain_mixer_at(decoder, core.mixer, input, p.arrival);
             decoded = core.api.bh_media_value(decoder, 0);
             if (real_frames)
               last_decoded = ticks();
@@ -622,21 +645,25 @@ class Core final : public HciTarget {
   }
   void bridge_loop() {
     Priority priority;
-    std::array<int16_t, 2048> pcm{};
+    std::array<float, 2048> pcm{};
     std::array<float, 4800> system{};
     while (!quitting) {
+      test_pause(bridge_stall);
       {
         std::lock_guard<std::mutex> lock(bridge_mutex);
         if (capture) {
+          uint64_t position = 0, arrival = 0;
+          if (api.bh_device_clock(capture, &position, &arrival) > 0)
+            api.bh_up_observe(uplink, 0, position, arrival);
           for (unsigned batch = 0; batch < 8; batch++) {
-            int n = api.bh_device_read(capture, pcm.data(), 1024);
+            int n = api.bh_device_read_f32(capture, pcm.data(), 1024);
             if (n <= 0) {
               if (n < 0)
                 bridge_errors++;
               break;
             }
             if (voice_handle != 0xffff)
-              api.bh_up_write(uplink, 0, reinterpret_cast<const uint8_t *>(pcm.data()), n * 2);
+              api.bh_up_write_f32(uplink, 0, pcm.data(), n);
             bridge_frames += n;
             // A large endpoint callback may contain several read quanta.
             // Re-arm a bounded drain rather than wait for another callback.
@@ -645,12 +672,15 @@ class Core final : public HciTarget {
           }
         }
         if (loop_capture && loop_converter) {
+          uint64_t position = 0, arrival = 0;
+          if (api.bh_loop_clock(loop_capture, &position, &arrival) > 0)
+            api.bh_up_observe(uplink, 1, position, arrival);
           int n = api.bh_loop_read(loop_capture, system.data(), 4800);
           if (n > 0) {
             api.bh_capture_push(loop_converter, system.data(), n);
-            while ((n = api.bh_capture_read(loop_converter, pcm.data(), 1024)) > 0) {
+            while ((n = api.bh_capture_read_f32(loop_converter, pcm.data(), 1024)) > 0) {
               if (voice_handle != 0xffff && mix_enabled)
-                api.bh_up_write(uplink, 1, reinterpret_cast<const uint8_t *>(pcm.data()), n * 2);
+                api.bh_up_write_f32(uplink, 1, pcm.data(), n);
               system_frames += n;
             }
           }
@@ -664,12 +694,14 @@ class Core final : public HciTarget {
     Priority priority;
     SmallPacket p;
     Wire wire;
-    std::array<int16_t, 11520> pcm{};
+    std::array<float, 11520> pcm{};
     Timer timer;
     uint32_t consecutive_missing = 0;
     uint64_t expected = 0;
+    uint64_t source_position = 0;
     uint64_t frame_ticks = frequency() * 75 / 10000;
     while (!voice_stop) {
+      test_pause(voice_stall);
       if (voice_handle == 0xffff || !voice_rx_enabled)
         expected = 0;
       unsigned batch = 0;
@@ -687,9 +719,11 @@ class Core final : public HciTarget {
           expected = std::max(expected + frame_ticks * frames, p.arrival + frame_ticks);
           consecutive_missing = 0;
         }
-        uint32_t n = api.bh_voice_read_pcm(voice, pcm.data(), pcm.size());
+        uint32_t n = api.bh_voice_read_f32(voice, pcm.data(), pcm.size());
         if (n && voice_input >= 0) {
-          api.bh_mix_write_s16_mono(mixer, voice_input, pcm.data(), n);
+          source_position += n;
+          api.bh_mix_observe(mixer, voice_input, source_position, p.arrival);
+          api.bh_mix_write_f32_mono(mixer, voice_input, pcm.data(), n);
           voice_frames += n;
         }
         bh_voice_stats stats{};
@@ -702,9 +736,10 @@ class Core final : public HciTarget {
             std::min<uint64_t>(8 - consecutive_missing, (now - expected) / frame_ticks));
         if (missed) {
           api.bh_voice_conceal(voice, missed);
-          uint32_t n = api.bh_voice_read_pcm(voice, pcm.data(), pcm.size());
+          uint32_t n = api.bh_voice_read_f32(voice, pcm.data(), pcm.size());
+          source_position += n;
           if (n && voice_input >= 0)
-            api.bh_mix_write_s16_mono(mixer, voice_input, pcm.data(), n);
+            api.bh_mix_write_f32_mono(mixer, voice_input, pcm.data(), n);
           expected += frame_ticks * missed;
           voice_plc += missed;
           consecutive_missing += missed;
@@ -715,9 +750,10 @@ class Core final : public HciTarget {
       while (!voice_stop && voice_handle != 0xffff && voice_tx.size() < 2) {
         api.bh_up_gain(uplink, microphone_gain.load(), system_gain.load(),
                        microphone_muted ? 0.0f : device_gain.load(), microphone_muted.load());
-        if (api.bh_up_read(uplink, reinterpret_cast<uint8_t *>(pcm.data()), 720) >= 0) {
+        if (api.bh_up_read_f32(uplink, pcm.data(), 360) >= 0) {
           wire.epoch = voice_epoch;
-          int n = api.bh_voice_encode(voice, pcm.data(), 360, wire.bytes.data(), wire.bytes.size());
+          int n =
+              api.bh_voice_encode_f32(voice, pcm.data(), 360, wire.bytes.data(), wire.bytes.size());
           if (n > 0) {
             wire.size = n;
             voice_tx.push(wire);
@@ -951,6 +987,25 @@ public:
         replay_worker.join();
       return true;
     }
+    if (op == "test_stall") {
+      require(offline, "Offline-test mode required");
+      auto direction = request.at("direction").get<std::string>();
+      auto ms = request.value("milliseconds", 0u);
+      require(ms > 0 && ms <= 2000, "Invalid native stall duration");
+      if (direction == "media") {
+        auto &slot = *media[key_input(request.value("key", std::string("offline:media")))];
+        slot.stall = ms;
+        SetEvent(slot.wake);
+      } else if (direction == "capture") {
+        bridge_stall = ms;
+        SetEvent(bridge_wake);
+      } else if (direction == "voice") {
+        voice_stall = ms;
+        SetEvent(voice_wake);
+      } else
+        throw std::runtime_error("Unknown native worker");
+      return true;
+    }
     if (op == "test_hci_acl") {
       require(offline && !replaying, "Exclusive offline-test mode required");
       auto data = unhex(request.at("packet"));
@@ -1110,6 +1165,7 @@ public:
       api.bh_mix_continuity(mixer, id, enhance_audio,
                             call ? std::min(voice_buffer, 960u) : std::min(media_buffer, 1440u),
                             call ? 2880 : 5760);
+      api.bh_mix_timeline(mixer, id, enhance_audio ? (call ? BHT_VOICE : BHT_MEDIA) : BHT_GENERIC);
       return {{"index", id}, {"lease", media[id]->lease}};
     }
     if (op == "mix_remove") {
@@ -1334,6 +1390,12 @@ public:
           {"rebuffer_events", api.bh_mix_value(mixer, id, 10)},
           {"expanded_frames", api.bh_mix_value(mixer, id, 11)},
           {"accelerated_frames", api.bh_mix_value(mixer, id, 12)},
+          {"expired_frames", api.bh_mix_value(mixer, id, 13)},
+          {"gap_owner", api.bh_mix_value(mixer, id, 14)},
+          {"written_frames", api.bh_mix_value(mixer, id, 15)},
+          {"presented_frames", api.bh_mix_value(mixer, id, 16)},
+          {"callback_period_searches", api.bh_mix_value(mixer, id, 17)},
+          {"recovery_discarded_frames", api.bh_mix_value(mixer, id, 18)},
           {"drift_ppm", static_cast<int64_t>(api.bh_mix_value(mixer, id, 2)) - 1000}};
       if (pair.first.rfind("call:", 0) != 0)
         sources[pair.first]["media"] = media[id]->snapshot();
@@ -1350,7 +1412,10 @@ public:
           {"dropped_frames", api.bh_up_value(uplink, bus, 1)},
           {"drift_ppm", static_cast<int64_t>(api.bh_up_value(uplink, bus, 2)) - 1000},
           {"underruns", api.bh_up_value(uplink, bus, 3)},
-          {"prefill_frames", api.bh_up_value(uplink, bus, 4)}};
+          {"prefill_frames", api.bh_up_value(uplink, bus, 4)},
+          {"gap_owner", api.bh_up_value(uplink, bus, 14)},
+          {"expired_frames", api.bh_up_value(uplink, bus, 13)},
+          {"callback_period_searches", api.bh_up_value(uplink, bus, 17)}};
     return {{"version", version},
             {"native_runtime", true},
             {"quality",
@@ -1373,6 +1438,7 @@ public:
             {"microphone_frames", bridge_frames.load()},
             {"system_frames", system_frames.load()},
             {"bridge_errors", bridge_errors.load()},
+            {"injected_native_stalls", injected_stalls.load()},
             {"device_reopens", device_reopens.load()},
             {"uplink", up},
             {"voice",

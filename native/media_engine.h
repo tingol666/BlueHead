@@ -21,6 +21,7 @@ BH_MEDIA_API int bh_media_continuity(BhMedia *, int enabled);
 BH_MEDIA_API int bh_media_feed(BhMedia *, const uint8_t *, uint32_t size);
 BH_MEDIA_API uint32_t bh_media_read(BhMedia *, float *stereo, uint32_t frames);
 BH_MEDIA_API uint32_t bh_media_drain_mixer(BhMedia *, void *mixer, int index);
+BH_MEDIA_API uint32_t bh_media_drain_mixer_at(BhMedia *, void *mixer, int index, uint64_t arrival);
 BH_MEDIA_API void bh_media_discard(BhMedia *);
 /* 0 frames,1 wire bytes,2 coded bytes,3 codec errors,4 recoveries,5 RTP lost,
  * 6 synchronizing,7 queued frames,8 queue drops,9 malformed packets. */

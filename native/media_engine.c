@@ -4,6 +4,7 @@
  */
 #include "media_engine.h"
 #include "audio_continuity.h"
+#include "audio_timeline.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -16,6 +17,8 @@
 #define MAX_PACKET 65535u
 typedef struct Mixer Mixer;
 void bh_mix_write(Mixer *, int, const float *, uint32_t);
+void bh_mix_clear(Mixer *, int);
+void bh_mix_observe(Mixer *, int, uint64_t, uint64_t);
 struct BhMedia {
   int codec, rate, channels, output_rate, have_sequence, syncing;
   uint16_t sequence;
@@ -26,6 +29,9 @@ struct BhMedia {
       gap_fraction;
   uint64_t source_expected, source_decoded, pending_gap_after, missing_samples, timeline_resets;
   uint32_t pending_gap;
+  BhPacketClock packet_clock;
+  uint64_t packet_position, raw_position;
+  int mixer_reset;
   BhContinuity continuity;
   AVCodecContext *context;
   AVCodecParserContext *parser;
@@ -41,6 +47,7 @@ struct BhMedia {
   float converted[QUEUE * 2];
   uint32_t read, queued;
   uint64_t frames, bytes, coded, errors, recoveries, lost, dropped, malformed;
+  uint64_t direct_frames, converted_frames;
 };
 static int open_codec(BhMedia *m) {
   const char *names[] = {NULL, "sbc", "aac_latm", "aptx", "aptx_hd"};
@@ -104,6 +111,9 @@ BH_MEDIA_API int bh_media_restart(BhMedia *m) {
   m->have_timestamp = m->packet_timestamp_valid = m->have_ssrc = 0;
   m->source_expected = m->source_decoded = 0;
   m->pending_gap = m->gap_fraction = 0;
+  memset(&m->packet_clock, 0, sizeof(m->packet_clock));
+  m->packet_position = m->raw_position = 0;
+  m->mixer_reset = 1;
   bhc_reset(&m->continuity);
   reset_swr(m);
   if (m->parser) {
@@ -157,22 +167,27 @@ static void emit_gap(BhMedia *m) {
   m->missing_samples += frames;
 }
 static void timestamp_gap(BhMedia *m, uint32_t timestamp) {
+  m->packet_position = bht_packet(&m->packet_clock, timestamp, m->rate);
   m->packet_timestamp = timestamp;
   m->packet_timestamp_valid = 1;
   if (!m->continuity_enabled || !m->have_timestamp)
     return;
   int32_t missing = (int32_t)(timestamp - m->expected_timestamp);
-  if (missing <= 0)
-    return;
   /* Large seeks are stream discontinuities, not thousands of lost packets.
    * A bounded short continuation is enough; the renderer recovers separately. */
-  if ((uint32_t)missing > (uint32_t)m->rate / 5) {
+  if (missing > m->rate / 5 || missing < -m->rate / 5) {
+    /* A new packet sequence can legitimately seek backwards too. Reusing the
+     * old unwrap/parser/SRC state would freeze the source clock or emit audio
+     * retained from before the seek. Restart keeps LATM StreamMuxConfig. */
+    bh_media_restart(m);
     m->timeline_resets++;
-    m->have_timestamp = 0;
-    m->pending_gap = m->gap_fraction = 0;
-    m->source_expected = m->source_decoded;
+    m->packet_timestamp = timestamp;
+    m->packet_timestamp_valid = 1;
+    m->packet_position = bht_packet(&m->packet_clock, timestamp, m->rate);
     return;
   }
+  if (missing <= 0)
+    return;
   uint64_t scaled = (uint64_t)(uint32_t)missing * m->output_rate + m->gap_fraction;
   uint32_t frames = (uint32_t)(scaled / m->rate);
   m->gap_fraction = (uint32_t)(scaled % m->rate);
@@ -196,25 +211,48 @@ static int frame_pcm(BhMedia *m) {
   if (f->sample_rate != m->rate || f->nb_samples < 0 || f->nb_samples > 32768 ||
       f->ch_layout.nb_channels < 1 || f->ch_layout.nb_channels > 2)
     return -1;
-  if (!m->swr || f->format != m->swr_format ||
-      av_channel_layout_compare(&m->swr_layout, &f->ch_layout)) {
-    reset_swr(m);
-    AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
-    if (swr_alloc_set_opts2(&m->swr, &stereo, AV_SAMPLE_FMT_FLT, m->output_rate, &f->ch_layout,
-                            f->format, f->sample_rate, 0, NULL) < 0 ||
-        swr_init(m->swr) < 0)
-      return -1;
-    if (av_channel_layout_copy(&m->swr_layout, &f->ch_layout) < 0)
-      return -1;
-    m->swr_format = f->format;
-  }
-  int maximum = swr_get_out_samples(m->swr, f->nb_samples);
-  if (maximum < 0 || maximum > (int)QUEUE)
-    return -1;
   float *output = m->converted;
-  uint8_t *planes[] = {(uint8_t *)output};
-  int frames =
-      swr_convert(m->swr, planes, maximum, (const uint8_t **)f->extended_data, f->nb_samples);
+  int frames = -1;
+  enum AVSampleFormat packed = av_get_packed_sample_fmt(f->format);
+  if (m->output_rate == m->rate && f->ch_layout.nb_channels == 2 &&
+      (packed == AV_SAMPLE_FMT_FLT || packed == AV_SAMPLE_FMT_S16 || packed == AV_SAMPLE_FMT_S32)) {
+    /* The decoder already runs on the graph rate. Format conversion needs
+     * neither a resampler nor integer re-quantization. Preserve stereo and
+     * FFmpeg's mono rematrix policy by keeping the mono case on swresample. */
+    int planar = av_sample_fmt_is_planar(f->format);
+    frames = f->nb_samples;
+    for (int i = 0; i < frames; i++)
+      for (int ch = 0; ch < 2; ch++) {
+        const void *data = f->extended_data[planar ? ch : 0];
+        int at = planar ? i : i * 2 + ch;
+        output[i * 2 + ch] = packed == AV_SAMPLE_FMT_FLT ? ((const float *)data)[at]
+                             : packed == AV_SAMPLE_FMT_S16
+                                 ? ((const int16_t *)data)[at] / 32768.0f
+                                 : ((const int32_t *)data)[at] / 2147483648.0f;
+      }
+    m->direct_frames += frames;
+  } else {
+    if (!m->swr || f->format != m->swr_format ||
+        av_channel_layout_compare(&m->swr_layout, &f->ch_layout)) {
+      reset_swr(m);
+      AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
+      if (swr_alloc_set_opts2(&m->swr, &stereo, AV_SAMPLE_FMT_FLT, m->output_rate, &f->ch_layout,
+                              f->format, f->sample_rate, 0, NULL) < 0 ||
+          swr_init(m->swr) < 0)
+        return -1;
+      if (av_channel_layout_copy(&m->swr_layout, &f->ch_layout) < 0)
+        return -1;
+      m->swr_format = f->format;
+    }
+    int maximum = swr_get_out_samples(m->swr, f->nb_samples);
+    if (maximum < 0 || maximum > (int)QUEUE)
+      return -1;
+    uint8_t *planes[] = {(uint8_t *)output};
+    frames =
+        swr_convert(m->swr, planes, maximum, (const uint8_t **)f->extended_data, f->nb_samples);
+    if (frames > 0)
+      m->converted_frames += frames;
+  }
   if (frames >= 0) {
     for (int i = 0; i < frames * 2; i++)
       if (!isfinite(output[i]))
@@ -347,6 +385,8 @@ static int feed_packet(BhMedia *m, const uint8_t *data, uint32_t size) {
     if (size % 4)
       return invalid(m);
     m->coded += size;
+    m->packet_position = bht_scale(m->raw_position, m->rate, BHT_RATE);
+    m->raw_position += size; /* aptX stereo: four coded bytes represent four frames. */
     return chunk(m, data, size);
   }
   if (size < 12 || data[0] >> 6 != 2)
@@ -480,6 +520,19 @@ BH_MEDIA_API uint32_t bh_media_drain_mixer(BhMedia *m, void *mixer, int index) {
   }
   return total;
 }
+/* Producer receipt time and RTP position survive arbitrary decoder stalls.
+ * A reset is committed with its PCM, never ahead of a worker's session check. */
+BH_MEDIA_API uint32_t bh_media_drain_mixer_at(BhMedia *m, void *mixer, int index,
+                                              uint64_t arrival) {
+  if (!m || !mixer || index < 0)
+    return 0;
+  if (m->mixer_reset) {
+    bh_mix_clear(mixer, index);
+    m->mixer_reset = 0;
+  }
+  bh_mix_observe(mixer, index, m->packet_position, arrival);
+  return bh_media_drain_mixer(m, mixer, index);
+}
 BH_MEDIA_API uint64_t bh_media_value(BhMedia *m, int field) {
   if (!m)
     return 0;
@@ -508,6 +561,10 @@ BH_MEDIA_API uint64_t bh_media_value(BhMedia *m, int field) {
     return m->missing_samples;
   case 11:
     return m->timeline_resets;
+  case 12:
+    return m->direct_frames;
+  case 13:
+    return m->converted_frames;
   default:
     return 0;
   }

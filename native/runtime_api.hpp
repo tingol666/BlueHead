@@ -23,12 +23,16 @@ namespace bh {
   X( bh_mix_render, int, (void *, float *, uint32_t, float)) \
   X(bh_mix_write, void, (void *, int, const float *, uint32_t)) \
   X( bh_mix_write_s16_mono, void, (void *, int, const int16_t *, uint32_t)) \
+  X(bh_mix_write_f32_mono, void, (void *, int, const float *, uint32_t)) \
+  X(bh_mix_timeline, int, (void *, int, int)) \
+  X(bh_mix_observe, void, (void *, int, uint64_t, uint64_t)) \
   X(bh_mix_value, uint64_t, (void *, int, int)) \
   X(bh_media_create, BhMedia *, (int, int, int, int)) \
   X( bh_media_destroy, void, (BhMedia *)) \
   X(bh_media_restart, int, (BhMedia *)) \
   X(bh_media_feed, int, (BhMedia *, const uint8_t *, uint32_t)) \
   X(bh_media_drain_mixer, uint32_t, (BhMedia *, void *, int)) \
+  X(bh_media_drain_mixer_at, uint32_t, (BhMedia *, void *, int, uint64_t)) \
   X(bh_media_discard, void, (BhMedia *)) \
   X(bh_media_value, uint64_t, (BhMedia *, int)) \
   X( bh_up_create, void *, ()) \
@@ -39,11 +43,16 @@ namespace bh {
   X( bh_up_gain, void, (void *, float, float, float, int)) \
   X(bh_up_write, void, (void *, int, const uint8_t *, uint32_t)) \
   X(bh_up_read, int, (void *, uint8_t *, uint32_t)) \
+  X(bh_up_write_f32, int, (void *, int, const float *, uint32_t)) \
+  X(bh_up_read_f32, int, (void *, float *, uint32_t)) \
+  X(bh_up_observe, void, (void *, int, uint64_t, uint64_t)) \
   X(bh_up_value, uint64_t, (void *, int, int)) \
   X(bh_capture_create, void *, (uint32_t, uint32_t, uint32_t)) \
   X(bh_capture_free, void, (void *)) \
   X(bh_capture_push, int, (void *, const float *, uint32_t)) \
   X(bh_capture_read, int, (void *, int16_t *, uint32_t)) \
+  X(bh_capture_read_f32, int, (void *, float *, uint32_t)) \
+  X(bh_capture_clock, int, (void *, uint64_t *, uint64_t *)) \
   X(bh_mix_master_value, float, (void *))
 #define DEVICE_APIS(X) \
   X(bh_device_timing,uint64_t,(BhAudioDevice*,int)) \
@@ -60,19 +69,24 @@ namespace bh {
   X(bh_device_active, int, (BhAudioDevice *)) \
   X( bh_device_stats, int, (BhAudioDevice *, BhDeviceStats *)) \
   X(bh_device_read, int, (BhAudioDevice *, int16_t *, uint32_t)) \
+  X(bh_device_read_f32, int, (BhAudioDevice *, float *, uint32_t)) \
+  X(bh_device_clock, int, (BhAudioDevice *, uint64_t *, uint64_t *)) \
   X(bh_device_ready_event, void, (BhAudioDevice *, void *))
 #define VOICE_APIS(X) \
   X(bh_voice_create, bh_voice *, (uint32_t)) \
   X(bh_voice_destroy, void, (bh_voice *)) \
   X( bh_voice_encode, int, (bh_voice *, const int16_t *, uint32_t, uint8_t *, uint32_t)) \
+  X(bh_voice_encode_f32, int, (bh_voice *, const float *, uint32_t, uint8_t *, uint32_t)) \
   X(bh_voice_push_rx, int, (bh_voice *, const uint8_t *, uint32_t, uint32_t)) \
   X(bh_voice_read_pcm, uint32_t, (bh_voice *, int16_t *, uint32_t)) \
+  X(bh_voice_read_f32, uint32_t, (bh_voice *, float *, uint32_t)) \
   X(bh_voice_conceal, int, (bh_voice *, uint32_t)) \
   X(bh_voice_get_stats, int, (const bh_voice *, bh_voice_stats *, uint32_t))
 #define LOOP_APIS(X) \
   X(bh_loop_open, void *, (DWORD, DWORD *)) \
   X(bh_loop_read, int, (void *, float *, UINT)) \
   X(bh_loop_error, DWORD, (void *)) \
+  X(bh_loop_clock, int, (void *, uint64_t *, uint64_t *)) \
   X(bh_loop_close, int, (void *)) \
   X(bh_loop_ready_event, void, (void *, void *))
 #define CONTINUITY_APIS(X) \

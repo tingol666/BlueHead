@@ -51,6 +51,7 @@ API int bh_mix_render(Mixer *m, float *output, uint32_t count, float master) {
       bhq_source_clear(&s->quality);
     float gain = number(atomic_load(&s->gain)) * ((call >= 0 && call != i) ? .15f : 1);
     int enhanced = atomic_load_explicit(&s->continuity_mode, memory_order_acquire);
+    int framed = atomic_load_explicit(&s->gap_owner, memory_order_acquire) != BHT_GENERIC;
     uint64_t w = atomic_load_explicit(&s->write, memory_order_acquire),
              trim = atomic_load_explicit(&s->trim, memory_order_acquire);
     if (trim > w)
@@ -64,7 +65,11 @@ API int bh_mix_render(Mixer *m, float *output, uint32_t count, float master) {
       }
       s->history_count = 0;
       s->phase = s->drift = 0;
+      s->deadline_debt = 0;
       s->buffering = 1;
+      s->recover_late = 0;
+      s->adaptive_target = s->target;
+      s->adaptive_decay = 0;
       s->seen_epoch = epoch;
       s->starve_frames = s->deficit_frames = 0;
       uint64_t concealed = s->continuity.concealed, silent = s->continuity.silent,
@@ -76,6 +81,21 @@ API int bh_mix_render(Mixer *m, float *output, uint32_t count, float master) {
       s->continuity.merged = merged;
     }
     s->available = w - s->cursor;
+    if (framed && s->deadline_debt > 0) {
+      uint64_t expired = (uint64_t)s->deadline_debt;
+      if (expired > s->available)
+        expired = s->available;
+      s->cursor += expired;
+      s->available -= expired;
+      s->deadline_debt -= expired;
+      atomic_fetch_add(&s->expired, expired);
+      if (expired)
+        s->history_count = 0;
+      if (s->deadline_debt < 1) {
+        s->phase = s->deadline_debt;
+        s->deadline_debt = 0;
+      }
+    }
     uint32_t target = s->target;
     if (enhanced) {
       uint32_t floor = atomic_load(&s->continuity_min), ceiling = atomic_load(&s->continuity_max);
@@ -106,14 +126,24 @@ API int bh_mix_render(Mixer *m, float *output, uint32_t count, float master) {
     }
     if (s->buffering && s->available < observed_target) {
       atomic_fetch_add(&s->prefill, count);
+      atomic_fetch_add(&s->presentation, count);
       atomic_store_explicit(&s->read, s->cursor, memory_order_release);
       bhq_source(&s->quality, m->scratch, output, m->delayed, count, gain);
       atomic_fetch_sub(&s->readers, 1);
       continue;
     }
     if (s->buffering) {
-      s->clock_average = observed_target;
-      s->clock_correction = 1;
+      if (framed && s->recover_late && s->available > observed_target + count) {
+        uint64_t expired = s->available - observed_target;
+        s->cursor += expired;
+        s->available -= expired;
+        s->history_count = 0;
+        atomic_fetch_add(&s->expired, expired);
+        atomic_fetch_add(&s->recovery_discarded, expired);
+      }
+      s->deadline_debt = 0;
+      s->recover_late = 0;
+      bht_clock_reset(&s->clock, observed_target);
       s->drift = 0;
       if (enhanced && s->rendered) {
         s->continuity.gap = 960;
@@ -170,12 +200,17 @@ API int bh_mix_render(Mixer *m, float *output, uint32_t count, float master) {
     save_history(s, consumed);
     s->cursor += consumed;
     s->available -= consumed;
-    s->phase = s->available ? position - consumed : 0;
+    s->phase = (framed || s->available) ? position - consumed : 0;
     s->rendered += count;
+    atomic_fetch_add(&s->presentation, count);
     if (produced < count) {
       atomic_fetch_add(&m->underruns, 1);
       atomic_fetch_add(&s->underruns, 1);
       uint32_t missing = count - produced;
+      if (framed) {
+        s->deadline_debt += position - consumed + missing * ratio;
+        s->phase = 0;
+      }
       if (produced > prefix)
         s->starve_frames = 0;
       s->starve_frames += missing;
@@ -183,7 +218,22 @@ API int bh_mix_render(Mixer *m, float *output, uint32_t count, float master) {
       if (enhanced && s->continuity.count) {
         for (uint32_t j = produced; j < count; j++) {
           float value[2];
-          bhc_missing(&s->continuity, value);
+          if (framed && !s->continuity.gap)
+            s->continuity.lag = 0;
+          if (framed) {
+            // Codec/media workers own waveform prediction. A missed software
+            // presentation deadline only receives a short bounded envelope;
+            // no period search or second prediction runs on this callback.
+            bhc_prediction(&s->continuity, s->continuity.gap, value);
+            s->continuity.gap++;
+            s->continuity.concealed++;
+            if (fabsf(value[0]) + fabsf(value[1]) < 1e-10f)
+              s->continuity.silent++;
+          } else {
+            if (!s->continuity.gap)
+              atomic_fetch_add(&s->deadline_searches, 1);
+            bhc_missing(&s->continuity, value);
+          }
           float g = continuity_gate(s, gate_target);
           m->scratch[j * 2] = value[0] * g;
           m->scratch[j * 2 + 1] = value[1] * g;
@@ -194,6 +244,8 @@ API int bh_mix_render(Mixer *m, float *output, uint32_t count, float master) {
       if (!enhanced || s->starve_frames >= 960 || s->deficit_frames >= 960 ||
           !s->continuity.count) {
         s->buffering = 1;
+        s->recover_late = 1;
+        s->deadline_debt = 0;
         atomic_fetch_add(&s->rebuffers, 1);
       }
     } else {

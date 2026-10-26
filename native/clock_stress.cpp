@@ -1,5 +1,6 @@
 /* Offline 26-hour virtual PCM clock test. Apache-2.0. No device is opened. */
 #include "runtime_api.hpp"
+#include "audio_timeline.h"
 #include <fstream>
 #include <iostream>
 using namespace bh;
@@ -34,6 +35,8 @@ int wmain(int count, wchar_t **args) {
       require(c.input >= 0, "Input allocation failed");
       require(api.bh_mix_continuity(c.mixer, c.input, 1, 1440, 5760) == 0,
               "Continuity setup failed");
+      require(api.bh_mix_timeline(c.mixer, c.input, BHT_MEDIA) == 0,
+              "Presentation timeline setup failed");
       // Exact 1 kHz at 47976/48024 physical samples/s; 125 cycles per pattern.
       uint32_t period = i ? 6003 : 5997;
       c.pattern.resize(period);
@@ -69,6 +72,7 @@ int wmain(int count, wchar_t **args) {
                            {"drift_ppm", drift},
                            {"dropped_frames", dropped},
                            {"underruns", underruns},
+                           {"callback_period_searches", api.bh_mix_value(c.mixer, c.input, 17)},
                            {"queue_min", c.minimum == UINT64_MAX ? 0 : c.minimum},
                            {"queue_max", c.maximum},
                            {"tone_rms", rms},
@@ -104,6 +108,8 @@ int wmain(int count, wchar_t **args) {
           }
           double arrival =
               c.packet * .01 / (1 + c.ppm / 1000000.0) + .003 * std::sin(c.packet * 1.113);
+          api.bh_mix_observe(c.mixer, c.input, c.generated,
+                             origin + static_cast<uint64_t>(arrival * frequency()));
           write_at(c.mixer, c.input, c.input_pcm.data(), 480,
                    origin + static_cast<uint64_t>(arrival * frequency()));
           c.generated += 480;

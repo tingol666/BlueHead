@@ -11,7 +11,7 @@
 .venv\Scripts\python.exe tools/build_all_native.py
 .venv\Scripts\python.exe -m pytest tests -q --tb=short
 .venv\Scripts\python.exe -m ruff check bluehead tools tests launch.py engine_launch.py
-work/publish-desktop-211/BlueHead.exe --self-test C:\Temp\BlueHead-ui-211
+work/publish-desktop/BlueHead.exe --self-test C:\Temp\BlueHead-ui
 ```
 
 提交源码前运行 `tools/audit_sources.py --report work/source-audit.json`，同时验证 Git 索引与源码白名单一致。生成的 EXE/DLL 不属于 GitHub 源码，但完整包必须包含全部运行组件；这两个边界分别验证，不能通过精简源码把发布依赖遗漏。
@@ -35,8 +35,8 @@ Framework兼容层另有独立项目：
 
 ```powershell
 dotnet restore desktop/BlueHead.FrameworkChecks/BlueHead.FrameworkChecks.csproj --locked-mode
-dotnet run --project desktop/BlueHead.FrameworkChecks/BlueHead.FrameworkChecks.csproj -c Release --no-restore -- C:\Temp\BlueHead-framework-201
-work/publish-helper-201/BlueHead.DriverHelper.exe --self-test
+dotnet run --project desktop/BlueHead.FrameworkChecks/BlueHead.FrameworkChecks.csproj -c Release --no-restore -- C:\Temp\BlueHead-framework
+work/publish-helper/BlueHead.DriverHelper.exe --self-test
 ```
 
 FrameworkChecks仅操作自己的临时文件和子进程：Windows参数引用、UTF-8、退出事件竞态、job子树清理、原恢复hash、原子替换和目录逃逸。helper self-test只读枚举适配器，不能证明驱动更换恢复成功。UI截图明确标注演示数据，不表示真实手机已连接。

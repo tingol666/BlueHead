@@ -56,7 +56,7 @@ typedef struct MixRoute MixRoute;
 struct MixRoute {
   struct Mixer *owner;
   MixRoute *next;
-  uint32_t rate, lookahead, ramp;
+  uint32_t rate, lookahead, ramp, internal;
   double attack, release;
   BhRateKernel *kernel[INPUTS];
 };
@@ -67,7 +67,7 @@ typedef struct Mixer {
   atomic_uint master, clock_period, clock_limit;
   atomic_int call;
   atomic_uint enhanced;
-  atomic_uint native_formats;
+  atomic_uint native_formats, references, closing;
   atomic_ullong limited;
   BhMixQuality quality;
   double limited_total;
@@ -77,6 +77,7 @@ typedef struct Mixer {
   LARGE_INTEGER qpc_frequency;
   float sinc[PHASES + 1][TAPS];
 } Mixer;
+static void release_mixer(Mixer *m);
 static void route_history(Mixer *m, int index) {
   unsigned need = 32;
   for (MixRoute *r = m->routes; r; r = r->next)
@@ -101,19 +102,25 @@ static void release_kernel(BhRateKernel *kernel) {
   if (kernel && !--kernel->references)
     bhr_free(kernel);
 }
-API MixRoute *bh_mix_route_create(Mixer *m, uint32_t rate) {
+static MixRoute *route_create(Mixer *m, uint32_t rate, int internal) {
   if (!m || rate < 8000 || rate > 384000)
     return NULL;
   MixRoute *route = calloc(1, sizeof(*route));
   if (!route)
     return NULL;
   route->owner = m;
+  route->internal = !!internal;
   route->rate = rate;
   route->lookahead = (rate * 3u + 1999u) / 2000u;
   route->ramp = (rate + 199u) / 200u;
   route->attack = exp(-1. / (.00015 * rate));
   route->release = exp(-1. / (.070 * rate));
   EnterCriticalSection(&m->lifecycle);
+  if (atomic_load(&m->closing)) {
+    LeaveCriticalSection(&m->lifecycle);
+    free(route);
+    return NULL;
+  }
   for (int i = 0; i < INPUTS; i++) {
     route->kernel[i] = route_kernel(route, atomic_load(&m->input[i].source_rate));
     if (!route->kernel[i]) {
@@ -124,6 +131,8 @@ API MixRoute *bh_mix_route_create(Mixer *m, uint32_t rate) {
       return NULL;
     }
   }
+  if (!internal)
+    atomic_fetch_add(&m->references, 1);
   route->next = m->routes;
   m->routes = route;
   for (int i = 0; i < INPUTS; i++)
@@ -131,7 +140,9 @@ API MixRoute *bh_mix_route_create(Mixer *m, uint32_t rate) {
   LeaveCriticalSection(&m->lifecycle);
   return route;
 }
-/* Stop/join the endpoint callback before retiring its route. */
+API MixRoute *bh_mix_route_create(Mixer *m, uint32_t rate) { return route_create(m, rate, 0); }
+/* Stop/join the endpoint callback before retiring its route. The route retains
+ * its mixer storage even when an exception closes the external owner first. */
 API void bh_mix_route_free(MixRoute *route) {
   if (!route)
     return;
@@ -147,7 +158,10 @@ API void bh_mix_route_free(MixRoute *route) {
     route_history(m, i);
   }
   LeaveCriticalSection(&m->lifecycle);
+  int internal = route->internal;
   free(route);
+  if (!internal)
+    release_mixer(m);
 }
 API uint32_t bh_mix_route_latency(MixRoute *route) {
   if (!route)
@@ -204,6 +218,8 @@ API Mixer *bh_mix_create(void) {
   atomic_init(&m->clock_limit, bits(.0005f));
   atomic_init(&m->enhanced, 0);
   atomic_init(&m->native_formats, 0);
+  atomic_init(&m->references, 1);
+  atomic_init(&m->closing, 0);
   atomic_init(&m->limited, 0);
   bhq_reset_envelope(&m->quality);
   QueryPerformanceFrequency(&m->qpc_frequency);
@@ -270,7 +286,7 @@ API Mixer *bh_mix_create(void) {
       return NULL;
     }
   }
-  m->default_route = bh_mix_route_create(m, 48000);
+  m->default_route = route_create(m, 48000, 1);
   if (!m->default_route) {
     for (int i = 0; i < INPUTS; i++) {
       free(m->input[i].pcm);
@@ -282,9 +298,9 @@ API Mixer *bh_mix_create(void) {
   }
   return m;
 }
-/* Owner must stop/join its renderer and producers before freeing. */
-API void bh_mix_free(Mixer *m) {
-  if (!m)
+/* Final storage release follows all endpoint route leases. */
+static void release_mixer(Mixer *m) {
+  if (atomic_fetch_sub_explicit(&m->references, 1, memory_order_acq_rel) != 1)
     return;
   while (m->routes)
     bh_mix_route_free(m->routes);
@@ -294,6 +310,10 @@ API void bh_mix_free(Mixer *m) {
   }
   DeleteCriticalSection(&m->lifecycle);
   free(m);
+}
+API void bh_mix_free(Mixer *m) {
+  if (m && !atomic_exchange_explicit(&m->closing, 1, memory_order_acq_rel))
+    release_mixer(m);
 }
 /* Format boundaries retire only this source. Queue limits retain their time
  * duration and filter/ring allocation completes before publication. */

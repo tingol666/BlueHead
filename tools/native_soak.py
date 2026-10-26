@@ -59,6 +59,10 @@ def main():
     parser.add_argument("--jitter-ms", type=float, default=0)
     parser.add_argument("--clock-ppm", type=float, default=0)
     parser.add_argument("--gil-stall-ms", type=int, default=0)
+    parser.add_argument("--native-stall-ms", type=int, default=0)
+    parser.add_argument("--native-stall-direction", choices=("media", "voice", "capture"), default="media")
+    parser.add_argument("--bounded-stall-recovery", action="store_true",
+                        help="For <=20ms media stalls: require bounded gap/expiry and no rebuffer, rather than zero deadline gaps")
     parser.add_argument("--legacy-continuity", action="store_true",
                         help="Run the old buffering strategy inside the same native replay harness")
     parser.add_argument("--report", required=True, type=Path)
@@ -67,6 +71,10 @@ def main():
     args = parser.parse_args()
     if not 0 <= args.gil_stall_ms <= 10000:
         parser.error("GIL stall must be 0–10000 ms")
+    if not 0 <= args.native_stall_ms <= 1000:
+        parser.error("Native worker stall must be 0–1000 ms")
+    if args.bounded_stall_recovery and not (0 < args.native_stall_ms <= 20 and args.native_stall_direction == "media"):
+        parser.error("Bounded recovery profile requires a 1–20ms media worker stall")
     assets = args.assets.resolve()
     if args.snapshot:
         snapshot = args.snapshot.resolve()
@@ -79,7 +87,10 @@ def main():
     record = {"scope": "Offline native synthetic HCI/PCM endpoints; no USB/audio hardware opened",
               "started_utc": datetime.now(timezone.utc).isoformat(), "done": False,
               "native_sha256": {name: hashlib.sha256((assets / name).read_bytes()).hexdigest() for name in ASSETS},
-              "gil_stall_ms": args.gil_stall_ms, "gil_stalls": 0, "resources": {}}
+              "gil_stall_ms": args.gil_stall_ms, "gil_stalls": 0,
+              "native_stall_ms": args.native_stall_ms, "native_stall_direction": args.native_stall_direction,
+              "native_stalls": 0,
+              "validation_profile": "bounded_media_stall_recovery" if args.bounded_stall_recovery else "zero_deadline_gaps", "resources": {}}
     save(report, record)
     started = time.monotonic()
     power = C.WinDLL("kernel32").SetThreadExecutionState
@@ -93,6 +104,7 @@ def main():
                            legacy_continuity=args.legacy_continuity)
             minimum = maximum = baseline = None
             next_stall = started + 15
+            next_native_stall = started + 22
             while True:
                 current = client.request("test_replay_status")
                 native = client.request("snapshot")
@@ -118,9 +130,32 @@ def main():
                     C.PyDLL("kernel32").Sleep(args.gil_stall_ms)
                     record["gil_stalls"] += 1
                     next_stall = time.monotonic() + 15
+                if args.native_stall_ms and time.monotonic() >= next_native_stall:
+                    client.request("test_stall", direction=args.native_stall_direction, milliseconds=args.native_stall_ms)
+                    record["native_stalls"] += 1
+                    next_native_stall = time.monotonic() + 15
                 time.sleep(min(5, max(.05, args.seconds - current.get("elapsed_seconds", 0))))
             failures = {name: current.get(name, 0) for name in ("codec_errors", "compressed_queue_drops", "dropped_frames", "underruns")
                         if current.get(name, 0)}
+            if args.bounded_stall_recovery:
+                # A deliberately blocked decoder plus a lost AAC packet can
+                # cross the presentation deadline even with a healthy USB
+                # owner. The contract is finite recovery without replaying
+                # expired PCM, not fabricating the original missing signal.
+                sources = native.get("sources", {}).values()
+                counters = {key: sum(source.get(key, 0) for source in sources) for key in
+                            ("concealed_frames", "expired_frames", "rebuffer_events", "callback_period_searches")}
+                budget = record["native_stalls"] * (args.native_stall_ms + 20) * 48
+                bounded = (counters["concealed_frames"] <= budget and counters["expired_frames"] <= budget
+                           and abs(counters["concealed_frames"]-counters["expired_frames"]) <= 2*len(native.get("sources", {}))
+                           and counters["rebuffer_events"] == counters["callback_period_searches"] == 0
+                           and current.get("maximum_zero_run_ms", 0) <= args.native_stall_ms + 10)
+                record["stall_recovery"] = dict(counters, budget_frames=budget, passed=bounded,
+                                                deadline_gap_events=current.get("underruns", 0))
+                if bounded:
+                    failures.pop("underruns", None)
+                else:
+                    failures["unbounded_stall_recovery"] = 1
             record["passed"] = not failures
             record["failures"] = failures
     except BaseException as error:

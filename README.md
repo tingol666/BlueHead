@@ -4,7 +4,7 @@
 
 BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free endpoint for Windows. Listen to a mobile device on your computer and send the computer's microphone back over Bluetooth. No shared Wi-Fi or mobile companion app is required.
 
-**2.1.2**：补齐 Intel AX211 在专用驱动下重启后的固件自动初始化，并完善系统蓝牙恢复引导；延续原生音频时间线、float 音频链路和分级异常恢复。
+**2.1.2**：保留高采样率原生 PCM，合并必要重采样与时钟匹配，减少语音重复转换；补齐 LDAC 的有限恢复窗口，并修复 Intel AX211 重启后的固件初始化与系统蓝牙恢复。
 
 [下载已发布稳定版](https://github.com/tingol666/BlueHead/releases/latest) · [使用指南](docs/UI_GUIDE.md) · [构建源码](docs/BUILDING.md) · [验证范围](docs/TESTING.md) · [报告问题](https://github.com/tingol666/BlueHead/issues)
 
@@ -54,7 +54,7 @@ Intel AX211 在电脑重启或断电后需要重新加载运行固件。2.1.2 �
 | 功能 | 实现及限制 |
 |---|---|
 | 媒体 | A2DP：SBC、AAC、aptX、aptX HD，以双方实际协商为准 |
-| LDAC | 实验性、默认关闭，使用非 Sony 认证解码器 |
+| LDAC | 实验性、默认关闭；支持原生 44.1/48/88.2/96 kHz PCM，使用非 Sony 认证解码器 |
 | 双向语音 | HFP：CVSD 8 kHz、mSBC 16 kHz、LC3-SWB 32 kHz；一次一个语音来源 |
 | iPhone / iPad | 标准 AAC/SBC 媒体与 HFP 双向语音，配合 AVRCP 媒体信息和播放控制 |
 | Android / HarmonyOS | 取决于系统、设备和应用实际开放的 profile、编码与麦克风路由，不以系统名称保证全部功能 |
@@ -66,13 +66,15 @@ Intel AX211 在电脑重启或断电后需要重新加载运行固件。2.1.2 �
 
 AVRCP 的标准设备音量为 0%–100%，与本地 0%–200% 接收增益独立。卡片“详情”显示标准音量，远端调整后会影响实际接收声音，但不会把本地 175% 等增益改写为标准音量。
 
+想保留 96 kHz LDAC 的原采样率，请将 Windows 播放端点的共享格式设为 96 kHz；端点为 48 kHz 时会做必要的抗混叠转换。软件 PCM／端点路径另验证到 384 kHz，实际来源和设备能力决定可用格式。音质契约见 [保真设计与验证](docs/AUDIO_FIDELITY.md)。
+
 默认初始媒体缓冲 60 ms、语音 30 ms，运行中按抖动调整目标，并对短缺口补偿及恢复做平滑处理。这些缓冲值**不是端到端延迟实测值**。原生化旨在减少分配、调度和资源依赖；本版不承诺未经测量的延迟或 CPU 改善数值。没有声学回声消除，外放时实体麦克风仍会拾到声音，建议使用电脑耳机。
 
 ## 技术栈与源码
 
 2.1.2 由独立 `BlueHead.Runtime.exe` 统一持有 USB/HCI、启动固件初始化、媒体解码、SCO 双向收发、PCM 桥接、混音、重采样和 WASAPI 音频流。已经建立的专用接收音频在 C/C++ 中持续运行，PCM 不经过 Python 或界面。Python 3.13 保留 Bumble 的配对、SDP、AVDTP/AVRCP、HFP 协商和应用控制；新连接、重新协商及部分控制操作仍需要它运行。
 
-运行时不再依赖 PyAV、NumPy 或 sounddevice。原生组件包括音频专用 FFmpeg、SpeexDSP、miniaudio、liblc3，以及可独立替换的 SpanDSP PLC 动态库。界面仍为 C#/WPF，不裁剪 WPF/COM。
+运行时不再依赖 PyAV、NumPy 或 sounddevice。原生组件包括音频专用 FFmpeg、单次异步采样率转换、兼容 SpeexDSP、miniaudio、liblc3，以及可独立替换的 SpanDSP PLC 动态库。界面仍为 C#/WPF，不裁剪 WPF/COM。
 
 ```text
 bluehead/    蓝牙信令、会话；native_control/ 为控制接口

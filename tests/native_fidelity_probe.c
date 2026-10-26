@@ -1,6 +1,32 @@
 /* Offline-only access to the production fractional-delay kernel.
  * Never linked into a product binary; no audio or USB endpoints are opened. */
+#include <stdlib.h>
+#include <stdatomic.h>
+static atomic_llong live_allocations;
+static atomic_int allocation_budget = -1;
+static void *tracked_calloc(size_t count, size_t size) {
+  int budget = atomic_load(&allocation_budget);
+  if (budget == 0)
+    return NULL;
+  if (budget > 0)
+    atomic_fetch_sub(&allocation_budget, 1);
+  void *pointer = calloc(count, size);
+  if (pointer)
+    atomic_fetch_add(&live_allocations, 1);
+  return pointer;
+}
+static void tracked_free(void *pointer) {
+  if (pointer)
+    atomic_fetch_sub(&live_allocations, 1);
+  free(pointer);
+}
+#define calloc tracked_calloc
+#define free tracked_free
 #include "../native/audio/audio_mixer.c"
+#undef calloc
+#undef free
+API void bh_test_fail_allocation_after(int count) { atomic_store(&allocation_budget, count); }
+API long long bh_test_live_allocations(void) { return atomic_load(&live_allocations); }
 API int bh_test_fractional_response(Mixer *m, double normalized_frequency, double fraction,
                                     double *real, double *imaginary) {
   if (!m || !real || !imaginary || normalized_frequency < 0 || normalized_frequency >= .5 ||

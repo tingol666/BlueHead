@@ -1,10 +1,10 @@
-# 构建 BlueHead 2.0.1
+# 构建 BlueHead 2.1.2
 
 目标：Windows 11 x64。本文说明源码构建、检查和发布打包流程；构建脚本不会自动更换驱动、连接移动设备或发布GitHub Release。
 
 ## 安装目录与1.x迁移限制
 
-2.0.1安装器仅支持新建或已经为空的目标目录，默认`%LocalAppData%\Programs\BlueHead-2`。目录页离开时及真正写入前都会检查，已有文件、子目录、不可检查或重解析目标均拒绝，不递归清理，不按旧manifest删除文件。这样避免1.x现代.NET、PyAV/NumPy等组件残留进2.0。**覆盖升级、修复安装及后续2.x原地升级目前均不支持。**
+2.1.2安装器仅支持新建或已经为空的目标目录，默认`%LocalAppData%\Programs\BlueHead-2`。目录页离开时及真正写入前都会检查，已有文件、子目录、不可检查或重解析目标均拒绝，不递归清理，不按旧manifest删除文件。这样避免1.x现代.NET、PyAV/NumPy等组件残留进2.0。**覆盖升级、修复安装及后续2.x原地升级目前均不支持。**
 
 使用1.x安装版时，先备份`%LocalAppData%\BlueHead\data`、从托盘退出，并在安装2.0前完成旧版卸载。旧卸载器会按提示恢复系统蓝牙，因此由使用者安排该真实驱动步骤；不要安装2.0后再运行旧卸载器。安装版的配对/设置仍使用原全局目录和格式，不因换程序目录而自动迁移或删除。已有便携1.2.4无需卸载，可原样保留回退；绿色2.0同样解压到新空目录，在两版均完全退出后再备份/复制原`data`，不同时运行。后续更换安装版也应先退出、备份并卸载旧安装，再选新空目录。
 
@@ -65,8 +65,8 @@ $env:DOTNET_CLI_HOME = Join-Path $PWD 'work/dotnet-home'
 $env:NUGET_PACKAGES = Join-Path $PWD 'work/nuget'
 dotnet restore desktop/BlueHead.Desktop/BlueHead.Desktop.csproj --locked-mode
 dotnet restore desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj --locked-mode
-dotnet publish desktop/BlueHead.Desktop/BlueHead.Desktop.csproj -c Release --no-restore -o work/publish-desktop-201
-dotnet publish desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj -c Release --no-restore -o work/publish-helper-201
+dotnet publish desktop/BlueHead.Desktop/BlueHead.Desktop.csproj -c Release --no-restore -o work/publish-desktop-212
+dotnet publish desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj -c Release --no-restore -o work/publish-helper-212
 ```
 
 不能传`--self-contained`、现代.NET运行时RID或trimming参数。所有项目固定x64/Prefer32Bit=false；保留生成的exe.config、所需NuGet依赖及native DLL。官方net48 reference assemblies仅用于编译，不进入运行包。WPF/WinForms/COM使用目标Windows自带的Framework，不通过手工删DLL瘦身。
@@ -78,14 +78,14 @@ dotnet publish desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj -c Rel
 ```powershell
 .venv\Scripts\python.exe -m pytest tests -q --tb=short
 .venv\Scripts\python.exe -m ruff check bluehead tools tests launch.py engine_launch.py
-.venv\Scripts\python.exe tools/build_release.py --output ..\releases\2.0.1
+.venv\Scripts\python.exe tools/build_release.py --output ..\releases\2.1.2
 ```
 
 构建输出需使用新目录，不能覆盖运行中的日常程序。原生时钟长测、频率/幅度门槛和逐用例JSON的复现命令见[AUDIO_CORE.md](AUDIO_CORE.md)；它们使用虚拟时间及真实DLL，不打开声卡或蓝牙。依赖清点、离线后台自检、微基准与需使用者安排的硬件探针，其运行范围见[DIAGNOSTICS.md](DIAGNOSTICS.md)。完整验收矩阵见[TESTING.md](TESTING.md)。
 
 ### 必须先写同版本VALIDATION
 
-`build_release.py`生成程序目录后、运行`finalize_release.py`前，必须在同版本发布目录创建`VALIDATION.md`，本例为`..\releases\2.0.1\VALIDATION.md`。它必须记录此次实际执行的结果，不能复制历史通过数量，也不能把待做的实机检查写成通过：
+`build_release.py`生成程序目录后、运行`finalize_release.py`前，必须在同版本发布目录创建`VALIDATION.md`，本例为`..\releases\2.1.2\VALIDATION.md`。它必须记录此次实际执行的结果，不能复制历史通过数量，也不能把待做的实机检查写成通过：
 
 - 发布版本、源码修订/工作区状态、构建时间、目标系统和实际工具链版本。
 - 完整回归、Ruff、Framework兼容层、纯UI、独立helper只读检查，以及冻结后台离线检查的命令、结果和报告位置；未运行项明确标注。
@@ -95,7 +95,7 @@ dotnet publish desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj -c Rel
 对完整包运行适用的离线检查，确认验证记录与该包一致，再执行最终归档：
 
 ```powershell
-.venv\Scripts\python.exe tools/finalize_release.py ..\releases\2.0.1 --nsis 'C:\Program Files (x86)\NSIS\makensis.exe'
+.venv\Scripts\python.exe tools/finalize_release.py ..\releases\2.1.2 --nsis 'C:\Program Files (x86)\NSIS\makensis.exe'
 ```
 
 最终打包生成安装EXE、Portable ZIP、Source ZIP、`SHA256SUMS.txt`与验证说明；`finalize_release.py`检查`VALIDATION.md`存在，并把它放进绿色版。更改程序或验证记录后须重新归档，保持内外记录及摘要一致。存在记录本身不表示其中所有场景都已实测，最终大小、校验和和检查数量以对应产物和报告为准。

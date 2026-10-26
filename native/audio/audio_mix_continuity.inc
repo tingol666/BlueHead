@@ -241,6 +241,9 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
       m->scratch[produced * 2] = value[0] * g;
       m->scratch[produced * 2 + 1] = value[1] * g;
     }
+    double nearest = nearbyint(position);
+    if (fabs(position - nearest) < 1e-9)
+      position = nearest; // Remove only floating accumulation dust at exact rational boundaries.
     uint32_t consumed = (uint32_t)position;
     if (consumed > s->available)
       consumed = (uint32_t)s->available;
@@ -335,6 +338,13 @@ API int bh_mix_render_route(MixRoute *route, float *output, uint32_t count, floa
     return -1;
   unsigned environment = bh_float_enter();
   Mixer *m = route->owner;
+  if (atomic_load_explicit(&m->closing, memory_order_acquire)) {
+    bh_float_leave(environment);
+    if (!output || count > CAPACITY)
+      return -1;
+    memset(output, 0, count * 2 * sizeof(float));
+    return 0;
+  }
   int result =
       route->rate == BHT_RATE && !atomic_load(&m->enhanced) && !atomic_load(&m->native_formats)
           ? render_legacy(m, output, count, master)

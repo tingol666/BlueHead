@@ -29,7 +29,7 @@ work/publish-desktop/BlueHead.exe --self-test C:\Temp\BlueHead-ui
 | UI | 原紧凑两行、默认尺寸/DPI、实时状态、热切换确认、音量/静音、AVRCP22px行、未知状态禁用、正确LC3-SWB名称 |
 | 包 | 版本一致性、DLL导入、无运行时PyAV/NumPy/sounddevice、无自包含coreCLR、必需恢复文件及许可证完整 |
 
-`tests/test_audio_device.py`的native callback harness不初始化音频设备。它在内存中验证真实DLL、Speex转换、采集队列与释放顺序；卡住控制线程的检查在独立进程中退出。只读inventory可以枚举端点，但不等同声音测试。
+`tests/test_audio_device.py`的native callback harness不初始化音频设备。它在内存中验证真实 DLL、原生 ASRC／兼容 Speex 转换、采集队列与释放顺序；卡住控制线程的检查在独立进程中退出。只读inventory可以枚举端点，但不等同声音测试。
 
 Framework兼容层另有独立项目：
 
@@ -84,7 +84,7 @@ FrameworkChecks仅操作自己的临时文件和子进程：Windows参数引用�
 
 ## 2.1.2 启动与驱动恢复验证
 
-本次不改持续音频链路，针对 Intel 冷／热启动、固件完整性、USB 生命周期、可取消等待、驱动恢复状态机、界面和打包做必要验证。
+启动阶段针对 Intel 冷／热启动、固件完整性、USB 生命周期、可取消等待及驱动恢复状态机验证。随后的音质专项另覆盖原生采样率、单次转换、量化边界、事件窗口、时钟与原生所有权；两类证据分别记录。
 `tests/test_intel_firmware.py` 使用离线 USB DLL 运行实际 C++ 所有者，未连接真实蓝牙；
 `tests/test_startup.py` 验证固件加载中停止／取消与初始化错误传播；FrameworkChecks 区分已绑定、已就绪、需设备重启和需电脑重启。
 完整重启和驱动切换不作为自动回归的隐含副作用。

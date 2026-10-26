@@ -18,15 +18,16 @@ public sealed class EngineClient : IDisposable
     public bool Ready { get; private set; }
     public async Task StartAsync(string dataDirectory)
     {
-        var packaged = Path.Combine(AppContext.BaseDirectory, "engine", "BlueHead.Engine.exe");
+        var packaged = Path.Combine(AppContext.BaseDirectory, "engine", "BlueHead.Runtime.exe");
         var root = Environment.GetEnvironmentVariable("BLUEHEAD_SOURCE_ROOT");
         ProcessStartInfo info;
         if (File.Exists(packaged)) info = new(packaged);
         else if (root != null && File.Exists(Path.Combine(root, "launch.py")))
         {
-            info = new(Path.Combine(root, ".venv", "Scripts", "python.exe"));
-            info.AddArgument("-X"); info.AddArgument("utf8");
-            info.AddArgument(Path.Combine(root, "launch.py"));
+            var runtime = Path.Combine(root, "bluehead", "assets", "BlueHead.Runtime.exe");
+            if (!File.Exists(runtime)) throw new FileNotFoundException($"请先构建 {AppVersion.Number} 原生音频后台。");
+            info = new(runtime);
+            info.AddArgument("--source-root"); info.AddArgument(root);
         }
         else throw new FileNotFoundException("找不到蓝牙后台，请重新解压完整安装包。");
         info.AddArgument("--engine"); info.AddArgument("--data-dir"); info.AddArgument(dataDirectory);

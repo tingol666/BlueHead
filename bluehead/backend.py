@@ -247,7 +247,10 @@ class MediaSession:
 class Receiver:
     def __init__(self, settings, directory: Path, emit, mixer=None):
         self.settings, self.directory, self.emit = settings, directory, emit
-        self.mixer = mixer or Mixer(buffer_ms=settings.buffer_ms, call_buffer_ms=settings.call_buffer_ms)
+        from .native_runtime import current, RemoteMixer
+        client = current() if mixer is None and settings.mode == "advanced" else None
+        self.mixer = mixer or (RemoteMixer(client, settings.buffer_ms, settings.call_buffer_ms) if client else
+                               Mixer(buffer_ms=settings.buffer_ms, call_buffer_ms=settings.call_buffer_ms))
         self.sessions = {}
         self.connections = {}
         self.media_sinks = {}
@@ -290,6 +293,9 @@ class Receiver:
         self.listener = listener
         if self.settings.calls:
             from .calls import CallManager
+            if getattr(self.mixer, "remote", False):
+                from .native_calls import NativeCallManager
+                CallManager = NativeCallManager
             self.calls = CallManager(device, self.mixer, self.emit, self.settings.input_device)
             self.calls.router.muted = self.settings.microphone_muted
             self.calls.router.microphone_gain = self.settings.microphone_gain
@@ -566,7 +572,11 @@ class Receiver:
         old = self.sessions.pop(key, None)
         if old:
             old.close()
-        session = MediaSession(key, self.mixer, self.emit, lambda: self.competing_with(key))
+        factory = MediaSession
+        if getattr(self.mixer, "remote", False):
+            from .native_runtime import RemoteMediaSession
+            factory = RemoteMediaSession
+        session = factory(key, self.mixer, self.emit, lambda: self.competing_with(key))
         self.sessions[key] = session
         self.update_media_gates()
         codecs = self.media_codecs()
@@ -578,29 +588,69 @@ class Receiver:
                 try:
                     fmt = negotiated(codec, config)
                     # Verify decoder construction before accepting a stream.
-                    check = await asyncio.to_thread(Decoder, fmt, self.mixer.rate)
+                    if getattr(self.mixer, "remote", False):
+                        await asyncio.to_thread(session.configure, fmt)
+                        check = None
+                    else:
+                        check = await asyncio.to_thread(Decoder, fmt, self.mixer.rate)
                 except Exception:
                     return avdtp.Set_Configuration_Reject(
                         avdtp.AVDTP_MEDIA_CODEC_SERVICE_CATEGORY,
                         avdtp.AVDTP_UNSUPPORTED_CONFIGURATION_ERROR,
                     )
                 if session.closed:
-                    check.close()
+                    if check:
+                        check.close()
                     return avdtp.Set_Configuration_Reject(
                         avdtp.AVDTP_MEDIA_CODEC_SERVICE_CATEGORY,
                         avdtp.AVDTP_UNSUPPORTED_CONFIGURATION_ERROR,
                     )
-                session.configure(fmt, check)
+                if not getattr(self.mixer, "remote", False):
+                    session.configure(fmt, check)
                 return await original(config)
 
             sink.on_set_configuration_command = configure
+            reconfigure_original = sink.on_reconfigure_command
+
+            async def reconfigure(config, codec=codec, original=reconfigure_original, endpoint=sink):
+                config = list(config)
+                try:
+                    fmt = negotiated(codec, config)
+                    response = await original(config)
+                    if response is not None:
+                        return response
+                    if getattr(self.mixer, "remote", False):
+                        await asyncio.to_thread(session.configure, fmt)
+                    else:
+                        check = await asyncio.to_thread(Decoder, fmt, self.mixer.rate)
+                        if session.closed:
+                            check.close()
+                            raise ValueError("Expired media session")
+                        session.configure(fmt, check)
+                    if session.closed:
+                        raise ValueError("Expired media session")
+                except Exception:
+                    return avdtp.Reconfigure_Reject(avdtp.AVDTP_MEDIA_CODEC_SERVICE_CATEGORY,
+                                                  avdtp.AVDTP_UNSUPPORTED_CONFIGURATION_ERROR)
+                endpoint.configuration = [c for c in endpoint.configuration if not isinstance(c, avdtp.MediaCodecCapabilities)] + [c for c in config if isinstance(c, avdtp.MediaCodecCapabilities)]
+                return None
+
+            sink.on_reconfigure_command = reconfigure
             # aptX classic uses raw AVDTP media; other formats carry RTP.
             sink.on_avdtp_packet = session.push
+            if getattr(self.mixer, "remote", False):
+                def bind(sink=sink):
+                    if sink.stream and sink.stream.rtp_channel:
+                        session.bind(sink.stream.rtp_channel)
+                sink.on("rtp_channel_open", bind)
+                sink.on("rtp_channel_close", session.unbind)
             sink.on("start", lambda sink=sink: self.media_started(key, sink, session))
             sink.on("suspend", lambda: self.media_paused(key, session))
             sink.on("close", lambda: self.media_paused(key, session, True))
             sink.on("abort", lambda: self.media_paused(key, session, True))
             sink.on("rtp_channel_close", lambda: self.media_paused(key, session, True))
+        if getattr(self.mixer, "remote", False):
+            protocol.on("close", session.unbind)
         protocol.on("close", lambda: self.media_paused(key, session, True))
 
     async def advertise(self):
@@ -627,7 +677,8 @@ class Receiver:
         watchdog = LoopWatchdog()
         watchdog.start()
         try:
-            lease.acquire()
+            if not getattr(self.mixer, "remote", False):
+                lease.acquire()
             async with await open_transport(transport_spec) as transport:
                 config = DeviceConfiguration()
                 config.name = self.settings.name
@@ -639,7 +690,11 @@ class Receiver:
                 # Numeric comparison is not meaningful on a headset; pair on the phone.
                 device.pairing_config_factory = lambda _: PairingConfig(mitm=False)
                 self.attach(device)
-                self.output = AudioOutput(self.mixer, self.settings.output_device)
+                output_factory = AudioOutput
+                if getattr(self.mixer, "remote", False):
+                    from .native_runtime import RemoteOutput
+                    output_factory = RemoteOutput
+                self.output = output_factory(self.mixer, self.settings.output_device)
                 self.output.start()
                 await device.power_on()
                 from .discovery import update_inquiry_power

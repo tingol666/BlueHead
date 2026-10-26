@@ -74,7 +74,7 @@ with os.add_dll_directory(str(assets)):
             raise RuntimeError("Unexpected runtime FFmpeg license")
 (root / "ffmpeg-build.json").write_text(json.dumps(library_records, indent=2), "utf-8")
 for folder, names in {"miniaudio": ["LICENSE"], "speexdsp": ["COPYING"], "liblc3": ["LICENSE"], "pipewire-rate-control": ["LICENSE"],
-                      "spandsp-plc": ["COPYING", "AUTHORS"]}.items():
+                      "nlohmann-json": ["LICENSE.MIT"], "spandsp-plc": ["COPYING", "AUTHORS"]}.items():
     destination = licenses / folder
     destination.mkdir(exist_ok=True)
     for name in names:

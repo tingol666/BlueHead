@@ -53,6 +53,7 @@ struct BhAudioDevice {
     int initialized, offline, offline_active;
     atomic_ullong callbacks, frames, errors, max_ticks, notifications;
     LARGE_INTEGER frequency;
+    atomic_uintptr_t ready_event;
 };
 static void set_error(int *error, int value) { if (error) *error = value; }
 static int ensure_context(BhDeviceContext *context) {
@@ -122,6 +123,10 @@ static void process_audio(BhAudioDevice *stream, const float *input, float *outp
         at += take;
     }
     atomic_fetch_add_explicit(&stream->callbacks, 1, memory_order_relaxed); atomic_fetch_add_explicit(&stream->frames, count, memory_order_relaxed);
+    if (stream->direction == BH_CAPTURE) {
+        HANDLE ready = (HANDLE)atomic_load_explicit(&stream->ready_event, memory_order_acquire);
+        if (ready) SetEvent(ready);
+    }
     QueryPerformanceCounter(&after); record_max(&stream->max_ticks, after.QuadPart-before.QuadPart);
 }
 static void on_data(ma_device *device, void *output, const void *input, ma_uint32 count) {
@@ -137,6 +142,7 @@ static BhAudioDevice *allocate_stream(BhDeviceContext *context, uint32_t directi
     BhAudioDevice *stream = calloc(1, sizeof(*stream)); if (!stream) return NULL;
     stream->owner = context; stream->direction = direction; QueryPerformanceFrequency(&stream->frequency);
     atomic_init(&stream->callbacks, 0); atomic_init(&stream->frames, 0); atomic_init(&stream->errors, 0);
+    atomic_init(&stream->ready_event, 0);
     atomic_init(&stream->max_ticks, 0); atomic_init(&stream->notifications, 0); return stream;
 }
 static int create_state(BhAudioDevice *stream, void *mixer) {
@@ -247,4 +253,9 @@ BH_DEVICE_API BhAudioDevice *bh_device_offline(BhDeviceContext *context, uint32_
 BH_DEVICE_API int bh_device_offline_process(BhAudioDevice *stream, const float *input, float *output, uint32_t frames) {
     if (!stream || !stream->offline || frames > MAX_FRAMES || (stream->direction == BH_PLAYBACK && !output)) return MA_INVALID_ARGS;
     process_audio(stream, input, output, frames); return MA_SUCCESS;
+}
+
+/* Borrowed event: owner keeps it alive until bh_device_close joins callbacks. */
+BH_DEVICE_API void bh_device_ready_event(BhAudioDevice *stream, void *event) {
+    if (stream) atomic_store_explicit(&stream->ready_event, (uintptr_t)event, memory_order_release);
 }

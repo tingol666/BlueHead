@@ -22,7 +22,7 @@ REQUIRED_LICENSES = {
     "libwdi/COPYING-LGPL", "libusb/COPYING", "spandsp-plc/COPYING", "miniaudio/LICENSE",
     "speexdsp/COPYING", "liblc3/LICENSE", "pipewire-rate-control/LICENSE", "gcc-runtime/COPYING.RUNTIME",
     "winpthreads/COPYING", "dotnet/LICENSE.TXT", "wpf-ui/LICENSE.md", "wpf-ui-abstractions/LICENSE.md",
-    "libldacdec-MIT.txt",
+    "libldacdec-MIT.txt", "nlohmann-json/LICENSE.MIT",
 }
 
 
@@ -83,6 +83,13 @@ def audit(package):
             native_hashes[path.relative_to(package).as_posix()] = matches_asset
             if not matches_asset:
                 fail("native_asset_hashes", path.relative_to(package).as_posix(), "Differs from the source native asset")
+
+    runtime = package / "app/engine/BlueHead.Runtime.exe"
+    runtime_matches = by_name.get("bluehead.runtime.exe", [])
+    if runtime_matches != [runtime]:
+        fail("native_runtime", "BlueHead.Runtime.exe", "Expected one native owner at app/engine")
+    elif digest(runtime) != digest(ROOT / "bluehead/assets/BlueHead.Runtime.exe"):
+        fail("native_runtime", "BlueHead.Runtime.exe", "Native runtime differs from the source asset")
 
     windows = Path(os.environ.get("SystemRoot", r"C:\Windows"))
     system = (windows / "System32", windows)

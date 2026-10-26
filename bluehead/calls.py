@@ -130,10 +130,10 @@ class Microphone(SwitchableStream):
 
 
 class CallManager:
-    def __init__(self, device, mixer, emit, input_device=None):
+    def __init__(self, device, mixer, emit, input_device=None, *, router=None):
         self.device, self.mixer, self.emit = device, mixer, emit
         self.input_device = input_device
-        self.router = CallRouter()
+        self.router = router if router is not None else CallRouter()
         self.protocols, self.links, self.tasks = {}, {}, set()
         self.connections, self.clients, self.control_ready, self.control_locks = {}, {}, {}, {}
         self.closed = False

@@ -16,6 +16,8 @@ BH_MEDIA_API BhMedia *bh_media_create(int codec, int rate, int channels, int out
 BH_MEDIA_API void bh_media_destroy(BhMedia *);
 /* Keep AAC StreamMuxConfig on resume; discard queued PCM and packet fragments. */
 BH_MEDIA_API int bh_media_restart(BhMedia *);
+/* Optional 2.0.1 RTP timeline gap fill; configure on the decoder owner. */
+BH_MEDIA_API int bh_media_continuity(BhMedia *, int enabled);
 BH_MEDIA_API int bh_media_feed(BhMedia *, const uint8_t *, uint32_t size);
 BH_MEDIA_API uint32_t bh_media_read(BhMedia *, float *stereo, uint32_t frames);
 BH_MEDIA_API uint32_t bh_media_drain_mixer(BhMedia *, void *mixer, int index);

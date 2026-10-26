@@ -1,4 +1,4 @@
-BlueHead 2.0.0 third-party notices
+BlueHead 2.0.1 third-party notices
 
 Original BlueHead code is Apache-2.0 (LICENSE), except files explicitly marked
 otherwise. The original native voice ABI/engine files are MIT. Upstream sources
@@ -63,8 +63,8 @@ Original source/COPYING are in vendor/libwdi; reproducible patch/inbox-WinUSB IN
 in tools/build_wdi.py/native. libwdi.dll remains replaceable. No third-party
 kernel driver or Microsoft coinstaller redistributed.
 
-GCC runtime: GPL with GCC Runtime Library Exception. Process capture statically
-links matching MinGW-w64 runtimes. Licenses are in licenses/gcc-runtime.
+GCC runtime: GPL with GCC Runtime Library Exception. Process capture and the native runtime statically
+link matching MinGW-w64 runtimes. Licenses are in licenses/gcc-runtime.
 https://www.gnu.org/licenses/gcc-exception-3.1.html
 winpthreads is separate; its license is in licenses/winpthreads.
 
@@ -87,3 +87,7 @@ redistribution of frozen applications.
 
 No affiliation or certification by Apple, Google, Microsoft, Sony, Qualcomm,
 Bluetooth SIG, or the upstream projects listed above is claimed.
+
+Native runtime control messages use nlohmann/json 3.12.0 (MIT).
+Source and pinned hashes: vendor/nlohmann-json; license: licenses/nlohmann-json/LICENSE.MIT.
+This header-only JSON library handles control messages outside real-time callbacks.

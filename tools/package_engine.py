@@ -71,4 +71,5 @@ for name in ("avcodec-63.dll", "avutil-61.dll", "swresample-7.dll", "libwinpthre
         if hashlib.sha256(canonical.read_bytes()).digest() != hashlib.sha256(duplicate.read_bytes()).digest():
             raise RuntimeError("Native dependency collision: " + name)
         duplicate.unlink()
+shutil.copy2(assets / "BlueHead.Runtime.exe", output / "BlueHead.Engine/BlueHead.Runtime.exe")
 print(output / "BlueHead.Engine")

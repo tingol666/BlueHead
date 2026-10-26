@@ -232,11 +232,11 @@
 
        <TextBlock Text="需要 Windows 11 或 build 20348 以上。这里排除的是电脑内部音频，麦克风仍可能拾到扬声器外放声，使用麦克风建议戴耳机。" Style="{StaticResource Caption}" Margin="24,0,0,20"/>
 
-       <TextBlock Text="媒体缓冲"/><ComboBox x:Name="MediaBufferPicker" SelectedIndex="2" Margin="0,8,0,16"><ComboBoxItem Content="30 毫秒" Tag="30"/><ComboBoxItem Content="40 毫秒" Tag="40"/><ComboBoxItem Content="60 毫秒（推荐）" Tag="60"/><ComboBoxItem Content="90 毫秒" Tag="90"/><ComboBoxItem Content="120 毫秒" Tag="120"/></ComboBox>
+       <TextBlock Text="媒体起始缓冲"/><ComboBox x:Name="MediaBufferPicker" SelectedIndex="2" Margin="0,8,0,16"><ComboBoxItem Content="30 毫秒" Tag="30"/><ComboBoxItem Content="40 毫秒" Tag="40"/><ComboBoxItem Content="60 毫秒（推荐）" Tag="60"/><ComboBoxItem Content="90 毫秒" Tag="90"/><ComboBoxItem Content="120 毫秒" Tag="120"/></ComboBox>
 
-       <TextBlock Text="语音缓冲"/><ComboBox x:Name="CallBufferPicker" SelectedIndex="1" Margin="0,8,0,16"><ComboBoxItem Content="20 毫秒" Tag="20"/><ComboBoxItem Content="30 毫秒（推荐）" Tag="30"/><ComboBoxItem Content="40 毫秒" Tag="40"/><ComboBoxItem Content="60 毫秒（兼容）" Tag="60"/></ComboBox>
+       <TextBlock Text="语音起始缓冲"/><ComboBox x:Name="CallBufferPicker" SelectedIndex="1" Margin="0,8,0,16"><ComboBoxItem Content="20 毫秒" Tag="20"/><ComboBoxItem Content="30 毫秒（推荐）" Tag="30"/><ComboBoxItem Content="40 毫秒" Tag="40"/><ComboBoxItem Content="60 毫秒（兼容）" Tag="60"/></ComboBox>
 
-       <TextBlock Text="较小缓冲减少等待，也需要更稳定的无线与音频设备。这些数值不是端到端延迟。" Style="{StaticResource Caption}" Margin="0,0,0,16"/>
+       <TextBlock Text="播放开始时使用所选缓冲，运行中按抖动自动调整。较小起点响应更快；这些数值不是端到端延迟。" Style="{StaticResource Caption}" Margin="0,0,0,16"/>
 
        <TextBlock Text="最多连接设备"/><ComboBox x:Name="MaximumPicker" SelectedIndex="2" Margin="0,8,0,16"><ComboBoxItem Content="1 台" Tag="1"/><ComboBoxItem Content="2 台" Tag="2"/><ComboBoxItem Content="3 台" Tag="3"/><ComboBoxItem Content="4 台" Tag="4"/></ComboBox>
 

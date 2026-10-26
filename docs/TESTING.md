@@ -1,29 +1,15 @@
-# 2.0.0验证范围与验收
+# 验证与验收
 
-2.0.0为正式版。本页区分实际设备反馈、自动化检查和未覆盖的设备组合；最终检查数量、包摘要及结果记录在同版本VALIDATION.md。纯UI、协议仿真和离线音频结果不代替具体设备、应用与驱动的实测。
+2.0.1 的原生进程隔离、连续性算法和故障注入方法见 [AUDIO_CONTINUITY_2.0.1.md](AUDIO_CONTINUITY_2.0.1.md)。每次构建的实际结果、包摘要及验收状态记录在同版本 `VALIDATION.md`。
 
-## 本版实际设备反馈
-
-2026-10-26，用户在2.0.0构建`bf80c7`及其现有电脑/移动设备组合上确认：
-
-| 场景 | 用户结果 |
-|---|---|
-| 持续媒体播放 | 正常 |
-| 双向通话 | 正常 |
-| 输入、输出设备热切换 | 正常 |
-| 挂断后恢复媒体 | 正常 |
-| AVRCP媒体控制与显示 | 正常；无元数据时出现远端英文占位文案 |
-
-正式版随后在WPF呈现层将缺失元数据改为“暂无曲目信息”，保留真实英文曲名，并明确媒体编码与语音自动协商的区别。上述用户反馈对应`bf80c7`，不把它写成后续界面修正已重复进行的硬件测试；界面修正的自动回归结果见同版本VALIDATION.md。
-
-本轮未提供可用于验收的iPhone/iPad或LC3-SWB对端，因此没有这些设备的实测结论；2.0.0安装/卸载、驱动更换和恢复也未完成本版实机验收。多设备压力、电脑声音混合、设备插拔、全部增益档位及端到端延迟等专项，不由上述五项基本反馈推导。旧版已有记录按原版本保留。
+默认自动化检查使用虚拟控制器、固定压缩样本和合成 PCM。真实计时回放、虚拟时钟长测、纯 UI 检查与实际移动设备验收分别记录。运行中的长测不计为通过；历史设备反馈也不扩写成本版验收。
 
 ## 不触硬件的检查
 
 ```powershell
 .venv\Scripts\python.exe -m pytest tests -q --tb=short
 .venv\Scripts\python.exe -m ruff check bluehead tools tests launch.py engine_launch.py
-work/publish-desktop-200/BlueHead.exe --self-test C:\Temp\BlueHead-ui-200
+work/publish-desktop-201/BlueHead.exe --self-test C:\Temp\BlueHead-ui-201
 ```
 
 协议测试应使用虚拟控制器、固定压缩样本和生成PCM。不可把打开真实播放、麦克风、USB或驱动绑定加入默认CI。
@@ -45,8 +31,8 @@ Framework兼容层另有独立项目：
 
 ```powershell
 dotnet restore desktop/BlueHead.FrameworkChecks/BlueHead.FrameworkChecks.csproj --locked-mode
-dotnet run --project desktop/BlueHead.FrameworkChecks/BlueHead.FrameworkChecks.csproj -c Release --no-restore -- C:\Temp\BlueHead-framework-200
-work/publish-helper-200/BlueHead.DriverHelper.exe --self-test
+dotnet run --project desktop/BlueHead.FrameworkChecks/BlueHead.FrameworkChecks.csproj -c Release --no-restore -- C:\Temp\BlueHead-framework-201
+work/publish-helper-201/BlueHead.DriverHelper.exe --self-test
 ```
 
 FrameworkChecks仅操作自己的临时文件和子进程：Windows参数引用、UTF-8、退出事件竞态、job子树清理、原恢复hash、原子替换和目录逃逸。helper self-test只读枚举适配器，不能证明驱动更换恢复成功。UI截图明确标注演示数据，不表示真实手机已连接。
@@ -55,7 +41,7 @@ FrameworkChecks仅操作自己的临时文件和子进程：Windows参数引用�
 
 以下为完整回归清单，不表示各项在本轮均已执行。已确认的范围以上表为准，其余须记录具体设备与结果。
 
-1. 在完整2.0.0包中连续播放媒体，记录实际协商codec、电脑输出格式和设备，持续观察周期停顿、恢复和错误计数。
+1. 在完整待验收包中连续播放媒体，记录实际协商codec、电脑输出格式和设备，持续观察周期停顿、恢复和错误计数。
 2. 使用Android及目标iPhone/iPad分别验证标准AAC/SBC媒体与HFP。接通双向语音、保持一段时间、挂断再继续媒体，至少重复两次。
 3. 语音中切换真实电脑播放设备和麦克风，再回系统默认；插拔耳机检查默认跟随、列表与指定设备消失时回退，全程不要求蓝牙重连。
 4. 检查每设备上下行0/100/200%、三路总控、静音/取消静音；AVRCP标准音量改变后，本地175%等增益仍保持独立。
@@ -74,4 +60,20 @@ FrameworkChecks仅操作自己的临时文件和子进程：Windows参数引用�
 
 无需为证明精简而删除必要组件。干净目标Windows应能离线启动完整包、运行独立恢复工具并加载所有codec；开发机上安装过SDK或旧版本程序不构成发布环境证明。
 
-历史用户确认：1.2.2/1.2.3有双向语音、热切换、挂断媒体恢复与单设备接替记录；1.2.3最终包的周期停顿修复获确认。1.2.4只按当时要求完成自动化/离线验证。更详细历史见CHANGELOG与AUDIT。2.0.0本轮结果单独记录在本页开头，不能从历史记录扩大本版覆盖范围。
+历史用户确认：1.2.2/1.2.3有双向语音、热切换、挂断媒体恢复与单设备接替记录；1.2.3最终包的周期停顿修复获确认。1.2.4只按当时要求完成自动化/离线验证。更详细历史见CHANGELOG与AUDIT。2.0.0历史结果单独记录在本页末尾，不能从历史记录扩大本版覆盖范围。
+
+## 历史设备反馈：2.0.0
+
+2026-10-26，用户在2.0.0构建`bf80c7`及其现有电脑/移动设备组合上确认：
+
+| 场景 | 用户结果 |
+|---|---|
+| 持续媒体播放 | 正常 |
+| 双向通话 | 正常 |
+| 输入、输出设备热切换 | 正常 |
+| 挂断后恢复媒体 | 正常 |
+| AVRCP媒体控制与显示 | 正常；无元数据时出现远端英文占位文案 |
+
+正式版随后在WPF呈现层将缺失元数据改为“暂无曲目信息”，保留真实英文曲名，并明确媒体编码与语音自动协商的区别。上述用户反馈对应`bf80c7`，不把它写成后续界面修正已重复进行的硬件测试；界面修正的自动回归结果见同版本VALIDATION.md。
+
+本轮未提供可用于验收的iPhone/iPad或LC3-SWB对端，因此没有这些设备的实测结论；2.0.0安装/卸载、驱动更换和恢复也未完成本版实机验收。多设备压力、电脑声音混合、设备插拔、全部增益档位及端到端延迟等专项，不由上述五项基本反馈推导。旧版已有记录按原版本保留。

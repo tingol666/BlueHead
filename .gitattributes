@@ -1,0 +1,13 @@
+# Keep authored source predictable on every checkout.
+* text=auto eol=lf
+# These files have byte-for-byte source or binary hashes. Never rewrite them.
+/vendor/** -text
+/licenses/** -text
+/bluehead/assets/** -text
+*.png -text
+*.ico -text
+*.dll -text
+*.exe -text
+*.zip -text
+*.gz -text
+*.bz2 -text

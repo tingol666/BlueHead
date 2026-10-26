@@ -36,7 +36,7 @@ def main():
     if not args.assemble_only:
         run(sys.executable, ROOT / "tools/build_ffmpeg.py", "--native-only")
         for name in ("build_icon", "build_native", "build_audio", "build_voice", "build_device", "build_ldac_media",
-                     "build_loopback", "build_wdi", "collect_notices"):
+                     "build_loopback", "build_wdi", "build_runtime", "collect_notices"):
             run(sys.executable, ROOT / "tools" / (name + ".py"))
         dotnet = shutil.which("dotnet") or str(ROOT / "work/toolchain/dotnet/dotnet.exe")
         for project, output in (("Desktop", args.desktop), ("DriverHelper", args.helper)):

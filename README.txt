@@ -1,11 +1,11 @@
-BlueHead 2.0.0 | 正式版 | Windows x64
+BlueHead 2.0.1 | 正式版 | Windows x64
 https://github.com/tingol666/BlueHead
 
 原生音频处理，适配iPhone/iPad标准音频、AVRCP媒体控制和HFP LC3-SWB。
 
 用途：把电脑作为移动设备的蓝牙音频接收器与免提端点。
 在电脑听媒体，将电脑麦克风发送回移动设备；无需同一Wi-Fi或移动端客户端。
-目标系统为Windows 10 22H2 / Windows 11 x64，自带兼容的.NET Framework。
+目标系统为Windows 11 x64，自带兼容的.NET Framework。
 完整包自带Python控制后台与原生库，无需额外安装Python或现代.NET Desktop Runtime。
 
 安装迁移：2.0仅支持新的空目录，不支持覆盖1.x，也暂不支持2.x原地升级。
@@ -39,9 +39,11 @@ LC3-SWB不是完整LE Audio；蓝牙5.3不能保证双方支持。
 AVRCP标准音量0%–100%与本地0%–200%增益独立，详情只读显示，不增加额外滑块。
 录音/录像应用需支持并选择蓝牙麦克风；电脑不能强制改变移动端应用的录音源。
 没有声学回声消除，通话建议使用电脑耳机。
-媒体60ms/语音30ms为预缓冲设置，不是端到端延迟实测值。
+媒体60ms/语音30ms为初始缓冲设置，实际目标随抖动调整，不是端到端延迟实测值。
 
-2.0音频处理使用C/C++；Python保留Bumble控制和USB包分派，并非整栈C或零GIL。
+2.0.1使用独立C++后台持有USB/HCI及完整持续音频链路，原生自适应缓冲、短缺口补偿和平滑恢复。
+Python保留Bumble信令与应用控制；新连接和协议协商仍依赖控制进程。
+已建立的专用接收音频不再由Python搬运PCM或调度实时收发。
 运行时不使用PyAV、NumPy、sounddevice；开发锁文件可保留它们用于离线对照。
 本版验证范围见VALIDATION.md，使用与构建见README.md及docs。
 许可与对应源码见LICENSE、THIRD_PARTY_NOTICES.txt及同版本源码归档。

@@ -8,7 +8,7 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text("utf-8"))["project"]["version"]
-FILES = {".gitignore", "README.md", "README.txt", "LICENSE", "THIRD_PARTY_NOTICES.txt", "CHANGELOG.md",
+FILES = {".clang-format", ".gitattributes", ".gitignore", "README.md", "README.txt", "LICENSE", "THIRD_PARTY_NOTICES.txt", "CHANGELOG.md",
          "CONTRIBUTING.md", "pyproject.toml", "requirements.lock.txt", "requirements-runtime.lock.txt", "dependencies.json", "ffmpeg-build.json",
          "global.json", "NuGet.Config", "launch.py", "engine_launch.py"}
 FOLDERS = {".github", "bluehead", "desktop", "docs", "installer", "licenses", "native", "tests", "tools", "vendor"}

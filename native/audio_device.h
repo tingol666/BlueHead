@@ -40,4 +40,5 @@ BH_DEVICE_API int bh_device_read(BhAudioDevice *device, int16_t *output, uint32_
 /* In-memory callback harness. Never initializes miniaudio or opens audio devices. */
 BH_DEVICE_API BhAudioDevice *bh_device_offline(BhDeviceContext *context, uint32_t direction, void *mixer, uint32_t rate, uint32_t channels, uint32_t output_rate, int *error);
 BH_DEVICE_API int bh_device_offline_process(BhAudioDevice *device, const float *input, float *output, uint32_t frames);
+BH_DEVICE_API void bh_device_ready_event(BhAudioDevice *device, void *event);
 #endif

@@ -53,6 +53,7 @@ struct Capture {
     SRWLOCK lock = SRWLOCK_INIT;
     HANDLE stop = nullptr, ready = nullptr, thread = nullptr;
     volatile LONG error = E_PENDING;
+    PVOID volatile notify = nullptr;
     DWORD pid;
     UINT read = 0, frames = 0;
     unsigned long long received = 0, dropped = 0;
@@ -136,6 +137,8 @@ static DWORD WINAPI capture_thread(void *argument) {
             }
             c->received += frames;
             ReleaseSRWLockExclusive(&c->lock);
+            HANDLE notify = InterlockedCompareExchangePointer(&c->notify, nullptr, nullptr);
+            if (notify) SetEvent(notify);
             hr = reader->ReleaseBuffer(frames);
             if (FAILED(hr)) break;
         }
@@ -195,4 +198,9 @@ API int bh_loop_close(Capture *c) {
     if (WaitForSingleObject(c->thread, 2000) != WAIT_OBJECT_0) return 0;
     CloseHandle(c->thread); CloseHandle(c->ready); CloseHandle(c->stop); delete c;
     return 1;
+}
+
+// Borrowed event remains alive until capture thread is joined.
+API void bh_loop_ready_event(Capture *c, void *event) {
+    if (c) InterlockedExchangePointer(&c->notify, event);
 }

@@ -17,6 +17,7 @@ namespace bh {
   X(bh_mix_clear, void, (void *, int)) \
   X(bh_mix_format, int, (void *, int, uint32_t)) \
   X(bh_mix_gain, void, (void *, int, float)) \
+  X(bh_mix_connected, void, (void *, int, int)) \
   X( bh_mix_gate, void, (void *, int, int)) \
   X(bh_mix_call, void, (void *, int)) \
   X(bh_mix_master, void, (void *, float)) \
@@ -26,6 +27,7 @@ namespace bh {
   X( bh_mix_write_s16_mono, void, (void *, int, const int16_t *, uint32_t)) \
   X(bh_mix_write_f32_mono, void, (void *, int, const float *, uint32_t)) \
   X(bh_mix_timeline, int, (void *, int, int)) \
+  X(bh_mix_budget, int, (void *, int, uint32_t)) \
   X(bh_mix_observe, void, (void *, int, uint64_t, uint64_t)) \
   X(bh_mix_value, uint64_t, (void *, int, int)) \
   X(bh_media_create, BhMedia *, (int, int, int, int)) \
@@ -48,6 +50,7 @@ namespace bh {
   X(bh_up_read, int, (void *, uint8_t *, uint32_t)) \
   X(bh_up_write_f32, int, (void *, int, const float *, uint32_t)) \
   X(bh_up_read_f32, int, (void *, float *, uint32_t)) \
+  X(bh_up_budget, int, (void *, uint32_t, int)) \
   X(bh_up_observe, void, (void *, int, uint64_t, uint64_t)) \
   X(bh_up_value, uint64_t, (void *, int, int)) \
   X(bh_capture_create, void *, (uint32_t, uint32_t, uint32_t)) \
@@ -58,6 +61,7 @@ namespace bh {
   X(bh_capture_clock, int, (void *, uint64_t *, uint64_t *)) \
   X(bh_mix_master_value, float, (void *))
 #define DEVICE_APIS(X) \
+  X(bh_device_endpoint,int,(BhAudioDevice*,wchar_t*,uint32_t)) \
   X(bh_device_error_category,int,(int)) \
   X(bh_device_timing,uint64_t,(BhAudioDevice*,int)) \
   X(bh_device_offline_process,int,(BhAudioDevice*,const float*,float*,uint32_t)) \
@@ -91,6 +95,7 @@ namespace bh {
   X(bh_voice_conceal, int, (bh_voice *, uint32_t)) \
   X(bh_voice_get_stats, int, (const bh_voice *, bh_voice_stats *, uint32_t))
 #define LOOP_APIS(X) \
+  X(bh_loop_open_endpoint, void *, (const wchar_t *, DWORD *)) \
   X(bh_loop_open, void *, (DWORD, DWORD *)) \
   X(bh_loop_read, int, (void *, float *, UINT)) \
   X(bh_loop_error, DWORD, (void *)) \

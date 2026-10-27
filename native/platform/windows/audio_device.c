@@ -371,6 +371,17 @@ BH_DEVICE_API BhAudioDevice *bh_device_open_capture(BhDeviceContext *context,
                                                     int *error) {
   return open_device(context, BH_CAPTURE, NULL, endpoint, output_rate, error);
 }
+BH_DEVICE_API int bh_device_endpoint(BhAudioDevice *stream, wchar_t *output, uint32_t capacity) {
+  if (!stream || !output || !capacity || stream->offline || !stream->initialized)
+    return MA_INVALID_ARGS;
+  const wchar_t *id = stream->direction == BH_PLAYBACK ? stream->device.playback.id.wasapi
+                                                       : stream->device.capture.id.wasapi;
+  size_t length = wcslen(id);
+  if (!length || length >= capacity)
+    return BH_DEVICE_BUFFER_SMALL;
+  memcpy(output, id, (length + 1) * sizeof(wchar_t));
+  return MA_SUCCESS;
+}
 BH_DEVICE_API int bh_device_start(BhAudioDevice *stream) {
   if (!stream)
     return MA_INVALID_ARGS;
@@ -427,6 +438,24 @@ BH_DEVICE_API uint64_t bh_device_timing(BhAudioDevice *stream, int field) {
     return atomic_load_explicit(&stream->max_excess, memory_order_relaxed);
   case 2:
     return atomic_load_explicit(&stream->gap_events, memory_order_relaxed);
+  case 3:
+  case 4: {
+    /* Immutable endpoint configuration, read only by the control owner. Do not
+     * make COM calls in a callback or infer latency from callback CPU time. */
+    if (stream->offline) return field == 3 ? 10000 : 20000;
+    uint64_t frames, periods, rate;
+    if (stream->direction == BH_PLAYBACK) {
+      frames = stream->device.playback.internalPeriodSizeInFrames;
+      periods = stream->device.playback.internalPeriods;
+      rate = stream->device.playback.internalSampleRate;
+    } else {
+      frames = stream->device.capture.internalPeriodSizeInFrames;
+      periods = stream->device.capture.internalPeriods;
+      rate = stream->device.capture.internalSampleRate;
+    }
+    if (!rate) return 0;
+    return frames * (field == 4 ? periods : 1) * 1000000 / rate;
+  }
   default:
     return 0;
   }

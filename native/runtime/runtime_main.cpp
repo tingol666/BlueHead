@@ -96,7 +96,7 @@ int wmain(int count, wchar_t **values) {
       return 0;
     }
     if (args.mapping)
-      return bh::ldac_worker(args.mapping, args.request, args.done, args.assets);
+      return bh::codec_worker(args.mapping, args.request, args.done, args.assets);
     if (args.rpc.empty())
       args.rpc = bh::pipe_name();
     bh::Core core(args.assets, args.offline);

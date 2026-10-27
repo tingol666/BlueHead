@@ -203,6 +203,11 @@ class HandsFreeProtocol(hfp.HfProtocol):
             return await super().setup_codec_connection(codec_id)
         self.pending_codec = hfp.AudioCodec(codec_id)
         try:
+            prepare = getattr(self, "before_codec", None)
+            if prepare is not None and not await prepare(self.pending_codec):
+                raise hfp.HfpProtocolError("Voice admission was not ready")
+            if self.stopped:
+                raise hfp.HfpProtocolError("HFP service is closed")
             await super().setup_codec_connection(codec_id)
         except BaseException:
             self.emit("codec_failed", self.pending_codec)

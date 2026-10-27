@@ -26,7 +26,7 @@ typedef struct {
   CRITICAL_SECTION producer;
   float *pcm;
   atomic_ullong read, write, trim, dropped, underruns, prefill;
-  atomic_uint active, readers, gain, enabled, epoch, drift_view;
+  atomic_uint active, readers, gain, enabled, connected, epoch, drift_view;
   atomic_uint source_rate;
   atomic_uint history_need;
   uint32_t target, maximum, capacity;
@@ -252,6 +252,7 @@ API Mixer *bh_mix_create(void) {
     atomic_init(&s->readers, 0);
     atomic_init(&s->gain, 0x3f800000u);
     atomic_init(&s->enabled, 1);
+    atomic_init(&s->connected, 1);
     atomic_init(&s->epoch, 0);
     atomic_init(&s->drift_view, 1000);
     atomic_init(&s->source_rate, 48000);
@@ -419,6 +420,7 @@ API int bh_mix_add(Mixer *m, uint32_t target, uint32_t maximum) {
       atomic_store(&s->prefill, 0);
       atomic_store(&s->gain, 0x3f800000u);
       atomic_store(&s->enabled, 1);
+      atomic_store(&s->connected, 1);
       atomic_store(&s->epoch, 0);
       atomic_store(&s->drift_view, 1000);
       s->target = target;
@@ -500,6 +502,11 @@ API void bh_mix_gain(Mixer *m, int index, float gain) {
 API void bh_mix_gate(Mixer *m, int index, int enabled) {
   if (m && index >= 0 && index < INPUTS)
     atomic_store(&m->input[index].enabled, !!enabled);
+}
+/* Transport lifetime is independent of UI/continuity gates. A late decoder
+ * commit cannot reopen a physically retired connection. Lock-free on USB. */
+API void bh_mix_connected(Mixer *m,int index,int connected) {
+  if(m && index>=0 && index<INPUTS) atomic_store(&m->input[index].connected,!!connected);
 }
 API void bh_mix_call(Mixer *m, int index) {
   if (m)
@@ -601,6 +608,26 @@ API int bh_mix_timeline(Mixer *m, int index, int owner) {
     return -1;
   atomic_store_explicit(&m->input[index].gap_owner, owner, memory_order_release);
   return 0;
+}
+/* Control-only budget update, while the stream consumer is stopped. Keep
+ * samples/format/history; LE capture and classic voice restore their own budget. */
+API int bh_mix_budget(Mixer *m, int index, uint32_t canonical) {
+  if (!m || index < 0 || index >= INPUTS) return -1;
+  EnterCriticalSection(&m->lifecycle);
+  Input *s = &m->input[index];
+  EnterCriticalSection(&s->producer);
+  uint32_t target = (uint32_t)bht_scale(canonical, BHT_RATE, atomic_load(&s->source_rate));
+  int valid = target <= s->maximum;
+  if (valid) {
+    int active = atomic_exchange(&s->active, 0);
+    while (atomic_load(&s->readers)) Sleep(0);
+    s->target = s->adaptive_target = target;
+    atomic_store(&s->target_view, target);
+    atomic_store(&s->active, active);
+  }
+  LeaveCriticalSection(&s->producer);
+  LeaveCriticalSection(&m->lifecycle);
+  return valid ? 0 : -1;
 }
 API void bh_mix_observe(Mixer *m, int index, uint64_t position, uint64_t arrival) {
   if (!m || index < 0 || index >= INPUTS)
@@ -777,7 +804,7 @@ static int render_legacy(Mixer *m, float *output, uint32_t count, float master) 
     }
     s->buffering = 0;
     float gain = number(atomic_load(&s->gain)) * ((call >= 0 && call != i) ? .15f : 1);
-    float target = atomic_load(&s->enabled) ? 1 : 0;
+    float target = (atomic_load(&s->enabled) && atomic_load(&s->connected)) ? 1 : 0;
     double ratio = 1;
     if (smooth_clock) {
       ratio = clock_update(s, count, clock_target, (clock_period > 0 ? clock_period : 3) * 48000,

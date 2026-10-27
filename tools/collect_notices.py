@@ -18,7 +18,7 @@ if not python_license.is_file():
 shutil.copy2(python_license, licenses / "python/LICENSE.txt")
 # Native sources and their licenses are already vendored. Do not depend on a
 # previous chat's temporary clones when refreshing a standalone checkout.
-for required in (root / "LICENSE", licenses / "libldacdec-MIT.txt", root / "vendor/libldac_encoder/NOTICE", licenses / "pyserial/LICENSE.txt"):
+for required in (root / "LICENSE", licenses / "libldacdec-MIT.txt", licenses / "pyserial/LICENSE.txt"):
     if not required.exists():
         raise FileNotFoundError(required)
 serial_origin = json.loads((licenses / "pyserial/origin.json").read_text("utf-8"))
@@ -62,6 +62,9 @@ records.append({"name": "intel-bluetooth-firmware", "version": firmware['firmwar
 records.append({"name": "realtek-bluetooth-firmware", "version": firmware['revision'],
                 "license": "Redistributable binary firmware; see LICENCE.rtlwifi_firmware.txt",
                 "scope": "optional-runtime", "project_urls": [firmware['upstream']], "revision": firmware['revision']})
+lhdc = json.loads((root / "vendor/lhdc5-decoder/origin.json").read_text("utf-8"))
+records.append({"name": "lhdc5-decoder", "version": lhdc["commit"][:12], "revision": lhdc["commit"],
+                "license": lhdc["license"], "scope": "runtime-native", "project_urls": [lhdc["repository"]]})
 (root / "dependencies.json").write_text(json.dumps(records, ensure_ascii=False, indent=2), "utf-8")
 assets = root / "bluehead/assets"
 library_records = {}
@@ -82,7 +85,7 @@ with os.add_dll_directory(str(assets)):
 (root / "work").mkdir(exist_ok=True)
 (root / "work/ffmpeg-libraries.json").write_text(json.dumps(library_records, indent=2), "utf-8")
 for folder, names in {"miniaudio": ["LICENSE"], "speexdsp": ["COPYING"], "liblc3": ["LICENSE"], "pipewire-rate-control": ["LICENSE"],
-                      "nlohmann-json": ["LICENSE.MIT"], "spandsp-plc": ["COPYING", "AUTHORS"]}.items():
+                      "lhdc5-decoder": ["LICENSE"], "nlohmann-json": ["LICENSE.MIT"], "spandsp-plc": ["COPYING", "AUTHORS"]}.items():
     destination = licenses / folder
     destination.mkdir(exist_ok=True)
     for name in names:

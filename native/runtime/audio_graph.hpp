@@ -2,13 +2,18 @@
 #pragma once
 #include "runtime_api.hpp"
 #include "runtime_resource.hpp"
-#include "runtime_ldac.hpp"
+#include "runtime_codec_worker.hpp"
 #include "hci_dispatch.hpp"
+#include "iso_sender.hpp"
 #include "runtime_hci_events.hpp"
 #include "audio/media_worker.hpp"
+#include "audio/iso_receiver.hpp"
+#include "audio/iso_transmitter.hpp"
 #include "audio/endpoint_actor.hpp"
 #include "runtime_stream_guard.hpp"
 #include "audio_timeline.h"
+#include "link_identity.hpp"
+#include "hci_links.hpp"
 #include "runtime_recovery.hpp"
 #include <deque>
 #include <future>
@@ -19,6 +24,7 @@ class AudioGraph final : public HciTarget {
 public:
   Api api; // First member: DLLs outlive every resource, including constructor failure.
 private:
+  LinkIdentity link_identities;
   NativeResource mixer_owner, uplink_owner;
   bool offline = false, enhance_audio = true;
   std::atomic<bool> quiesced{false};
@@ -29,6 +35,7 @@ private:
   std::mutex replay_mutex;
   json replay_result = json::object();
   std::unique_ptr<HciDispatch> test_dispatch;
+  std::unique_ptr<HciLinks> test_link_lifetime;
   std::atomic<uint32_t> voice_stall{0}, voice_commit_stall{0};
   std::atomic<uint64_t> injected_stalls{0};
   void test_pause(std::atomic<uint32_t> &request) {
@@ -46,6 +53,11 @@ private:
   };
   std::unique_ptr<MediaServices> media_services;
   std::array<std::unique_ptr<MediaStream>, 8> media;
+  std::array<std::unique_ptr<IsoReceiver>, 8> iso_receivers;
+  std::unique_ptr<IsoTransmitter> iso_transmitter;
+  std::string iso_tx_key;
+  int iso_tx_input = -1;
+  std::atomic<uint32_t> capture_owner{0xffff};
   std::map<std::string, int> keys;
   std::atomic<bool> transport_available{false};
   void *mixer = nullptr, *uplink = nullptr;
@@ -197,8 +209,15 @@ private:
         WaitForSingleObject(voice_wake, INFINITE);
     }
   }
+  void stop_iso_tx() {
+    if (!iso_transmitter || !iso_transmitter->prepared()) return;
+    capture_owner=0xffff; iso_transmitter->retire(); voice_epoch++;
+    iso_tx_input=-1; iso_tx_key.clear();
+    api.bh_mix_call(mixer,-1);
+  }
   void stop_voice() {
-    voice_handle = 0xffff;
+    auto old_handle=voice_handle.exchange(0xffff);
+    if (capture_owner==old_handle) capture_owner=0xffff;
     voice_rx_enabled = false;
     while (voice_producers.load() || voice_consumers.load())
       SwitchToThread();
@@ -245,23 +264,47 @@ public:
               return true;
           return false;
         }});
-    for (int i = 0; i < 8; i++)
+    for (int i = 0; i < 8; i++) {
       media[i] = std::make_unique<MediaStream>(*media_services, i);
+      iso_receivers[i] = std::make_unique<IsoReceiver>(*media_services, i);
+    }
+    iso_transmitter=std::make_unique<IsoTransmitter>(api,uplink,microphone_gain,system_gain,device_gain,microphone_muted);
     endpoints =
         std::make_unique<EndpointActor>(api, assets, mixer, uplink, offline, quiesced, voice_epoch,
-                                        voice_handle, mix_enabled, voice_wake, injected_stalls);
+                                        capture_owner, mix_enabled, voice_wake, injected_stalls);
   }
   ~AudioGraph() {
     replay_stop = true;
     if (replay_worker.joinable())
       replay_worker.join();
+    stop_iso_tx();
     stop_voice();
+    for (auto &iso : iso_receivers) iso->retire();
     for (auto &m : media)
       m->retire();
     quitting = true;
     endpoints.reset();
     for (auto &m : media)
       m.reset();
+  }
+  bool iso_handle(uint16_t handle) const override {
+    for (const auto &iso : iso_receivers) if (iso->owns(handle)) return true;
+    return false;
+  }
+  bool iso_packet(const uint8_t *p, uint32_t n) override {
+    if (!p || n < 4) return false;
+    for (auto &iso : iso_receivers)
+      if (iso->owns(le16(p) & 0xfff)) return iso->push(p, n);
+    return false;
+  }
+  bool iso_transmit_route(uint16_t &handle,uint32_t &epoch) const override {
+    return !quiesced && iso_transmitter->route(handle,epoch);
+  }
+  uint32_t iso_output(uint32_t limit,uint8_t *out,uint32_t capacity,uint32_t &epoch) override {
+    return quiesced?0:iso_transmitter->output(limit,out,capacity,epoch);
+  }
+  void iso_clock_sample(uint16_t handle,uint32_t epoch,uint16_t sequence,uint32_t stamp,uint32_t offset,uint64_t host) override {
+    iso_transmitter->controller_clock(handle,epoch,sequence,stamp,offset,host);
   }
   uint32_t media_route(uint16_t handle, uint16_t cid) override {
     for (const auto &m : media)
@@ -338,29 +381,43 @@ public:
     SetEvent(voice_wake);
     return written;
   }
+  void connected(uint16_t h) override { link_identities.open(h); }
+  uint64_t link_identity(uint16_t h) const override { return link_identities.get(h); }
+  uint64_t last_link_identity() const override { return link_identities.last(); }
   void disconnected(uint16_t handle) override {
+    link_identities.close(handle);
+    uint16_t old_iso; uint32_t generation;
+    bool had_iso=iso_transmitter->route(old_iso,generation);
+    iso_transmitter->disconnect(handle);
+    if (had_iso && !iso_transmitter->route(old_iso,generation)) capture_owner=0xffff;
+    for (auto &iso : iso_receivers) iso->disconnect(handle);
     for (auto &m : media)
       if (m->handle == handle) {
         m->paused = true;
         m->epoch++;
         m->handle = 0xffff;
+        api.bh_mix_connected(mixer,m->input,false);
       }
     if (voice_handle == handle) {
+      capture_owner=0xffff;
       voice_handle = 0xffff;
       voice_rx_enabled = false;
       api.bh_mix_call(mixer, -1);
       if (voice_input >= 0)
-        api.bh_mix_gate(mixer, voice_input, false);
+        api.bh_mix_connected(mixer, voice_input, false);
       SetEvent(voice_wake);
     }
   }
   void transport_lost() noexcept override {
     transport_available = false;
+    link_identities.clear();
+    capture_owner=0xffff; iso_transmitter->transport_lost();
+    for (auto &iso : iso_receivers) iso->transport_lost();
     for (auto &m : media) {
       m->paused = true;
       m->epoch++;
       m->handle = 0xffff;
-      api.bh_mix_gate(mixer, m->input, false);
+      api.bh_mix_connected(mixer, m->input, false);
     }
     voice_handle = 0xffff;
     voice_rx_enabled = false;
@@ -376,6 +433,8 @@ public:
   void quiesce_now() {
     std::lock_guard<std::mutex> lock(parameter_mutex);
     quiesced = true;
+    capture_owner=0xffff;
+    if (iso_transmitter) iso_transmitter->transport_lost();
     api.bh_mix_master(mixer, 0);
   }
   json command(const json &request) {
@@ -388,6 +447,9 @@ public:
       auto id = key_input(request.at("key"));
       if (request.at("lease").get<uint32_t>() != media[id]->lease)
         throw SourceExpired();
+    }
+    if (op == "test_le_replay") {
+      start_iso_replay(request); return true;
     }
     if (op == "test_replay") {
       start_replay(request);
@@ -410,6 +472,13 @@ public:
         replay_worker.join();
       return true;
     }
+    if(op=="test_codec_fault") {
+      require(offline && !replaying,"Exclusive offline-test mode required");
+      auto &slot=*media[key_input(request.at("key"))];
+      auto mode=request.at("mode").get<uint32_t>();
+      require((slot.codec==5 || slot.codec==6) && (mode==1 || mode==2),"Invalid isolated codec fault");
+      slot.isolated_fault=mode;return true;
+    }
     if (op == "test_stall") {
       require(offline, "Offline-test mode required");
       auto direction = request.at("direction").get<std::string>();
@@ -419,6 +488,10 @@ public:
         auto &slot = *media[key_input(request.value("key", std::string("offline:media")))];
         (direction == "media" ? slot.stall : slot.commit_stall) = ms;
         SetEvent(slot.wake);
+      } else if (direction == "le_rx") {
+        iso_receivers[key_input(request.at("key"))]->inject_stall(ms);
+      } else if (direction == "le_tx") {
+        iso_transmitter->inject_stall(ms);
       } else if (direction == "capture") {
         endpoints->stall_capture(ms);
       } else if (direction == "voice") {
@@ -509,6 +582,23 @@ public:
       return elapsed_ticks(request.at("now").get<uint64_t>(), request.at("stamp").get<uint64_t>());
     }
 
+    if (op == "test_iso_clock") {
+      require(offline,"Clock injection is disabled outside offline tests");
+      iso_clock_sample(request.at("handle"),request.at("epoch"),request.at("sequence"),
+                       request.at("timestamp"),request.value("offset",0u),request.value("host",ticks()));
+      return true;
+    }
+    if (op == "test_iso_rx") {
+      require(offline && !replaying, "Exclusive offline-test mode required");
+      auto data = unhex(request.at("packet"), 4096);
+      return iso_packet(data.data(), static_cast<uint32_t>(data.size()));
+    }
+    if (op == "test_iso_tx") {
+      require(offline && !replaying,"Exclusive offline-test mode required");
+      std::array<uint8_t,4104> data{}; uint32_t epoch=0;
+      auto n=iso_output(request.value("payload_limit",251u),data.data(),data.size(),epoch);
+      return {{"epoch",epoch},{"packet",hex(data.data(),n)}};
+    }
     if (op == "test_voice_rx") {
       require(offline && !replaying, "Exclusive offline-test mode required");
       auto data = unhex(request.at("packet"), 255);
@@ -521,6 +611,21 @@ public:
       uint16_t handle = 0;
       auto count = voice_output(handle, bytes.data(), request.value("capacity", 60u));
       return {{"handle", handle}, {"packet", hex(bytes.data(), count)}};
+    }
+    if (op == "test_hci_event") {
+      require(offline, "Offline-test mode required");
+      auto data=unhex(request.at("packet"),260);
+      if(!test_link_lifetime) {
+        test_link_lifetime=std::make_unique<HciLinks>();
+        test_link_lifetime->on_acquire(this,[](void *context,uint16_t h){static_cast<AudioGraph*>(context)->connected(h);});
+      }
+      auto valid=test_link_lifetime->event(data.data(),uint32_t(data.size()),[this](uint16_t h){disconnected(h);});
+      return {{"valid",valid},{"epoch",packet_link_identity(*this,4,data.data(),uint32_t(data.size()))}};
+    }
+    if (op == "test_link_open") {
+      require(offline, "Offline-test mode required");
+      auto handle=request.at("handle").get<uint16_t>();
+      require(handle<=0xeff,"Invalid link handle");connected(handle);return {{"epoch",link_identity(handle)}};
     }
     if (op == "test_disconnect") {
       require(offline, "Offline-test mode required");
@@ -540,13 +645,18 @@ public:
         energy += value * value;
         peak = std::max(peak, std::abs(static_cast<double>(value)));
       }
-      return {{"frames", frames}, {"rms", std::sqrt(energy / (frames * 2))}, {"peak", peak}};
+      json result = {{"frames", frames}, {"rms", std::sqrt(energy / (frames * 2))}, {"peak", peak}};
+      if (request.value("return_pcm", false))
+        result["pcm_f32"] = hex(reinterpret_cast<const uint8_t *>(pcm.data()), pcm.size() * sizeof(float));
+      return result;
     }
     if (op == "hello")
       return {{"version", version}, {"abi", 1}, {"native_usb", true}, {"native_pcm_bridge", true}};
     if (op == "quiesce") {
       quiesce_now();
+      stop_iso_tx();
       stop_voice();
+      for (auto &iso : iso_receivers) iso->retire();
       for (auto &m : media) {
         m->paused = true;
         m->epoch++;
@@ -568,7 +678,12 @@ public:
       if (keys.count(key))
         return {{"index", keys[key]}, {"lease", media[keys[key]]->lease}};
       bool call = key.rfind("call:", 0) == 0;
-      auto id = api.bh_mix_add(mixer, call ? voice_buffer : media_buffer, call ? 4320 : 8640);
+      auto budget=request.value("buffer_us",uint32_t(0));
+      require(!request.contains("buffer_us") || budget<=180000,"Invalid source delay budget");
+      auto target=request.contains("buffer_us")?uint32_t(uint64_t(budget)*48/1000):(call?voice_buffer:media_buffer);
+      auto maximum=call?4320u:8640u;
+      require(target<=maximum,"Source delay exceeds ring bound");
+      auto id = api.bh_mix_add(mixer, target, maximum);
       require(id >= 0, "Native mixer source capacity exceeded");
       keys[key] = id;
       media[id]->key = key;
@@ -579,6 +694,7 @@ public:
       api.bh_mix_continuity(mixer, id, enhance_audio,
                             call ? std::min(voice_buffer, 960u) : std::min(media_buffer, 1440u),
                             call ? 2880 : 5760);
+      if(request.contains("buffer_us")) api.bh_mix_continuity(mixer,id,enhance_audio,target,target);
       api.bh_mix_timeline(mixer, id, enhance_audio ? (call ? BHT_VOICE : BHT_MEDIA) : BHT_GENERIC);
       return {{"index", id}, {"lease", media[id]->lease}};
     }
@@ -587,11 +703,15 @@ public:
       auto found = keys.find(key);
       if (found != keys.end()) {
         int id = found->second;
+        if (id == iso_tx_input) {
+          stop_iso_tx(); endpoints->schedule("input","",false); endpoints->schedule("system","",false);
+        }
         if (id == voice_input) {
           stop_voice();
           endpoints->schedule("input", "", false);
           endpoints->schedule("system", "", false);
         }
+        iso_receivers[id]->retire();
         media[id]->retire();
         api.bh_mix_remove(mixer, id);
         keys.erase(found);
@@ -657,7 +777,7 @@ public:
         float gain = request.value(key, 1.0f);
         require(std::isfinite(gain) && gain >= 0 && gain <= 2, "Invalid uplink gain");
       }
-      device_gain = request.value("device", 1.0f);
+      if(!iso_transmitter->prepared()) device_gain = request.value("device", 1.0f);
       // Initial/control-only updates cannot overwrite a newer native UI action
       // while the Python sidecar catches up after a stall.
       if (!master_revisions[1])
@@ -668,20 +788,88 @@ public:
         microphone_muted = request.value("muted", false);
       return true;
     }
+    if (op == "le_tx_prepare" || op == "le_tx_bind" || op == "le_tx_stop" || op == "le_tx_snapshot" || op=="le_tx_gain") {
+      require(request.contains("lease"),"LE source lease is required");
+      auto key=request.at("key").get<std::string>();
+      int id=key_input(key); auto epoch=request.at("epoch").get<uint32_t>();
+      require(epoch!=0,"LE source epoch is required");
+      if (op == "le_tx_prepare") {
+        require(!quiesced && !voice && voice_handle==0xffff && capture_owner==0xffff,
+                "Another voice source still owns the microphone");
+        auto capture_budget=request.value("capture_buffer_us",30000u);
+        require(capture_budget<=80000,"Invalid LC3 capture delay budget");
+        iso_transmitter->prepare(request.at("rate"),request.at("duration_us"),request.at("octets"),request.value("blocks",1u),epoch,request.value("parent",0xffffu));
+        if (api.bh_up_output_rate(uplink,request.at("rate"))!=0) {
+          iso_transmitter->retire(); throw std::runtime_error("Cannot prepare LC3 microphone PCM rate");
+        }
+        if(api.bh_up_budget(uplink,uint32_t(uint64_t(capture_budget)*48/1000),request.contains("capture_buffer_us"))!=0) {
+          iso_transmitter->retire();throw std::runtime_error("Cannot prepare LE capture delay budget");
+        }
+        iso_tx_key=key; iso_tx_input=id; endpoints->clear_uplink();
+        return iso_transmitter->snapshot();
+      }
+      if (key!=iso_tx_key || !iso_transmitter->generation(epoch)) throw SourceExpired();
+      if(op=="le_tx_gain") {
+        auto gain=request.at("gain").get<float>();
+        require(std::isfinite(gain) && gain>=0 && gain<=2,"Invalid LE source gain");
+        device_gain=gain;
+      } else if (op == "le_tx_bind") {
+        auto handle=request.at("handle").get<uint32_t>(), parent=request.at("parent").get<uint32_t>();
+        require(handle<=0xeff && parent<=0xeff,"Invalid LC3 microphone handle");
+        iso_transmitter->bind(uint16_t(handle),uint16_t(parent),epoch);
+        capture_owner=handle; voice_epoch++;
+      } else if (op == "le_tx_stop") {
+        stop_iso_tx(); endpoints->schedule("input","",false); endpoints->schedule("system","",false);
+      }
+      auto result=iso_transmitter->snapshot(); result["voice_epoch"]=voice_epoch.load();return result;
+    }
+    if (op == "le_rx_prepare" || op == "le_rx_bind" || op == "le_rx_stop" || op == "le_rx_snapshot") {
+      require(request.contains("lease"), "LE stream lease is required");
+      int id = key_input(request.at("key"));
+      auto &iso = *iso_receivers[id];
+      auto epoch = request.at("epoch").get<uint32_t>();
+      require(epoch != 0, "LE stream epoch is required");
+      if (op == "le_rx_prepare") {
+        require(!quiesced, "Receiver is stopping");
+        require(media[id]->handle == 0xffff, "A2DP route still owns this source");
+        media[id]->retire();
+        iso.configure(request.at("rate"), request.at("duration_us"), request.at("channels"),
+                      request.at("octets"), request.value("blocks", 1u), epoch, request.value("voice", false), request.value("jitter_wait_us", 3000u),
+                      request.value("split",false),request.value("broadcast",false),request.value("allocation",0u),
+                      request.value("controller_timestamps",true),request.value("parent",0xffffu));
+        api.bh_mix_timeline(mixer, id, request.value("voice", false) ? BHT_VOICE : BHT_MEDIA);
+        return iso.snapshot();
+      }
+      if (!iso.generation(epoch)) throw SourceExpired();
+      if (op == "le_rx_bind") {
+        auto handle = request.at("handle").get<uint32_t>(), parent = request.at("parent").get<uint32_t>();
+        require(handle<=0xeff && (parent<=0xeff || (parent==0xffff && iso.is_broadcast())) && handle!=parent,"Invalid ISO route");
+        require(voice_handle != handle && !iso_handle(static_cast<uint16_t>(handle)), "ISO handle already registered");
+        iso.bind(static_cast<uint16_t>(handle),static_cast<uint16_t>(parent),epoch,request.value("lane",0u));
+        api.bh_mix_gate(mixer, id, media[id]->allowed);
+      } else if (op == "le_rx_stop") {
+        iso.retire(); api.bh_mix_gate(mixer, id, false); api.bh_mix_clear(mixer, id);
+      }
+      return iso.snapshot();
+    }
     if (op == "media_config") {
       int id = key_input(request.at("key"));
+      require(!iso_receivers[id]->prepared(), "LE stream still owns this mixer source");
       media[id]->configure(request.at("codec"), request.at("rate"), request.at("channels"),
-                           request.at("key"));
+                           request.at("key"), request.value("depth", 16u));
       return true;
     }
     if (op == "media_route") {
-      auto &m = *media[key_input(request.at("key"))];
+      auto id = key_input(request.at("key"));
+      require(!iso_receivers[id]->prepared(), "LE stream still owns this mixer source");
+      auto &m = *media[id];
       auto handle = request.at("handle").get<uint32_t>(), cid = request.at("cid").get<uint32_t>();
       require(handle <= 0xfff && cid >= 0x40 && cid <= 0xffff, "Invalid media route");
       m.handle = 0xffff;
       m.epoch++;
       m.cid = cid;
       m.handle = handle;
+      api.bh_mix_connected(mixer,id,true);
       return true;
     }
     if (op == "media_unroute") {
@@ -690,6 +878,7 @@ public:
       m.handle = m.cid = 0xffff;
       m.epoch++;
       m.paused = true;
+      api.bh_mix_connected(mixer,m.input,false);
       api.bh_mix_clear(mixer, m.input);
       return true;
     }
@@ -714,6 +903,7 @@ public:
       require(offline || transport_available.load(), "Bluetooth transport is unavailable");
       auto key = request.at("key").get<std::string>();
       int id = key_input("call:" + key);
+      require(!iso_transmitter->prepared(),"LE microphone source must stop before starting classic voice");
       uint32_t codec = request.at("codec");
       auto handle = request.at("handle").get<uint32_t>();
       require(handle <= 0xfff, "Invalid voice handle");
@@ -724,6 +914,7 @@ public:
       stop_voice();
       require(api.bh_mix_format(mixer, id, native_rate) == 0,
               "Cannot prepare native voice output format");
+      require(api.bh_up_budget(uplink,1440,0)==0,"Cannot restore classic voice capture budget");
       require(api.bh_up_output_rate(uplink, native_rate) == 0,
               "Cannot prepare native voice input format");
       voice = prepared.release();
@@ -732,6 +923,7 @@ public:
       voice_input = id;
       endpoints->clear_uplink();
       voice_handle = handle;
+      capture_owner = handle;
       voice_stop = false;
       voice_rx_packets = voice_tx_packets = voice_plc = voice_decode_errors = voice_rx_bytes =
           voice_tx_bytes = voice_frames = 0;
@@ -739,10 +931,12 @@ public:
       api.bh_mix_call(mixer, id);
       api.bh_mix_clear(mixer, id);
       api.bh_mix_gate(mixer, id, true);
+      api.bh_mix_connected(mixer,id,true);
       voice_worker = std::thread([this] { voice_loop(); });
       return {{"epoch", voice_epoch.load()}};
     }
     if (op == "voice_stop") {
+      if (iso_transmitter->prepared() && !voice) return true;
       if (request.value("epoch", voice_epoch.load()) != voice_epoch ||
           request.value("key", voice_key) != voice_key)
         return true;
@@ -757,6 +951,7 @@ public:
     throw std::runtime_error("Unsupported native operation");
   }
 #include "../testing/runtime_replay.hpp"
+#include "../testing/runtime_iso_replay.hpp"
   json snapshot() {
     json sources = json::object();
     for (const auto &pair : keys) {
@@ -785,6 +980,8 @@ public:
           {"drift_ppm", static_cast<int64_t>(api.bh_mix_value(mixer, id, 2)) - 1000}};
       if (pair.first.rfind("call:", 0) != 0)
         sources[pair.first]["media"] = media[id]->snapshot();
+      if (iso_receivers[id]->snapshot().value("epoch", 0u))
+        sources[pair.first]["le_audio"] = iso_receivers[id]->snapshot();
     }
 
     json up = json::object();
@@ -814,6 +1011,7 @@ public:
                      {"microphone_muted", microphone_muted.load()}}},
                    {"sources", sources},
                    {"injected_native_stalls", injected_stalls.load()},
+                   {"le_source", iso_transmitter->snapshot()},
                    {"uplink", up},
                    {"voice",
                     {{"rx_packets", voice_rx_packets.load()},

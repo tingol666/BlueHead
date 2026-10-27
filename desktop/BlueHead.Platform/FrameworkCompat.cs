@@ -133,6 +133,9 @@ namespace BlueHead.Platform
         [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetInformationJobObject(IntPtr job, int information, ref ExtendedLimits limits, uint length);
         [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
         [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+        [StructLayout(LayoutKind.Sequential)] private struct Accounting
+        { public long User, Kernel, PeriodUser, PeriodKernel; public uint Faults, Total, Active, Terminated; }
+        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool QueryInformationJobObject(IntPtr job, int information, out Accounting accounting, uint length, IntPtr returned);
         [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
         public ProcessTree(Process process)
         {
@@ -147,6 +150,18 @@ namespace BlueHead.Platform
             catch { Dispose(); throw; }
         }
         public void Terminate() { if (handle != IntPtr.Zero && !TerminateJobObject(handle, 1)) throw new Win32Exception(Marshal.GetLastWin32Error()); }
+        public async Task WaitForEmptyAsync(TimeSpan timeout)
+        {
+            var clock = Stopwatch.StartNew();
+            while (handle != IntPtr.Zero)
+            {
+                if (!QueryInformationJobObject(handle, 1, out var accounting, (uint)Marshal.SizeOf<Accounting>(), IntPtr.Zero))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                if (accounting.Active == 0) return;
+                if (clock.Elapsed >= timeout) throw new TimeoutException("旧蓝牙后台尚未完全退出，请稍后再开始接收。");
+                await Task.Delay(20).ConfigureAwait(false);
+            }
+        }
         public void Dispose() { var previous = Interlocked.Exchange(ref handle, IntPtr.Zero); if (previous != IntPtr.Zero) CloseHandle(previous); }
     }
 }

@@ -11,7 +11,18 @@ VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text("utf-8"))["project"]
 FILES = {".clang-format", ".gitattributes", ".gitignore", "README.md", "README.txt", "LICENSE", "THIRD_PARTY_NOTICES.txt", "CHANGELOG.md",
          "CONTRIBUTING.md", "pyproject.toml", "requirements.lock.txt", "requirements-runtime.lock.txt", "dependencies.json",
          "global.json", "NuGet.Config", "launch.py", "engine_launch.py"}
-FOLDERS = {".github", "bluehead", "desktop", "docs", "installer", "licenses", "native", "tests", "tools", "vendor"}
+FOLDERS = {".github", "bluehead", "desktop", "docs", "installer", "licenses", "native", "tools", "vendor"}
+PUBLIC_TOOLS = {
+    "audit_package.py", "audit_sources.py", "build_all_native.py", "build_audio.py", "build_device.py",
+    "build_ffmpeg.py", "build_icon.py", "build_launcher.py", "build_ldac_media.py",
+    "build_lhdc5.py", "build_loopback.py", "build_native.py", "build_release.py", "build_runtime.py",
+    "build_trace.py", "build_voice.py", "build_wdi.py", "collect_notices.py", "finalize_release.py",
+    "firmware_assets.py", "firmware_catalog.py", "native_build.py", "package_engine.py", "sync_version.py",
+}
+DEVELOPMENT_TREES = {"desktop/BlueHead.FrameworkChecks", "native/testing/clock_stress.cpp",
+                     "vendor/libldac_encoder", "vendor/libldacdec/ldacenc.c",
+                     *("licenses/" + name for name in ("av", "numpy", "iniconfig", "pluggy", "pytest",
+                                                       "pytest-asyncio", "sounddevice", "windowsdesktop"))}
 EXCLUDED = {"bin", "obj", "__pycache__", ".git", ".pytest_cache", ".ruff_cache", "legacy",
             "data", "work", "local", ".venv", "archive", "build", "dist", "outputs"}
 PRIVATE = {"pairing.json", "settings.json", "recovery.json", "desktop.json"}
@@ -29,7 +40,11 @@ def digest(path):
 def private_path(relative):
     """Windows names are case-insensitive, including in archives reviewed elsewhere."""
     parts = tuple(part.casefold() for part in relative.parts)
-    return (any(part in EXCLUDED or part in PRIVATE for part in parts) or
+    name = relative.as_posix().casefold()
+    development = any(name == prefix.casefold() or name.startswith(prefix.casefold() + "/") for prefix in DEVELOPMENT_TREES)
+    if parts and parts[0] == "tools" and len(parts) == 2 and relative.suffix.casefold() == ".py":
+        development |= relative.name.casefold() not in PUBLIC_TOOLS
+    return (development or any(part in EXCLUDED or part in PRIVATE for part in parts) or
             relative.suffix.casefold() in PRIVATE_SUFFIXES)
 
 

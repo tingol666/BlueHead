@@ -1,6 +1,6 @@
 #pragma once
 #include "runtime_api.hpp"
-#include "runtime_ldac.hpp"
+#include "runtime_codec_worker.hpp"
 #include "runtime_stream_guard.hpp"
 #include "runtime_recovery.hpp"
 #include "audio_timeline.h"
@@ -30,16 +30,16 @@ public:
   MediaServices &core;
   int input;
   BhMedia *decoder = nullptr;
-  std::unique_ptr<LdacWorker> ldac;
-  std::unique_ptr<float[]> ldac_pcm;
-  double ldac_retry = 0;
-  std::array<uint64_t, 12> ldac_seen{};
-  bool ldac_pending_reset = false;
+  std::unique_ptr<IsolatedMediaWorker> isolated;
+  std::unique_ptr<float[]> isolated_pcm;
+  double isolated_retry = 0;
+  std::array<uint64_t, 12> isolated_seen{};
+  bool isolated_pending_reset = false;
   Spsc<Packet, 16> queue;
   Handle wake{CreateEventW(nullptr, FALSE, FALSE, nullptr)};
   std::thread worker;
   std::atomic<bool> stop{false}, paused{true}, restart{false};
-  std::atomic<uint32_t> stall{0}, commit_stall{0};
+  std::atomic<uint32_t> stall{0}, commit_stall{0}, isolated_fault{0};
   BhPacketClock packet_clock{};
   std::atomic<uint32_t> handle{0xffff}, cid{0xffff}, epoch{1}, producers{0};
   uint32_t lease = 0;
@@ -49,19 +49,21 @@ public:
   DecoderRecovery failure;
   bool recovery_restart = false;
   double restart_after = 0;
-  uint32_t codec = 0, rate = 0, channels = 0;
+  uint32_t codec = 0, rate = 0, channels = 0, depth = 16;
   std::string key;
   std::mutex commit_mutex;
   StreamGuard guard;
   std::atomic<bool> allowed{true}, protected_audio{false}, guard_reset{true};
-  uint64_t meter_start = 0, meter_bytes = 0;
+  uint64_t meter_start = 0, meter_bytes = 0, meter_packets = 0;
   std::atomic<uint64_t> bitrate{0};
+  std::atomic<double> packets_per_second{0};
   explicit MediaStream(MediaServices &c, int id) : core(c), input(id) {}
   void reset_observations() {
     packets = drops = decoded = errors = coded = lost = recoveries = last_packet = last_decoded =
         concealed = timeline_resets = expired_packets = decoder_restarts = malformed_packets = 0;
-    meter_start = meter_bytes = 0;
+    meter_start = meter_bytes = meter_packets = 0;
     bitrate = 0;
+    packets_per_second = 0;
   }
   void retire() {
     handle = cid = 0xffff;
@@ -75,8 +77,8 @@ public:
       core.api.bh_media_destroy(decoder);
       decoder = nullptr;
     }
-    ldac.reset();
-    ldac_pcm.reset();
+    isolated.reset();
+    isolated_pcm.reset();
     Packet discard;
     while (queue.pop(discard)) {
     };
@@ -85,13 +87,13 @@ public:
     reset_observations();
   }
   ~MediaStream() { retire(); }
-  void configure(int code, int hz, int ch, const std::string &k) {
+  void configure(int code, int hz, int ch, const std::string &k, uint32_t bits = 16) {
     std::unique_ptr<BhMedia, decltype(core.api.bh_media_destroy)> prepared(
         nullptr, core.api.bh_media_destroy);
-    std::unique_ptr<LdacWorker> prepared_ldac;
+    std::unique_ptr<IsolatedMediaWorker> prepared_isolated;
     std::unique_ptr<float[]> prepared_pcm;
-    if (code == 5) {
-      prepared_ldac = std::make_unique<LdacWorker>(core.assets, hz, ch);
+    if (code == 5 || code == 6) {
+      prepared_isolated = std::make_unique<IsolatedMediaWorker>(core.assets, hz, ch, code, bits);
       prepared_pcm = std::make_unique<float[]>(48064 * 2);
     } else {
       prepared.reset(core.api.bh_media_create(code, hz, ch, hz));
@@ -114,14 +116,14 @@ public:
     restart_after = 0;
     expired_packets = decoder_restarts = malformed_packets = 0;
     rate = hz;
-    channels = ch;
+    channels = ch; depth = bits;
     key = k;
     reset_observations();
     decoder = prepared.release();
-    ldac = std::move(prepared_ldac);
-    ldac_seen.fill(0);
-    ldac_pending_reset = false;
-    ldac_pcm = std::move(prepared_pcm);
+    isolated = std::move(prepared_isolated);
+    isolated_seen.fill(0);
+    isolated_pending_reset = false;
+    isolated_pcm = std::move(prepared_pcm);
     guard_reset = true;
     protected_audio = false;
     core.api.bh_mix_clear(core.mixer, input);
@@ -181,8 +183,9 @@ public:
           continue;
         if (restart.exchange(false)) {
           packet_clock = {};
-          meter_start = meter_bytes = 0;
+          meter_start = meter_bytes = meter_packets = 0;
           bitrate = 0;
+          packets_per_second = 0;
           if (decoder) {
             if (core.api.bh_media_restart(decoder) < 0) {
               errors++;
@@ -191,24 +194,25 @@ public:
               continue;
             }
           } else
-            ldac.reset();
+            isolated.reset();
           if (recovery_restart) {
             decoder_restarts++;
             recovery_restart = false;
           }
         }
-        if (codec == 5) {
+        if (codec == 5 || codec == 6) {
           try {
-            if (!ldac) {
-              if (seconds() < ldac_retry)
+            if (!isolated) {
+              if (seconds() < isolated_retry)
                 continue;
-              ldac = std::make_unique<LdacWorker>(core.assets, rate, channels);
-              ldac_seen.fill(0);
+              isolated = std::make_unique<IsolatedMediaWorker>(core.assets, rate, channels, codec, depth);
+              isolated_seen.fill(0);
             }
+            if(auto fault=isolated_fault.exchange(0)) isolated->inject_fault(fault);
             uint64_t stats[12]{};
-            uint32_t frames = ldac->feed(p.data.data(), p.size, ldac_pcm.get(), stats);
+            uint32_t frames = isolated->feed(p.data.data(), p.size, isolated_pcm.get(), stats);
             auto delta = [&](size_t field) {
-              return stats[field] >= ldac_seen[field] ? stats[field] - ldac_seen[field]
+              return stats[field] >= isolated_seen[field] ? stats[field] - isolated_seen[field]
                                                       : stats[field];
             };
             uint64_t genuine = delta(0), newly_lost = delta(5), failed = delta(3);
@@ -219,16 +223,16 @@ public:
             malformed_packets += delta(9);
             concealed += delta(10);
             timeline_resets += delta(11);
-            ldac_pending_reset = ldac_pending_reset || delta(11) != 0;
-            std::copy(std::begin(stats), std::end(stats), ldac_seen.begin());
+            isolated_pending_reset = isolated_pending_reset || delta(11) != 0;
+            std::copy(std::begin(stats), std::end(stats), isolated_seen.begin());
             core.pause(commit_stall);
             std::lock_guard<std::mutex> commit(commit_mutex);
             if (!paused && p.epoch == epoch && !past_deadline(p)) {
               update_guard(p.arrival, genuine, newly_lost, failed);
-              if (ldac_pending_reset) {
+              if (isolated_pending_reset) {
                 packet_clock = {};
                 core.api.bh_mix_clear(core.mixer, input);
-                ldac_pending_reset = false;
+                isolated_pending_reset = false;
               }
               if (frames) {
                 if (p.size >= 12 && (p.data[0] >> 6) == 2) {
@@ -237,7 +241,7 @@ public:
                   core.api.bh_mix_observe(core.mixer, input, bht_packet(&packet_clock, stamp, rate),
                                           p.arrival);
                 }
-                core.api.bh_mix_write(core.mixer, input, ldac_pcm.get(), frames);
+                core.api.bh_mix_write(core.mixer, input, isolated_pcm.get(), frames);
                 decoded += genuine;
                 if (genuine)
                   last_decoded = ticks();
@@ -246,8 +250,8 @@ public:
             update_meter(p.arrival);
           } catch (const std::exception &) {
             errors++;
-            ldac.reset();
-            ldac_retry = seconds() + 1;
+            isolated.reset();
+            isolated_retry = seconds() + 1;
           }
           continue;
         }
@@ -292,12 +296,16 @@ public:
     if (!meter_start || bytes < meter_bytes) {
       meter_start = now;
       meter_bytes = bytes;
+      meter_packets = packets.load();
       return;
     }
     if (now - meter_start >= frequency() / 2) {
       bitrate = (bytes - meter_bytes) * 8 * frequency() / (now - meter_start);
+      auto count = packets.load();
+      packets_per_second = (count - meter_packets) * static_cast<double>(frequency()) / (now - meter_start);
       meter_start = now;
       meter_bytes = bytes;
+      meter_packets = count;
     }
   }
   json snapshot() {
@@ -311,6 +319,7 @@ public:
             {"decode_errors", errors.load()},
             {"coded_bytes", coded.load()},
             {"bitrate", !paused && last && packet_age < frequency() * 3 / 2 ? bitrate.load() : 0},
+            {"packets_per_second", !paused && last && packet_age < frequency() * 3 / 2 ? packets_per_second.load() : 0},
             {"lost_packets", lost.load()},
             {"concealed_frames", concealed.load()},
             {"timeline_resets", timeline_resets.load()},

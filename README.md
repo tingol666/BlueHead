@@ -1,125 +1,116 @@
 # BlueHead
 
-**把 Windows 电脑变成移动设备的蓝牙耳机。**
+**把 Windows 电脑变成蓝牙耳机：收听设备声音，把电脑麦克风发送回去。**
 
-BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free endpoint for Windows. Listen to a mobile device on your computer and send the computer's microphone back over Bluetooth. No shared Wi-Fi or mobile companion app is required.
+Free, open-source Bluetooth audio for Windows. Classic audio, LE Audio / LC3, broadcast reception and LHDC 5.0, with a native C/C++ audio engine. No shared Wi-Fi or mobile companion app required.
 
-**2.1.4**：修复 LDAC 开始、暂停及静音段的微弱嗡声，并修正精细量化数据的还原精度。扩展各媒体／语音编码的静音、弱信号、重置及恢复检查，保留现有音质、缓冲、双向语音、热切换和多设备功能。
+[下载 2.1.5](https://github.com/tingol666/BlueHead/releases/latest) · [使用指南](docs/UI_GUIDE.md) · [协议与兼容性](docs/COMPATIBILITY.md) · [源码构建](docs/BUILDING.md) · [反馈问题](https://github.com/tingol666/BlueHead/issues)
 
-安装版和绿色版不附带厂商固件镜像。需要时按提示获取匹配文件或从原厂驱动包导入；验证后持久缓存，之后可离线启动。
+![音频中心；设备和曲目为界面演示数据](docs/images/home-demo.png)
 
-[下载已发布稳定版](https://github.com/tingol666/BlueHead/releases/latest) · [使用指南](docs/UI_GUIDE.md) · [构建源码](docs/BUILDING.md) · [验证范围](docs/TESTING.md) · [报告问题](https://github.com/tingol666/BlueHead/issues)
+## 功能
 
-![BlueHead 2.1.3 界面；设备、曲目信息和连接均为演示数据](docs/images/home-demo.png)
+- **媒体与双向语音**：在电脑听手机、平板等设备的音乐和视频；在支持蓝牙麦克风的通话、录音或录像应用中使用电脑麦克风。
+- **多设备**：同时连接多个设备并混合播放，或一次听一台，停止传音后自动接替另一台正在播放的设备。
+- **独立音量**：每台设备的播放与麦克风发送分别调节 0%–200%，另有设备声音、电脑麦克风、电脑声音三个总控，各自支持静音。
+- **声音设备热切换**：接收中更换电脑耳机、扬声器、麦克风；默认输入输出自动跟随 Windows，不需要重新连接蓝牙。
+- **电脑声音混合**：把其他应用声音与电脑麦克风合并发送。默认在系统采集阶段排除 BlueHead；也可选择独立的播放设备作为来源，并检查是否会返送设备声音。
+- **媒体控制**：AVRCP 曲目信息、上一曲／播放／暂停／下一曲，以及标准设备音量同步。
+- **LE Audio 与广播**：LC3 单播媒体、双向语音、附近音频广播搜索、密码和节目选择；按适配器实际能力开放对应功能。
+- **驱动管理**：程序内备份、切换、修复和恢复蓝牙驱动；状态提示给出具体操作，不在后台突然请求管理员授权。
 
-## 可以做什么
+## 为什么使用原生音频核心
 
-- 在电脑上收听手机、平板等设备的媒体声音，并通过 HFP 将电脑麦克风发送回设备。
-- 同时混合多台设备的媒体，或在当前来源暂停后自动接替另一台已请求播放的设备。
-- 对每台设备的接收与麦克风发送分别调节 0%–200% 增益、独立静音，另有总音量。
-- 接收期间切换电脑播放设备和麦克风；选择系统默认时跟随默认设备变化。
-- 按需把其他电脑应用的声音与实体麦克风混合发送，排除 BlueHead 自己播放的设备声音。
-- 在应用内备份原驱动、启用 WinUSB 专用接收或恢复系统蓝牙。
-- 适配 iPhone/iPad 标准 AAC/SBC 媒体与 HFP 双向语音。
-- 通过 AVRCP 显示媒体信息、控制上一曲/播放/暂停/下一曲，以及同步标准设备音量。
-- 支持 HFP LC3-SWB 协商和 32 kHz 超宽带语音，保留 mSBC/CVSD 回退。
+BlueHead 的持续音频链路已从 Python 迁至 **C/C++**。Python 仍负责蓝牙信令与控制，实时 PCM 不再经过 Python 回调。
 
-## 音频实现的特点
+| 设计 | 作用 |
+|---|---|
+| 单一 USB/HCI 所有者 | 一个原生后台统一持有控制器、ACL/SCO/ISO、发送信用及节拍，避免多个模块竞争蓝牙设备 |
+| 统一时间线，分方向时钟 | 接收、播放、麦克风与电脑声音各自匹配时钟；自适应缓冲、有界补偿和平滑恢复共同处理短缺口 |
+| 原采样率、浮点 PCM | 保留解码细节；96 kHz LDAC、192 kHz LHDC 可到同率输出，必要 SRC 与微小漂移匹配合并，减少重复重采样和量化 |
+| 有界实时工作 | 端点准备与提交在控制线程，回调不打开设备、不做磁盘操作或无界搜索；已建立的音频流可跨越 Python 阻塞 |
+| 故障隔离与过期保护 | LDAC/LHDC 解码进程与传输所有者分离；旧连接、迟到事件和过期音频不能重新打开旧路由 |
+| 音质与连续性共同验证 | 使用逐样本／频率参考、静音与弱信号对照、原生线程阻塞、抖动丢包及独立时钟模型验证软件行为 |
 
-BlueHead 为持续收发重构了 C/C++ 音频核心。设计重点是减少软件造成的停顿、杂音和信号变化，同时保持桌面控制与协议层易于维护。
-
-- **实时音频在原生后台运行**：USB/HCI、媒体解包解码、SCO 双向收发、PCM 桥接、混音与 WASAPI I/O 都由 C/C++ 负责。已经建立的专用音频流不依赖 Python GIL 或界面刷新。
-- **一个适配器，一个 USB/HCI 所有者**：控制器初始化、传输与音频路由共用明确的物理所有权；解码工作线程、端点操作与控制消息分开，音频回调不做内存分配、设备打开或波形周期搜索。
-- **保留解码后的细节**：媒体保留协商采样率，96 kHz LDAC 到 96 kHz 输出无需中间降为 48 kHz。内部保留浮点 PCM，必要重采样与微小时钟匹配合并处理，减少重复转换和量化。
-- **连续性与音质一起验证**：每路使用独立时间线、自适应缓冲和有界缺口补偿，恢复窗口外保持解码样本；同率、正常增益的无缺口路径以逐样本相等检查。另用原生线程阻塞、抖动丢包、弱信号及频率参考验证边界。
-- **隔离故障，保留可用路由**：实验 LDAC 在子进程内解码；端点切换采用准备与提交，过期操作不能覆盖新设备。异常按类型恢复，输入输出可热切换，挂断后继续媒体。
-
-界面使用 C#/WPF；Python/Bumble 保留配对、服务发现、协议协商和应用控制。运行包不依赖 PyAV、NumPy 或 sounddevice。设计与可复现检查见 [音频核心](docs/AUDIO_CORE.md)、[保真契约](docs/AUDIO_FIDELITY.md) 和 [测试说明](docs/TESTING.md)。
-
-## 运行环境与两种接收方式
-
-支持目标为 **Windows 11，x64**。发布包自带 Python 控制后台和原生音频库；桌面使用上述系统自带的 .NET Framework 4.8 或 4.8.1，无需另装 Python 或现代 .NET Desktop Runtime。请使用完整包，不要只复制 EXE。
-
-| 方式 | 用途 | 准备条件 |
-|---|---|---|
-| 声音和麦克风 · 专用适配器 | 双向语音、编码选择、多设备路由、AVRCP 控制 | 一个由 BlueHead 专用、可通过 WinUSB 访问的 USB HCI 蓝牙适配器 |
-| 只收听媒体 · 共用 Windows 蓝牙 | 沿用 Windows 蓝牙驱动接收媒体 | 先在 Windows 中配对；编码与播放由系统管理，本程序不提供专用模式的语音和混音控制 |
-
-专用接收会占用所选适配器。使用内置蓝牙时，该适配器原有的耳机、键鼠等连接会断开；也可使用单独的受支持 USB 蓝牙适配器。应用会备份恢复所需的信息，驱动更换和恢复需 Windows 管理员授权。停止接收后可恢复系统蓝牙。
-
-不同适配器的启动方式不同。点击“开始接收”后，程序检查控制器状态和实际能力：已运行的固件直接验证使用；需要加载时使用本机已验证缓存，缺少文件则按提示在线获取或从原厂包提取。文件须通过签名目录与摘要校验。未适配的格式可使用一次原厂驱动引导，交接后重新确认专用接收；固件不能保留时恢复系统蓝牙。需要重启时明确提示 **“驱动恢复完成，请重启电脑”**，不会自动重启。见 [固件与启动说明](docs/FIRMWARE.md) 和 [控制器兼容范围](docs/COMPATIBILITY.md)。
+程序不会通过悄悄降低已选编码质量或无限增加缓冲掩盖传输问题。软件处理延迟、缓冲配置和无线端到端延迟是不同指标。设计见 [架构](docs/ARCHITECTURE.md)、[音质契约](docs/AUDIO_FIDELITY.md)、[异常恢复](docs/RECOVERY.md)。
 
 ## 第一次使用
 
-1. 完整安装或解压同版本包，运行根目录的 `BlueHead.exe`。
-2. 首页点击 **设置蓝牙接收**。需要麦克风时，选择“声音和麦克风 · 专用适配器”，按提示准备专用适配器。
-3. 回到音频中心，点击 **开始接收**；在移动设备蓝牙设置中连接界面显示的名称，开启媒体与通话音频。
-4. 播放媒体或开启支持蓝牙麦克风的应用。设备卡片的“播放 / 麦克风发送”调节该设备的增益；底部总控可调音量、静音及切换电脑声音设备。
-5. AVRCP 可用时，曲名和三个媒体按钮显示在同一条紧凑信息行。设备没有提供有效元数据时显示“暂无曲目信息”；真实英文曲名保留原文。状态未知或操作不受支持时，相应按钮禁用。
+运行环境：**Windows 10 / 11 x64**，.NET Framework 4.8 / 4.8.1。完整包包含控制后台及原生依赖，无需另装 Python 或现代 .NET Desktop Runtime。电脑声音混合要求 Windows build 20348+，通常使用 Windows 11。
 
-首页同一行选择 **出声方式** 和 **媒体编码**。媒体编码只影响 A2DP，语音编码由双方自动协商。默认优先使用可用高清媒体编码；更换后按提示应用并重新连接。多设备同时播放高清音频若断续，可切换 AAC，必要时使用最高 192 kb/s，或改用单设备自动接替。
+1. 从 [Releases](https://github.com/tingol666/BlueHead/releases/latest) 下载安装版或绿色版。绿色版完整解压到新文件夹，运行根目录 `BlueHead.exe`，不要只复制一个 EXE。
+2. 首页选择 **蓝牙使用方式**：
 
-只收听媒体时可在 **蓝牙设置** 选择“只收听媒体 · 共用 Windows 蓝牙”，先在 Windows 配对，再回到首页开始接收。此方式保留 Windows 的其他蓝牙连接；编码、播放设备与音量由系统管理。首页、设置与帮助会显示当前方式，电脑麦克风与混音需切换专用接收。
+   | 方式 | 适合的用途 | 影响 |
+   |---|---|---|
+   | **Windows 共用（基础）** | 只收听设备媒体，保留系统蓝牙键鼠、耳机 | 沿用 Windows 驱动；不提供 BlueHead 的麦克风、编码选择和专用混音 |
+   | **BlueHead 专用（进阶）** | 电脑麦克风、多设备、高级媒体编码、LE Audio 和广播 | 所选适配器切换为 WinUSB，由 BlueHead 独占；它原有的系统蓝牙连接会断开 |
 
-选择方式不会直接更换驱动；准备不足时首页显示下一步。恢复当前适配器后自动切换系统共用，已恢复的驱动不能重复恢复；需要重启时明确提示。操作说明见 [界面指南](docs/UI_GUIDE.md)。
+3. 选择进阶模式后，按 **蓝牙驱动设置** 页从上到下选择电脑蓝牙设备、查看影响，在页底右侧点击 **备份并启用专用蓝牙**。操作完成才保存新方式；取消不会只改变选项，完成后也不会自动开始接收。
+4. **进阶模式**：回音频中心点右上角 **开始接收**，再在手机／平板的蓝牙设置中连接界面显示的电脑耳机名称。**基础模式**：先在电脑 Windows 蓝牙设置中添加并配对设备，回 BlueHead 点 **开始接收**，再在设备上播放媒体。
+5. 点击底部音量块调音量和选择声音设备。设备卡片显示实际协议、采样率、码率；“实时详情”查看实际接收速率、缓冲和恢复计数。
 
-关闭窗口默认留在托盘；完全退出请右键托盘图标 → **退出**。恢复系统蓝牙前先停止接收，再到“蓝牙设置”。后台无法启动时，可单独运行 `BlueHead.exe --recovery`。
+**专用模式会使所选适配器不再提供 Windows 蓝牙；若没有其它系统适配器，Windows 蓝牙开关会消失。** 需要保留蓝牙键鼠时，使用基础模式或单独准备一个受支持的 USB 蓝牙适配器。恢复时在同一页点击 **恢复 Windows 蓝牙**。
 
-2.0 安装包要求新的空目录，默认使用 `%LocalAppData%\Programs\BlueHead-2`，目前不支持原地覆盖安装；安装版继续沿用原设置与配对目录。旧 1.x 安装版应在安装 2.0 前退出、备份并完成卸载，按提示处理系统蓝牙恢复。旧便携版可保留回退，在新目录使用 2.0；迁移便携版时只复制自己的 `data/`，不要覆盖新程序文件。不要在安装 2.0 后再运行旧安装版的卸载器。
+关闭窗口默认留在托盘；单击托盘图标显示窗口，完全退出请右键托盘 → **退出**。更多操作见 [界面指南](docs/UI_GUIDE.md) 和 [音量、采集与实时详情](docs/AUDIO_CONTROLS.md)。
 
-## 协议与兼容边界
+## 协议与兼容范围
 
-| 功能 | 实现及限制 |
+| 项目 | 已实现范围 |
 |---|---|
-| 媒体 | A2DP：SBC、AAC、aptX、aptX HD，以双方实际协商为准 |
-| LDAC | 实验性、默认关闭；支持原生 44.1/48/88.2/96 kHz PCM，使用非 Sony 认证解码器 |
-| 双向语音 | HFP：CVSD 8 kHz、mSBC 16 kHz、LC3-SWB 32 kHz；一次一个语音来源 |
-| iPhone / iPad | 标准 AAC/SBC 媒体与 HFP 双向语音，配合 AVRCP 媒体信息和播放控制 |
-| Android / HarmonyOS | 取决于系统、设备和应用实际开放的 profile、编码与麦克风路由，不以系统名称保证全部功能 |
-| AVRCP | 曲目、播放状态、媒体控制与标准绝对音量；无有效媒体信息时显示“暂无曲目信息” |
-| 电脑声音混合 | 进程排除采集要求 Windows build 20348+；Windows 10 22H2 不提供此项系统能力 |
-| 录音 / 录像 | 应用必须支持并选择蓝牙麦克风，电脑不能强制指定移动端应用的输入源 |
+| 经典媒体 A2DP | SBC、AAC、aptX、aptX HD；自动模式优先协商已启用的高清编码 |
+| LDAC | 按需开启的实验性独立解码器，44.1/48/88.2/96 kHz |
+| LHDC 5.0 | 原生 44.1/48/96/192 kHz、16/24-bit 立体声解码，每设备进程隔离 |
+| HFP 语音 | CVSD 8 kHz、mSBC 16 kHz、LC3-SWB 32 kHz；双向麦克风、录音／录像应用路由 |
+| LE Audio / LC3 | BAP 单播接收与麦克风发送；7.5/10 ms、单／双声道接收；PACS、ASCS、CAS、VCS、MICS |
+| 音频广播接收 | BAP 广播、BASS/PAST、公开／带密码广播、节目选择、单 BIS 或分离立体声 |
+| 标准平台音频 | iPhone/iPad 的 AAC/SBC、HFP 和 AVRCP；Android、HarmonyOS、Windows 等以实际开放的协议和应用路由为准 |
 
-**HFP LC3-SWB 不是完整 LE Audio。** 它要求双方支持相应 HFP 协商；蓝牙 5.3 或更高版本本身不能保证支持。当前不实现完整 LE Audio/BAP、Auracast、aptX Adaptive/Lossless 或同时多路语音桥接，也不声明获得 Apple 或 Bluetooth 产品认证。
+LHDC 5.0 可在首页选择；LE Audio 在 **设置 → 高级音频设置** 开启。普通“媒体编码”只控制经典 A2DP，语音和 LE Audio 的 LC3 自动协商。操作与详细范围见 [LE Audio / LHDC](docs/LE_AUDIO.md)。
 
-AVRCP 的标准设备音量为 0%–100%，与本地 0%–200% 接收增益独立。卡片“详情”显示标准音量，远端调整后会影响实际接收声音，但不会把本地 175% 等增益改写为标准音量。
+蓝牙版本号不能保证 ISO、LE Audio 或特定编码能力。实际可用功能由适配器、USB 传输、固件和对端共同决定；未支持的方向不会被伪报为可用。多路高清媒体可能超过无线带宽，需要时可手动选 AAC 或单设备自动接替。
 
-想保留 96 kHz LDAC 的原采样率，请将 Windows 播放端点的共享格式设为 96 kHz；端点为 48 kHz 时会做必要的抗混叠转换。软件 PCM／端点路径另验证到 384 kHz，实际来源和设备能力决定可用格式。音质契约见 [保真设计与验证](docs/AUDIO_FIDELITY.md)。
+同一时间向一个设备发送电脑麦克风，默认通话／语音保护会在使用麦克风时暂时限制其它连接。应用须支持并选择蓝牙麦克风。当前不提供广播发送、LC3plus/HR、aptX Adaptive/Lossless、LHDC 可选无损／AR／JAS／META 扩展或全部可选 GAF 应用角色，也不声明 Bluetooth 或编解码器产品认证。HFP LC3-SWB 与 LE Audio 是不同路径。
 
-默认初始媒体缓冲 60 ms、语音 30 ms，运行中按抖动调整目标，并对短缺口补偿及恢复做平滑处理。这些缓冲值**不是端到端延迟实测值**。原生化旨在减少分配、调度和资源依赖；本版不承诺未经测量的延迟或 CPU 改善数值。没有声学回声消除，外放时实体麦克风仍会拾到声音，建议使用电脑耳机。
+## 技术栈与上游基础
 
-## 技术栈与源码
+BlueHead 是 Windows 桌面程序、原生运行时及蓝牙控制服务的组合。它基于下列开源组件构建，并为桌面蓝牙耳机场景实现传输所有权、会话生命周期、实时音频调度、混音、恢复及驱动工作流。
 
-独立 `BlueHead.Runtime.exe` 统一持有 USB/HCI、固件初始化和音频图；WPF 与 Python 控制层通过私有接口发出会话和路由请求。新连接、重新协商及部分控制操作仍需要 Python/Bumble 运行。固件下载在独立进程中完成，不持有 USB/HCI，也不进入实时音频路径。
+| 组件 | 在 BlueHead 中的用途与工作 |
+|---|---|
+| **C# / WPF、[WPF UI](https://github.com/lepoco/wpfui)** | 紧凑桌面界面、托盘、设备与驱动管理；目标 .NET Framework 4.8 |
+| **Python / [Google Bumble](https://github.com/google/bumble)** | 配对、服务发现、A2DP/HFP/AVRCP 与 LE 信令；持续音频改由原生后台处理 |
+| **C/C++ / [libusb](https://github.com/libusb/libusb)** | 唯一 USB/HCI 所有者、ACL/SCO/ISO、原生期限与信用控制 |
+| **[miniaudio](https://github.com/mackron/miniaudio) / WASAPI** | 仅构建 Windows 设备 I/O；BlueHead 自有浮点混音、热切换、时钟与采集桥接 |
+| **[FFmpeg](https://ffmpeg.org/)、[Google liblc3](https://github.com/google/liblc3)** | 裁剪的音频编解码库，以及原生 HFP LC3-SWB / LE LC3 |
+| **[libldacdec](https://github.com/hegdi/libldacdec)** | 有界浮点解码与进程隔离，修正静音尺度和精细反量化，保留原采样率 |
+| **[LHDC-V5-Decoder](https://github.com/WillyBilly06/LHDC-V5-Decoder)** | 固定上游数学解码源码；增加完整帧校验、窗口／幅度校准、坏包恢复和每设备隔离 |
+| **[SpeexDSP](https://gitlab.xiph.org/xiph/speexdsp)、[PipeWire](https://github.com/PipeWire/pipewire)、[SpanDSP](https://github.com/freeswitch/spandsp)** | 有状态 SRC、蓝牙时钟控制参考和可替换的语音丢包补偿 |
+| **[libwdi](https://github.com/pbatard/libwdi)、Windows SetupAPI** | 精确设备实例、原驱动备份、WinUSB 切换、恢复与需要重启的状态处理 |
 
-运行时不再依赖 PyAV、NumPy 或 sounddevice。原生组件包括音频专用 FFmpeg、单次异步采样率转换、兼容 SpeexDSP、miniaudio、liblc3，以及可独立替换的 SpanDSP PLC 动态库。界面仍为 C#/WPF，不裁剪 WPF/COM。
+运行包不使用 PyAV、NumPy、sounddevice 或现代 .NET 自包含运行时。上游固定修订、原始摘要、修改说明和许可证保存在 `vendor/`、`licenses/` 与 [第三方说明](THIRD_PARTY_NOTICES.txt)，不会把第三方项目的算法宣称为原创。
+
+## 源码与构建
 
 ```text
-bluehead/    蓝牙信令、会话；native_control/ 为控制接口
-native/      audio/、codecs/、runtime/、transport/、controller/、firmware/、platform/、include/
-desktop/     WPF 界面、系统接口、独立驱动工具与离线兼容检查
-vendor/      固定版本上游源码、来源与校验信息
-tools/       构建、诊断、验证与打包工具
-tests/       协议、原生音频与生命周期回归
-installer/   安装及卸载脚本
-docs/        使用、架构、构建及验证说明
+bluehead/    蓝牙信令、会话与应用控制，原生 RPC 接口
+native/      原生传输、编解码、时间线、PCM、Windows 适配和产品诊断
+desktop/     WPF 桌面、系统接口与独立驱动工具
+vendor/      固定版本上游源码、摘要及构建适配记录
+tools/       构建、依赖清点、打包与源码边界检查
+docs/        使用、兼容性与设计说明
+installer/   安装与卸载
 licenses/    第三方许可证
 ```
 
-开发步骤见 [BUILDING](docs/BUILDING.md)，实现边界见 [ARCHITECTURE](docs/ARCHITECTURE.md)，音质约束与耳机参考设计见 [音频质量](docs/AUDIO_QUALITY.md)，具体测试记录见 [TESTING](docs/TESTING.md) 与同版本 `VALIDATION.md`。公开源码不包含个人配对、日志、驱动备份或构建缓存；安装包、便携包和源码归档放在 Releases。
+按 [BUILDING](docs/BUILDING.md) 可从干净检出生成完整安装包。GitHub 与 Source ZIP 使用同一份公开源码清单，包含构建所需完整代码、资源和依赖材料；本地回归测试、开发探针、个人配对、设置、驱动备份、日志、工具链和构建缓存不进入公开树。内置离线诊断随产品保留，见 [诊断](docs/DIAGNOSTICS.md) 和 [验证方法](docs/TESTING.md)。
 
-## 数据与问题反馈
+## 数据、恢复与许可
 
-音频在本机实时处理，不录音、不上传声音。绿色版设置与配对在 `data/`，安装版在 `%LocalAppData%\BlueHead\data`；驱动恢复信息在 `%ProgramData%\BlueHead\Drivers`。升级请保留这些数据。
+音频在本机处理，不录音、不上传；广播密码不持久保存。程序不附带厂商固件镜像，按需验证获取或从原厂驱动包提取，缓存后可离线使用。按物理适配器识别和检测能力，不依赖某个厂商型号。见 [固件与启动](docs/FIRMWARE.md)。
 
-报告问题请附准确版本、Windows 版本、适配器、来源设备及复现步骤。诊断报告只导出匿名计数；请勿公开配对密钥、设备地址、完整恢复记录或含个人信息的原始日志。
+启动失败请到 **蓝牙驱动设置** 按状态处理；需要原厂初始化时，手动点击右下方 **修复专用蓝牙**。恢复驱动后若仍需系统初始化，会提示 **“驱动恢复完成，请重启电脑”**。独立恢复入口：`BlueHead.exe --recovery`。
 
-项目默认采用 [Apache-2.0](LICENSE)，有单独许可声明的文件与第三方组件按其各自许可分发，见 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)。项目与 Microsoft、Google、Apple、Sony、Qualcomm 无隶属或认证关系。
+安装器要求新的空目录，目前不支持覆盖安装。升级前从托盘退出并备份数据：绿色版为自身 `data/`，安装版为 `%LocalAppData%\BlueHead\data`。保留原驱动备份和固件缓存；不要混用不同版本程序文件。反馈请附版本、实际协商编码及复现步骤，勿公开配对密钥或真实设备地址。
 
-## 源码与发布物
-
-GitHub 源码只保留实现、测试、构建工具、使用说明、必要资源和固定依赖／许可证。
-BlueHead 自有 EXE/DLL、FFmpeg 编译产物、测试编码器、完整安装包及本机日志／设置不进入源码树；
-从干净检出运行 `tools/build_all_native.py` 可构建原生组件。保留的外部二进制为固定版本 libusb，附来源、许可证与 SHA-256 记录；厂商固件按需验证获取，源码与基础包均不附带镜像。
-安装包、绿色版、源码归档和校验值单独通过 Releases 提供。开发与发布步骤见 [构建说明](docs/BUILDING.md)，
-组件边界见 [架构说明](docs/ARCHITECTURE.md)，音频恢复规则见 [恢复设计](docs/RECOVERY.md)。
+BlueHead 使用 [Apache-2.0](LICENSE)，第三方组件遵循各自许可。本项目与 Microsoft、Google、Apple、Sony、Qualcomm 等公司无隶属或产品认证关系。

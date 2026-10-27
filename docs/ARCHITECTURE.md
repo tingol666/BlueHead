@@ -1,4 +1,4 @@
-# 2.1.2 架构与恢复
+# 架构与所有权
 
 持续音频收发和调度运行于 C/C++，Python 保留信令及应用控制。工程按所有权拆分组合入口、传输、音频图、设备控制和媒体工作线程。历史 Python 样本路径保留为离线对照及非生产入口；正式桌面以 C++ 后台作为入口，不在运行中悄悄回退到 Python 实时链路。
 
@@ -11,6 +11,8 @@
 | 传输 | `native/transport/` | libusb/HCI 所有者、分片、信用与节拍；通过 `HciTarget` 访问音频，不持有编解码状态 |
 | 音频图 | `native/runtime/audio_graph.hpp` | 来源／语音会话、路由、代次和增益；依赖 HCI 音频接口，不依赖 USB 实现 |
 | 媒体来源 | `native/runtime/audio/media_worker.hpp` | 每来源队列、解码、期限、连续性与计数；只依赖 `MediaServices` 中的有限服务，不反向引用整个图或设备控制器 |
+| LE 原生音频 | `native/runtime/audio/iso_{receiver,transmitter}.hpp` | 固定容量 ISO/LC3 队列、分离声道、呈现时钟、原生发送期限；复用现有音频图与端点 |
+| LE 信令与服务 | `bluehead/le_audio/` | ASCS/PACS/CAS、VCS/MICS、BASS/PAST、广播生命周期与 scoped 原生路由；不访问 USB 或 PCM |
 | 设备控制 | `native/runtime/audio/endpoint_actor.hpp` | 唯一 MTA 设备控制线程、候选提交、恢复退避、端点库存及 PCM 生产者桥接；不接触 USB 或语音编码器 |
 | DSP 与编解码 | `native/audio/`、`native/codecs/` | float 混音、时钟、SRC、补偿及编解码；公开 C ABI 在 `native/include/` |
 | Windows 适配 | `native/platform/windows/` | WASAPI、进程排除采集、启动器、原生异常诊断与 INF 模板 |
@@ -36,6 +38,9 @@ flowchart LR
   USB <--> Voice[SCO 接收 / PLC / 编码 / USB 发送节拍]
   Media --> Mix[自适应缓冲 / 时钟匹配 / 混音 / SRC]
   Voice --> Mix
+  USB <--> ISO[ISO 信用 / 原生 LC3 收发 / 共享呈现时间线]
+  ISO --> Mix
+  Bridge --> ISO
   Mix --> Output[原生 WASAPI 播放]
   Capture[原生麦克风采集] --> Bridge[原生 PCM 桥接 / 上行混音]
   Other[电脑其他应用] --> Exclude[排除 Runtime 进程树的 WASAPI 采集]
@@ -46,7 +51,7 @@ flowchart LR
 
 Runtime 是适配器唯一物理所有者，持有兼容旧版的 Local 租约及 Global 租约。Python 不再打开 libusb，也不创建专用模式的音频端点。Bumble 保留信令命令/ACL 的单一信用账本及响应匹配；Runtime 按原字节转送这些控制包，不伪造第二套信用。语音专用完成通知在原生层消化，SCO 由原生 USB 节拍发送。
 
-注册后的媒体 CID 和语音 handle 在 HCI 到达时进入原生有界队列，其余信令通过受当前用户 ACL 保护、拒绝远程连接的随机命名管道交给 Bumble。生产管道不传 PCM。LDAC 实验解码器仍隔离到独立 C++ 子进程，只使用原生共享内存传递数据，不持有 USB 或声音设备。
+注册后的媒体 CID 和语音 handle 在 HCI 到达时进入原生有界队列，其余信令通过受当前用户 ACL 保护、拒绝远程连接的随机命名管道交给 Bumble。生产管道不传 PCM。LDAC 与 LHDC 5.0 解码器按来源隔离到独立 C++ 子进程，只使用原生共享内存传递数据，不持有 USB 或声音设备；进程崩溃、超时和重置不能污染另一来源的解码状态。
 
 WPF 只收发 JSON。Runtime 将普通命令交给 Python；总增益、麦克风总静音和停止先在原生层执行。Python 暂停时，已建立的音频链路继续运行；配对、HFP/AVDTP 重新协商及普通控制操作需要 Python 恢复，不能把这种隔离称为整个蓝牙栈原生化或硬实时保证。
 
@@ -90,7 +95,7 @@ RTP 时间戳用于识别丢失时长。短缺口优先按相关历史做最多�
 
 AVRCP控制和元数据按蓝牙连接生命周期管理，曲目信息只进界面状态，不写原始日志。远端标准绝对音量为0–1，与0–2的接收增益分离；前者变化不能重写后者。未知播放状态不能猜测play/pause；不支持的操作禁用或明确报告拒绝。迟到事件不能重新创建设备卡片。
 
-LC3-SWB是HFP的语音codec，不是LE Audio/BAP。协议实现与实际对端兼容、产品认证是不同事情。
+LC3-SWB 是 HFP 语音编码；LE Audio / LC3 走独立 BAP/ISO 路径。新服务、广播、原生连接代次、时钟及验证范围见 [LE_AUDIO](LE_AUDIO.md)。协议实现、实际对端兼容与产品认证分别记录。
 
 ## 电脑声音混合与隔离
 
@@ -107,3 +112,7 @@ LC3-SWB是HFP的语音codec，不是LE Audio/BAP。协议实现与实际对端�
 ## 控制器初始化与驱动恢复
 
 2.1.3 将物理身份、能力检测、厂商初始化与固件信任拆分为 native/controller/ 和 native/firmware/。厂商后端只借用唯一 USB 所有者的命令、事件和进度端口；初始化完成后才开放运行期 HCI。独立固件获取进程不持有 USB，不进入实时音频线程。Windows 平台层按真实物理目标选择原驱动、保存恢复阶段，并通过单次交接策略处理原厂引导；界面以纯状态策略统一不同页面的下一步。详见 [控制器兼容架构](COMPATIBILITY.md) 与 [固件与启动](FIRMWARE.md)。
+
+## 跨线程状态快照
+
+桌面命令来自控制进程的 stdin 线程，LE 服务、连接、任务和异步锁属于 Receiver 循环。增益、隐私通知和实时状态读取通过同一个受管理的控制入口回到所属循环。界面轮询合并正在执行的旧请求，快照中的广播计数同时核对会话和原生 token，旧回复不能标记新选择。关闭先取消受管理控制任务，再回收服务、路由与唯一传输所有者。

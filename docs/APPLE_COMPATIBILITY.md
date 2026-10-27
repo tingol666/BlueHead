@@ -93,3 +93,5 @@ borrow Apple's manufacturer identifiers or advertise private accessory features.
 - [AVAudioSession: allowBluetoothA2DP](https://developer.apple.com/documentation/avfaudio/avaudiosession/categoryoptions-swift.struct/allowbluetootha2dp)
 - [Apple WWDC25: audio recording capabilities](https://developer.apple.com/videos/play/wwdc2025/251/)
 - [AVRCP implementation notes](AVRCP.md)
+
+Maintenance regression fixtures and stress harnesses mentioned here are not part of the public build inputs. For the built-in product diagnostics available from a clean checkout, see [DIAGNOSTICS](DIAGNOSTICS.md).

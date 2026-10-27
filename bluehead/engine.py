@@ -41,7 +41,7 @@ def validate_settings(values):
         raise ValueError("未知接收方式")
     if settings.mode == "advanced":
         transport_target(settings.transport)
-    if settings.codec not in ("auto", "sbc", "aac", "aac_192", "aptx", "aptx_hd", "ldac"):
+    if settings.codec not in ("auto", "sbc", "aac", "aac_192", "aptx", "aptx_hd", "ldac", "lhdc5"):
         raise ValueError("未知媒体编码")
     if settings.media_mode not in ("single", "mix"):
         raise ValueError("未知出声方式")
@@ -53,13 +53,13 @@ def validate_settings(values):
         raise ValueError("不支持的媒体缓冲")
     if type(settings.call_buffer_ms) is not int or settings.call_buffer_ms not in (20, 30, 40, 60):
         raise ValueError("不支持的通话缓冲")
-    for device in (settings.input_device, settings.output_device):
+    for device in (settings.input_device, settings.output_device, settings.system_device):
         if device is not None and (type(device) is not int or not 0 <= device < 4096):
             raise ValueError("无效声音设备")
-    for identity in (settings.output_endpoint_id, settings.input_endpoint_id):
+    for identity in (settings.output_endpoint_id, settings.input_endpoint_id, settings.system_endpoint_id):
         if identity is not None and (not isinstance(identity, str) or not 1 <= len(identity) <= 512):
             raise ValueError("无效声音设备标识")
-    for value in (settings.calls, settings.ldac_enabled, settings.microphone_muted, settings.system_audio_enabled):
+    for value in (settings.calls, settings.voice_single_device, settings.ldac_enabled, settings.lhdc5_enabled, settings.le_audio_enabled, settings.microphone_muted, settings.system_audio_enabled):
         if type(value) is not bool:
             raise ValueError("开关值必须为布尔值")
     for value in (settings.playback_gain, settings.microphone_gain, settings.system_gain):
@@ -73,6 +73,8 @@ def validate_settings(values):
             validate_gain(value)
     if settings.codec == "ldac" and not settings.ldac_enabled:
         raise ValueError("请先启用实验性 LDAC")
+    if settings.codec == 'lhdc5' and not settings.lhdc5_enabled:
+        raise ValueError('请先启用 LHDC 5.0')
     return settings
 
 
@@ -106,7 +108,7 @@ class Engine:
                 self.output.flush()
             except (BrokenPipeError, OSError):
                 self.runner.stop()
-        if event not in ("inventory", "telemetry", "gain", "master_gain", "avrcp"):
+        if event not in ("inventory", "telemetry", "gain", "master_gain", "avrcp", "heartbeat"):
             logging.getLogger(__name__).info("%s %s", event, values)
         if event == 'telemetry':
             self.audio_counters.record(values.get('audio', {}))
@@ -148,14 +150,14 @@ class Engine:
 
     def remap_saved_audio(self, settings):
         from .endpoints import find_endpoint
-        for direction in ("output", "input"):
+        for direction in ("output", "input", "system"):
             identity = getattr(settings, direction + "_endpoint_id")
             if identity is not None:
                 try:
-                    setattr(settings, direction + "_device", find_endpoint(identity, direction))
+                    setattr(settings, direction + "_device", find_endpoint(identity, "output" if direction == "system" else direction))
                 except ValueError:
                     setattr(settings, direction + "_device", None)
-                    if settings.mode != 'advanced':
+                    if settings.mode != 'advanced' and direction != 'system':
                         setattr(settings, direction + "_endpoint_id", None)
 
     def reconfigure_audio(self, force=False):
@@ -217,6 +219,8 @@ class Engine:
         running = self.runner.thread is not None and self.runner.thread.is_alive()
         if action == "hello":
             self.emit("hello", version=__version__, settings=asdict(self.settings), running=running)
+        elif action == "heartbeat":
+            self.emit("heartbeat")
         elif action == "inventory":
             self.refresh()
         elif action == "rescan_audio":
@@ -242,14 +246,19 @@ class Engine:
                     self.emit("configured", settings=asdict(self.settings))
         elif action == "stop":
             self.runner.stop()
+            # Also acknowledge a stop racing the receiver's final stopped event.
+            if not running:
+                self.emit("stopped")
         elif action == "audio_device":
             direction, device = message.get("direction"), message.get("device")
-            if direction not in ("input", "output") or (device is not None and (type(device) is not int or not 0 <= device < 4096)):
+            if direction not in ("input", "output", "system") or (device is not None and (type(device) is not int or not 0 <= device < 4096)):
                 raise ValueError("无效声音设备")
             request_id = message.get("request_id", 0)
             endpoint_id = message.get("endpoint_id")
             if endpoint_id is not None and (not isinstance(endpoint_id, str) or not 1 <= len(endpoint_id) <= 512):
                 raise ValueError("无效声音设备标识")
+            if direction == "system" and device is not None and endpoint_id is None:
+                raise ValueError("请选择具体电脑声音来源，或使用全部应用声音")
             if running:
                 if endpoint_id is None:
                     self.runner.set_audio_device(direction, device, request_id)
@@ -259,7 +268,7 @@ class Engine:
                 with self.audio_refresh_lock:
                     if endpoint_id is not None:
                         from .endpoints import find_endpoint
-                        device = find_endpoint(endpoint_id, direction)
+                        device = find_endpoint(endpoint_id, "output" if direction == "system" else direction)
                     setattr(self.settings, direction + "_device", device)
                     setattr(self.settings, direction + "_endpoint_id", endpoint_id)
                     self.save()
@@ -321,13 +330,19 @@ class Engine:
             if type(message.get("muted")) is not bool:
                 raise ValueError("无效静音状态")
             self.settings.microphone_muted = message["muted"]
-            if self.runner.receiver and self.runner.receiver.calls:
-                self.runner.receiver.calls.router.muted = self.settings.microphone_muted
+            if self.runner.receiver:
+                self.runner.receiver.set_microphone_muted(self.settings.microphone_muted)
             self.save()
+        elif action == 'broadcast':
+            from .le_audio.commands import validate
+            values = validate(message)
+            if not running or self.settings.mode == 'native':
+                raise ValueError('请先在音频中心使用进阶模式，点击“开始接收”，再搜索音频广播。')
+            self.runner.action('broadcast', values)
         elif action == "telemetry":
-            receiver = self.runner.receiver
-            self.emit("telemetry", running=running, audio=receiver.mixer.snapshot() if receiver else {},
-                      devices=receiver.live_snapshot() if receiver else [])
+            if not running or not self.runner.telemetry(self.settings.mode != "native"):
+                self.emit("telemetry", running=False, audio={}, devices=[],
+                          devices_complete=self.settings.mode != "native", broadcast=None)
         elif action == "shutdown":
             self.closed = True
             self.runner.stop()

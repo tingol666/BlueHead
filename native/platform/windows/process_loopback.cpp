@@ -1,6 +1,6 @@
 /* BlueHead process-excluding WASAPI capture. Apache-2.0.
- * Windows build 20348+. No files, network, Python callbacks or render loopback.
- * The OS excludes the target process tree before mixing capture samples.
+ * No files, network or Python callbacks. Default: process-tree exclusion
+ * (Windows build 20348+). Optional isolated endpoint: guarded by EndpointActor.
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -10,6 +10,7 @@
 #include <new>
 #include <cstring>
 #include <cmath>
+#include <cwchar>
 
 #define API extern "C" __declspec(dllexport)
 static constexpr UINT CAPACITY = 4800;
@@ -70,6 +71,7 @@ struct Capture {
   volatile LONG error = E_PENDING;
   PVOID volatile notify = nullptr;
   DWORD pid;
+  wchar_t endpoint[512] = {};
   UINT read = 0, frames = 0;
   unsigned long long received = 0, dropped = 0, clock_position = 0, clock_arrival = 0;
   float pcm[CAPACITY] = {};
@@ -86,10 +88,24 @@ static DWORD WINAPI capture_thread(void *argument) {
   HANDLE sample = nullptr, priority = nullptr;
   DWORD task = 0;
   bool started = false;
+  IMMDeviceEnumerator *enumerator = nullptr;
+  IMMDevice *endpoint = nullptr;
   ProcessActivation parameters = {1, c->pid, 1};
   PROPVARIANT variant = {};
   if (FAILED(hr))
     goto finished;
+  if (c->endpoint[0]) {
+    hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                          __uuidof(IMMDeviceEnumerator), reinterpret_cast<void **>(&enumerator));
+    if (SUCCEEDED(hr))
+      hr = enumerator->GetDevice(c->endpoint, &endpoint);
+    if (SUCCEEDED(hr))
+      hr = endpoint->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+                              reinterpret_cast<void **>(&client));
+    if (FAILED(hr))
+      goto finished;
+    goto initialize;
+  }
   activation = new (std::nothrow) Activation();
   if (!activation || !activation->done) {
     hr = E_OUTOFMEMORY;
@@ -123,6 +139,7 @@ static DWORD WINAPI capture_thread(void *argument) {
       activation->audio->QueryInterface(__uuidof(IAudioClient), reinterpret_cast<void **>(&client));
   if (FAILED(hr))
     goto finished;
+initialize:
   {
     WAVEFORMATEX format = {};
     format.wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
@@ -224,6 +241,10 @@ finished:
     reader->Release();
   if (client)
     client->Release();
+  if (endpoint)
+    endpoint->Release();
+  if (enumerator)
+    enumerator->Release();
   if (operation)
     operation->Release();
   if (activation)
@@ -237,7 +258,7 @@ finished:
   return 0;
 }
 
-API Capture *bh_loop_open(DWORD excluded_pid, DWORD *error) {
+static Capture *open_capture(DWORD excluded_pid, const wchar_t *endpoint, DWORD *error) {
   Capture *c = new (std::nothrow) Capture();
   if (!c) {
     if (error)
@@ -245,6 +266,14 @@ API Capture *bh_loop_open(DWORD excluded_pid, DWORD *error) {
     return nullptr;
   }
   c->pid = excluded_pid;
+  if (endpoint) {
+    if (!*endpoint || std::wcslen(endpoint) >= 512) {
+      if (error) *error = E_INVALIDARG;
+      delete c;
+      return nullptr;
+    }
+    std::wcscpy(c->endpoint, endpoint);
+  }
   c->stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   c->ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (c->stop && c->ready)
@@ -275,6 +304,14 @@ API Capture *bh_loop_open(DWORD excluded_pid, DWORD *error) {
   if (error)
     *error = S_OK;
   return c;
+}
+API Capture *bh_loop_open(DWORD excluded_pid, DWORD *error) {
+  return open_capture(excluded_pid, nullptr, error);
+}
+// Endpoint loopback has no OS-level process exclusion. The native endpoint
+// actor must isolate it from every BlueHead render route before publishing PCM.
+API Capture *bh_loop_open_endpoint(const wchar_t *endpoint, DWORD *error) {
+  return endpoint ? open_capture(0, endpoint, error) : nullptr;
 }
 API int bh_loop_read(Capture *c, float *out, UINT count) {
   if (!c || !out || count > CAPACITY)

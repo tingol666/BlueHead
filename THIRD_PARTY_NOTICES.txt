@@ -28,7 +28,7 @@ unrelated decoders, engine/graph, resource managers and backends are disabled.
 
 Google liblc3 1.1.3: Apache-2.0, Google LLC. https://github.com/google/liblc3
 Pinned commit 96a3af0beb5487aca3b98a4b992a539a1f6d80d1. Original sources, license
-and hashes are in vendor/liblc3. Statically linked for HFP LC3-SWB; LC3plus/HR off.
+and hashes are in vendor/liblc3. Used for HFP LC3-SWB and LE Audio LC3; LC3plus/HR off.
 
 SpanDSP PLC 3.1.1: LGPL-2.1-only, Steve Underwood.
 https://github.com/freeswitch/spandsp
@@ -49,11 +49,6 @@ Pinned commit 7f3bd6cc1586b764b02f2e4f20b16c7ff18758b9. Modified bounded,
 stereo-only float bridge, zero-scale sentinel and residual-precision corrections,
 and original license are in vendor/libldacdec. Decoder
 is experimental, opt-in, isolated in a child process, and not Sony certified.
-
-AOSP libldac encoder: Apache-2.0; development fixture generation only.
-https://android.googlesource.com/platform/external/libldac
-Pinned commit e8ff0f96f26b84b47711c549e0d60baa425cd70e. Source/notices are in
-vendor/libldac_encoder. The runtime does not ship an LDAC encoder.
 
 Native libusb 1.0.30: LGPL-2.1-or-later. https://github.com/libusb/libusb
 Official verified MS64 DLL remains replaceable in bluehead/assets. Exact source,
@@ -108,3 +103,14 @@ bluehead/assets/firmware/catalog.json. Redistributable firmware under
 licenses/realtek-bluetooth-firmware/LICENCE.rtlwifi_firmware.txt. Firmware is
 not relicensed as Apache-2.0. Native bootstrap wire-format reference: Google
 Bumble drivers/rtk.py (Apache-2.0); BlueHead does not link Linux driver code.
+
+
+LHDC V5 decoder math by William Ho (WillyBilly06): Apache-2.0, as declared
+by the pinned upstream README. Source and hashes: vendor/lhdc5-decoder.
+Upstream revision: cf857ce1a1429965e161e54adbc3f293fd9ce273.
+https://github.com/WillyBilly06/LHDC-V5-Decoder
+BlueHead's build-time adapter corrects normalization, synthesis windows and
+bounded malformed-input handling; it uses one native process per decoder.
+Changes are recorded in tools/build_lhdc5.py. License: licenses/lhdc5-decoder/LICENSE.
+No proprietary codec binaries or LHDC encoder are distributed. The upstream
+software license does not grant rights to the LHDC codec or trademarks.

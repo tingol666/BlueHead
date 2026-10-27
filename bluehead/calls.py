@@ -136,8 +136,10 @@ class CallManager:
         self.input_device = input_device
         self.router = router if router is not None else CallRouter()
         self.protocols, self.links, self.tasks = {}, {}, set()
+        self.protocol_tasks = {}
         self.connections, self.clients, self.control_ready, self.control_locks = {}, {}, {}, {}
         self.closed = False
+        self.voice_protection = None
         self.microphone = None
         self.capture_route = None
         self.capture_tasks = {}
@@ -250,6 +252,10 @@ class CallManager:
             if self.system_capture_tasks.get(key) is asyncio.current_task():
                 self.system_capture_tasks.pop(key, None)
 
+    async def set_system_source(self, endpoint):
+        if endpoint is not None:
+            raise OSError("指定电脑声音设备需要使用原生音频引擎")
+
     async def set_system_audio(self, enabled):
         self.system_enabled = enabled
         self.close_system_capture()
@@ -263,9 +269,15 @@ class CallManager:
                 raise OSError("电脑声音采集未就绪，已保留麦克风模式")
 
     def on_connection(self, connection):
-        if connection.transport != PhysicalTransport.BR_EDR:
+        if (self.closed or connection.transport != PhysicalTransport.BR_EDR or
+                self.voice_protection and not self.voice_protection.allowed(connection)):
             return
         key = str(connection.peer_address)
+        previous = self.connections.get(key)
+        if previous is connection:
+            return
+        if previous is not None:
+            self.retire_connection(key, previous)
         self.connections[key] = connection
 
         async def connect_control():
@@ -283,16 +295,41 @@ class CallManager:
 
         def disconnected(reason):
             task.cancel()
-            if self.connections.get(key) is connection:
-                self.connections.pop(key, None)
-                self.clients.pop(key, None)
-                self.control_locks.pop(key, None)
-                self.statistics.pop(key, None)
-                self.traffic.pop(key, None)
-                self.speaker_volumes.pop(key, None)
-                self.router.device_standard_gains.pop(key, None)
-                self.downlink_gains.pop(key, None)
+            self.retire_connection(key, connection)
         connection.once("disconnection", disconnected)
+
+    def retire_connection(self, key, connection):
+        """ACL validity owns all subordinate profiles, even with missing events."""
+        if self.connections.get(key) is not connection:
+            return
+        self.connections.pop(key, None)
+        if self.voice_protection:
+            self.voice_protection.ended(connection)
+        retirement = Retirement()
+        protocol = self.protocols.pop(key, None)
+        self.control_ready.pop(key, None)
+        task = self.protocol_tasks.pop(key, None)
+        if task and task is not asyncio.current_task():
+            retirement.call(task.cancel)
+        if protocol:
+            retirement.call(protocol.stop)
+        old_link = self.links.get(key)
+        retirement.call(self.audio_closed, key)
+        if old_link is not None:
+            self.spawn(self.disconnect_voice(old_link))
+        client = self.clients.pop(key, None)
+        if client:
+            retirement.call(self.retire_rfcomm_client, client)
+        self.control_locks.pop(key, None)
+        self.statistics.pop(key, None)
+        self.traffic.pop(key, None)
+        self.speaker_volumes.pop(key, None)
+        retirement.call(self.router.device_standard_gains.pop, key, None)
+        self.downlink_gains.pop(key, None)
+        # As with the media disconnect listener, failures must not prevent the
+        # remaining profile listeners on the same ACL from running.
+        if retirement.first:
+            log.warning("Disconnected voice cleanup incomplete (%s)", type(retirement.first).__name__)
 
     async def ensure_control(self, key):
         connection = self.connections.get(key)
@@ -353,12 +390,21 @@ class CallManager:
             self.spawn(self.disconnect_dlc(dlc))
             return
         protocol = HandsFreeProtocol(dlc, self.configuration)
+        async def before_codec(codec):
+            return (not self.closed and self.connections.get(key) is connection and
+                    (self.voice_protection is None or await self.voice_protection.prepare(connection, codec)))
+        protocol.before_codec = before_codec
         self.protocols[key] = protocol
+        def current():
+            return (not self.closed and self.connections.get(key) is connection and
+                    self.protocols.get(key) is protocol and not protocol.stopped)
         ready = self.control_ready[key] = asyncio.Event()
         async def run_protocol():
             try:
                 await asyncio.wait_for(protocol.initiate_slc(), 12)
                 ready.set()
+                if not current():
+                    return
                 self.emit("call", key=key, state="蓝牙语音服务已就绪")
                 log.info("HFP service ready: %s", key)
                 await protocol.run()
@@ -372,12 +418,27 @@ class CallManager:
                 # Bumble's run() can return after a protocol error. Never leave
                 # a dead session registered as a usable headset connection.
                 await self.disconnect_dlc(dlc)
-        self.spawn(run_protocol())
+        self.protocol_tasks[key] = self.spawn(run_protocol())
         def request(link_type):
-            self.spawn(self.accept_audio(key, protocol, connection, link_type))
+            if current():
+                self.spawn(self.accept_audio(key, protocol, connection, link_type))
         def linked(link):
-            self.on_link(key, protocol, link)
+            if current():
+                guard = self.voice_protection
+                if guard and not guard.activate(connection, link, selected_codec(protocol)):
+                    self.spawn(self.disconnect_voice(link))
+                    guard.failed(connection)
+                    return
+                self.on_link(key, protocol, link)
+                if guard and self.links.get(key) is not link:
+                    guard.ended(connection, link)
+            else:
+                self.spawn(self.disconnect_voice(link))
         def failed(status):
+            if not current():
+                return
+            if self.voice_protection:
+                self.voice_protection.failed(connection)
             log.warning("SCO connection failed: peer=%s status=%s", key, status)
             self.emit("call", key=key, state=f"语音连接失败 · HCI 0x{status:02X}")
             if status in (hci.HCI_UNSUPPORTED_FEATURE_OR_PARAMETER_VALUE_ERROR,
@@ -388,36 +449,42 @@ class CallManager:
         connection.on("sco_connection_failure", failed)
         protocol.on("codec_negotiation", lambda codec: log.info("HFP codec: peer=%s codec=%s", key, codec.name))
         def codec_failed(codec):
-            link = self.links.get(key)
+            if self.voice_protection and current():
+                self.voice_protection.failed(connection)
+            link = self.links.get(key) if current() else None
             if link is not None:
-                self.spawn(link.disconnect())
+                self.spawn(self.disconnect_voice(link))
         protocol.on("codec_failed", codec_failed)
-        protocol.on(protocol.EVENT_SPEAKER_VOLUME, lambda value: self.remote_volume(key, value, "speaker"))
-        protocol.on(protocol.EVENT_MICROPHONE_VOLUME, lambda value: self.remote_volume(key, value, "microphone"))
-        protocol.on("ag_indicator", lambda indicator: self.indicator_changed(key, protocol, indicator))
-        protocol.on("ring", lambda: self.emit("call", key=key, state="来电", phase="incoming"))
+        protocol.on(protocol.EVENT_SPEAKER_VOLUME, lambda value: current() and self.remote_volume(key, value, "speaker"))
+        protocol.on(protocol.EVENT_MICROPHONE_VOLUME, lambda value: current() and self.remote_volume(key, value, "microphone"))
+        protocol.on("ag_indicator", lambda indicator: current() and self.indicator_changed(key, protocol, indicator))
+        protocol.on("ring", lambda: current() and self.emit("call", key=key, state="来电", phase="incoming"))
         cleaned = False
         def closed():
             nonlocal cleaned
             if cleaned:
                 return
             cleaned = True
+            retirement = Retirement()
             connection.remove_listener("sco_request", request)
             connection.remove_listener("sco_connection", linked)
             connection.remove_listener("sco_connection_failure", failed)
             if self.protocols.get(key) is protocol:
+                if self.voice_protection:
+                    self.voice_protection.failed(connection)
                 old_link = self.links.get(key)
                 self.protocols.pop(key, None)
+                self.protocol_tasks.pop(key, None)
                 self.control_ready.pop(key, None)
-                self.audio_closed(key)
+                retirement.call(self.audio_closed, key)
                 if old_link is not None:
                     self.spawn(self.disconnect_voice(old_link))
                 self.emit("call", key=key, state="蓝牙语音服务已断开，可重连")
-            protocol.stop()
+            retirement.call(protocol.stop)
             client = self.clients.get(key)
             if client is not None and client.multiplexer is dlc.multiplexer:
                 self.clients.pop(key, None)
-                self.retire_rfcomm_client(client)
+                retirement.call(self.retire_rfcomm_client, client)
         protocol.on("protocol_error", lambda reason: self.spawn(self.disconnect_dlc(dlc)))
         dlc.once("close", closed)
         dlc.multiplexer.l2cap_channel.once("close", closed)
@@ -481,6 +548,17 @@ class CallManager:
             self.emit("warning", key=key, message="另一设备正在使用语音通道，请先切换发送设备")
             return
         codec = selected_codec(protocol)
+        if self.voice_protection and not await self.voice_protection.prepare(connection, codec):
+            await self.device.send_async_command(hci.HCI_Reject_Synchronous_Connection_Request_Command(
+                bd_addr=connection.peer_address, reason=hci.HCI_ErrorCode.CONNECTION_REJECTED_DUE_TO_LIMITED_RESOURCES_ERROR))
+            return
+        # Disconnect/preflight awaits must not revive a replaced protocol.
+        if (self.closed or getattr(protocol, "stopped", False) or
+                self.protocols.get(key, protocol) is not protocol or
+                self.connections.get(key, connection) is not connection):
+            if self.voice_protection:
+                self.voice_protection.failed(connection)
+            return
         transparent = codec in (hfp.AudioCodec.MSBC, hfp.AudioCodec.LC3_SWB)
         log.info("SCO request: peer=%s link_type=%s codec=%s", key, link_type, protocol.active_codec)
         if link_type == hci.HCI_Connection_Complete_Event.LinkType.SCO:
@@ -535,21 +613,21 @@ class CallManager:
             self.spawn(self.disconnect_voice(link))
             return
         if self.router.owner not in (None, key) and self.links:
-            self.spawn(link.disconnect())
+            self.spawn(self.disconnect_voice(link))
             return
         codec_id = int(selected_codec(protocol))
         compressed = codec_id in (2, 3)
         expected_air = hci.CodecID.TRANSPARENT if compressed else hci.CodecID.CVSD
         if link.air_mode != expected_air:
             self.emit("warning", key=key, message="语音链路格式与协商编码不符，等待重新连接")
-            self.spawn(link.disconnect())
+            self.spawn(self.disconnect_voice(link))
             return
         try:
             codec = VoiceCodec(codec_id)
         except Exception:
             log.exception("Native voice codec initialization failed")
             self.emit("warning", key=key, message="语音编码器未能启动，请重新连接")
-            self.spawn(link.disconnect())
+            self.spawn(self.disconnect_voice(link))
             return
         if key in self.links:
             self.audio_closed(key)
@@ -713,6 +791,9 @@ class CallManager:
             return
         if key in self.links:
             log.info("SCO disconnected: peer=%s counters=%s", key, self.statistics.get(key))
+        old_link = self.links.get(key)
+        if self.voice_protection and old_link is not None and key in self.connections:
+            self.voice_protection.ended(self.connections[key], old_link)
         retirement = Retirement()
         self.links.pop(key, None)
         self.voice_buffers.pop(key, None)
@@ -774,7 +855,10 @@ class CallManager:
         if action == "select_call":
             for owner, link in list(self.links.items()):
                 if owner != key:
-                    await link.disconnect()
+                    await asyncio.wait_for(link.disconnect(), 2)
+                    self.audio_closed(owner, link)
+            if self.closed or self.protocols.get(key) is not protocol:
+                raise ConnectionError("蓝牙语音连接已更换，请重试")
             self.router.select(key)
             self.emit("call", key=key, state="已选为麦克风发送设备")
         elif action == "answer":
@@ -794,6 +878,14 @@ class CallManager:
         retirement.call(self.server.l2cap_server.close)
         if self.device.sdp_service_records.get(0x10002) is self.sdp_record:
             self.device.sdp_service_records.pop(0x10002, None)
+        for protocol in list(self.protocols.values()):
+            retirement.call(protocol.stop)
+        self.protocols.clear()
+        self.control_ready.clear()
+        self.protocol_tasks.clear()
+        for key, client in list(self.clients.items()):
+            self.clients.pop(key, None)
+            retirement.call(self.retire_rfcomm_client, client)
         retirement.call(self.close_system_capture)
         retirement.call(self.device.remove_listener, "connection", self.on_connection)
         for key in list(self.links):

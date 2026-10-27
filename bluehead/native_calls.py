@@ -114,18 +114,22 @@ class NativeCallManager(CallManager):
         super().__init__(device, mixer, emit, input_device, router=RemoteRouter(self.client))
         self.native_epochs, self.native_meters = {}, {}
 
+    def current_voice(self, key, link, epoch):
+        return (not self.closed and self.links.get(key) is link and
+                self.native_epochs.get(key) == epoch)
+
     def on_link(self, key, protocol, link):
         if self.closed or getattr(protocol, "stopped", False) or self.protocols.get(key, protocol) is not protocol:
             self.spawn(self.disconnect_voice(link))
             return
         if self.router.owner not in (None, key) and self.links:
-            self.spawn(link.disconnect())
+            self.spawn(self.disconnect_voice(link))
             return
         codec = int(selected_codec(protocol))
         expected = hci.CodecID.TRANSPARENT if codec in (2, 3) else hci.CodecID.CVSD
         if link.air_mode != expected:
             self.emit("warning", key=key, message="语音链路格式与协商编码不符，等待重新连接")
-            self.spawn(link.disconnect())
+            self.spawn(self.disconnect_voice(link))
             return
         if key in self.links:
             self.audio_closed(key)
@@ -134,7 +138,7 @@ class NativeCallManager(CallManager):
             result = self.client.request("voice_start", key=key, handle=link.handle, codec=codec)
         except OSError:
             self.mixer.remove("call:" + key)
-            self.spawn(link.disconnect())
+            self.spawn(self.disconnect_voice(link))
             return
         epoch = result["epoch"]
         self.native_epochs[key] = epoch
@@ -156,40 +160,56 @@ class NativeCallManager(CallManager):
 
     async def open_microphone(self, key, link, rate):
         from .audio import resolve_endpoint
+        epoch = None
         try:
             async with self.input_lock:
                 if self.closed or self.links.get(key) is not link:
                     return
                 epoch = self.native_epochs[key]
                 endpoint = await asyncio.to_thread(resolve_endpoint, self.input_device, "input")
+                if not self.current_voice(key, link, epoch):
+                    return
                 await asyncio.to_thread(self.client.audio, "input", endpoint, voice_epoch=epoch)
-                if self.links.get(key) is link:
+                if self.current_voice(key, link, epoch):
                     self.microphone = _Endpoint(self.client, "input", epoch)
                     self.emit("microphone", key=key, active=True)
         except (OSError, TimeoutError) as error:
-            self.emit("error", message=f"实体麦克风未就绪：{error}")
+            if epoch is not None and self.current_voice(key, link, epoch):
+                self.emit("error", message=f"实体麦克风未就绪：{error}")
         finally:
             if self.capture_tasks.get(key) is asyncio.current_task():
                 self.capture_tasks.pop(key, None)
 
     async def open_system_capture(self, key, link, rate):
+        epoch = None
         try:
             async with self.system_lock:
                 if self.closed or not self.system_enabled or self.links.get(key) is not link:
                     return
                 epoch = self.native_epochs[key]
-                ticket = self.client.request("system_audio", enabled=True, voice_epoch=epoch)
+                ticket = self.client.request("system_audio", enabled=True, voice_epoch=epoch,
+                                             endpoint_id=getattr(self, "system_endpoint", None) or "")
                 await asyncio.to_thread(self.client.wait_audio, ticket)
-                if self.links.get(key) is link and self.system_enabled:
+                if self.current_voice(key, link, epoch) and self.system_enabled:
                     self.system_capture = _Endpoint(self.client, "system", epoch)
-                    self.emit("system_audio_state", active=True, message="电脑声音已加入发送，已排除接收音频返送")
+                    self.emit("system_audio_state", active=True, message="电脑声音已加入发送")
         except (OSError, TimeoutError) as error:
-            with contextlib.suppress(OSError):
-                self.client.request("system_audio", enabled=False, voice_epoch=self.native_epochs.get(key, 0))
-            self.emit("system_audio_state", active=False, message=f"电脑声音未加入发送，麦克风继续使用：{error}")
+            # A late failure belongs to the request's original epoch. Looking
+            # up the *current* epoch here can disable a replacement call.
+            if epoch is not None and self.current_voice(key, link, epoch):
+                with contextlib.suppress(OSError):
+                    self.client.request("system_audio", enabled=False, voice_epoch=epoch)
+                self.emit("system_audio_state", active=False, message=f"电脑声音未加入发送，麦克风继续使用：{error}")
         finally:
             if self.system_capture_tasks.get(key) is asyncio.current_task():
                 self.system_capture_tasks.pop(key, None)
+
+    async def set_system_source(self, endpoint):
+        async with self.system_lock:
+            capture = self.system_capture
+            if capture is not None and not capture.closed:
+                await asyncio.to_thread(self.client.audio, "system", endpoint, voice_epoch=capture.epoch)
+            self.system_endpoint = endpoint
 
     def close_system_capture(self):
         for task in list(self.system_capture_tasks.values()):
@@ -197,19 +217,35 @@ class NativeCallManager(CallManager):
         self.system_capture_tasks.clear()
         capture, self.system_capture = self.system_capture, None
         self.system_route = None
-        with contextlib.suppress(OSError):
-            self.client.request("system_audio", enabled=False, voice_epoch=self.native_epochs.get(self.router.owner, 0))
+        epoch = self.native_epochs.get(self.router.owner)
+        if epoch is not None:
+            with contextlib.suppress(OSError):
+                self.client.request("system_audio", enabled=False, voice_epoch=epoch)
         if capture:
             self.retire_microphone(capture)
 
     async def set_input_device(self, device):
         from .audio import resolve_endpoint
         async with self.input_lock:
-            if self.router.owner in self.links:
-                endpoint = await asyncio.to_thread(resolve_endpoint, device, "input")
-                await asyncio.to_thread(self.client.audio, "input", endpoint,
-                                        voice_epoch=self.native_epochs[self.router.owner])
+            previous = self.input_device
+            key = self.router.owner
+            link, epoch = self.links.get(key), self.native_epochs.get(key)
             self.input_device = device
+            try:
+                if link is not None and epoch is not None:
+                    endpoint = await asyncio.to_thread(resolve_endpoint, device, "input")
+                    if self.current_voice(key, link, epoch):
+                        try:
+                            await asyncio.to_thread(self.client.audio, "input", endpoint, voice_epoch=epoch)
+                        except OSError:
+                            # Hangup/replacement cancels the old native prepare;
+                            # the valid user selection still belongs to the next
+                            # call. A failure in the current route must roll back.
+                            if self.current_voice(key, link, epoch):
+                                raise
+            except (OSError, ValueError, asyncio.CancelledError):
+                self.input_device = previous
+                raise
 
     def snapshot(self, key):
         link = self.links.get(key)
@@ -233,9 +269,11 @@ class NativeCallManager(CallManager):
                   "rx_bitrate": max(0, int((voice["rx_bytes"] - rx) * 8 * ratio / elapsed)),
                   "tx_bitrate": max(0, int((voice["tx_bytes"] - tx) * 8 * ratio / elapsed)),
                   "rx_packets": voice["rx_packets"], "decode_errors": voice["decode_errors"],
+                  "tx_packets": voice["tx_packets"],
                   "empty_packets": 0, "voice": voice, "uplink_clock": {"adaptive": True, **native["uplink"]},
                   "microphone_active": native.get("microphone_active", False),
                   "system_audio_active": native.get("system_active", False)}
+        result["system_feedback_blocked"] = native.get("system_feedback_blocked", False)
         return result if self.links.get(key) is link else {}
 
     def audio_closed(self, key, link=None):

@@ -39,6 +39,9 @@ class NativeAudioError(OSError):
         self.native_code = result.get("native_code", 0)
         self.retryable = bool(result.get("retryable", False))
         self.detail = result.get("error", "")
+        if self.native_code == -10010:
+            super().__init__("电脑声音采集已暂停以避免返送。请点击音频中心底部“电脑声音”，选择“全部应用声音（排除 BlueHead）”，或选择不同于“设备声音”的播放设备。麦克风继续工作。")
+            return
         direction = {"output": "播放设备", "input": "麦克风", "system": "电脑声音采集"}.get(
             result.get("direction"), "音频设备")
         reasons = {

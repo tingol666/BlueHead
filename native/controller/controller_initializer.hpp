@@ -95,6 +95,8 @@ public:
                 {"manufacturer", version.manufacturer},
                 {"acl_packet_bytes", le16(buffers.data() + 1)},
                 {"acl_packets", le16(buffers.data() + 4)},
+                {"sco_packet_bytes", buffers[3]},
+                {"sco_packets", le16(buffers.data() + 6)},
                 {"features", hex(features.data() + 1, 8)},
                 {"backend", backend}};
     if (!initialized)

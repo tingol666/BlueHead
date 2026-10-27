@@ -17,7 +17,7 @@ class NativeReceiver:
         winrt.runtime.init_apartment(winrt.runtime.ApartmentType.MULTI_THREADED)
         try:
             selector = AudioPlaybackConnection.get_device_selector()
-            self.emit("status", message="原生媒体接收已启动；请在 Windows 设置中先配对移动设备")
+            self.emit("status", message="基础模式正在接收。请在手机／平板播放音乐或视频；尚未配对时，在电脑打开 Windows 蓝牙设置，添加并配对手机／平板。")
             while not stop.is_set():
                 devices = await DeviceInformation.find_all_async(selector, [])
                 for info in devices:

@@ -131,8 +131,8 @@ class RemoteMediaSession:
     def configure(self, fmt, prepared=None):
         if prepared:
             prepared.close()
-        code = {"sbc": 1, "aac": 2, "aptx": 3, "aptx_hd": 4, "ldac": 5}[fmt.codec]
-        if not self._request("media_config", codec=code, rate=fmt.rate, channels=fmt.channels):
+        code = {"sbc": 1, "aac": 2, "aptx": 3, "aptx_hd": 4, "ldac": 5, "lhdc5": 6}[fmt.codec]
+        if not self._request("media_config", codec=code, rate=fmt.rate, channels=fmt.channels, depth=getattr(fmt, "depth", 0) or 16):
             return
         self.format = fmt
         if self.channel:

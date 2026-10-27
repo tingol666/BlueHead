@@ -1,4 +1,5 @@
 """Build the native USB/audio runtime from pinned local dependencies."""
+import argparse
 from pathlib import Path
 from native_build import compiler as find_compiler, includes
 from firmware_assets import verify as verify_firmware
@@ -9,8 +10,14 @@ import tarfile
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--output", type=Path, default=ROOT / "bluehead/assets/BlueHead.Runtime.exe")
+parser.add_argument("--build-dir", type=Path, default=ROOT / "work/runtime-build")
+options = parser.parse_args()
+output = options.output.resolve()
+output.parent.mkdir(parents=True, exist_ok=True)
 verify_firmware()
-BUILD = ROOT / "work/runtime-build"
+BUILD = options.build_dir.resolve()
 BUILD.mkdir(parents=True, exist_ok=True)
 vendor = ROOT / "vendor/nlohmann-json"
 record = json.loads((vendor / "origin.json").read_text("utf-8-sig"))
@@ -60,6 +67,6 @@ subprocess.run([
     "-static", "-static-libgcc", "-static-libstdc++", "-Wl,--no-insert-timestamp", "-s",
     *includes(vendor, BUILD),
     str(ROOT / "native/runtime/runtime_main.cpp"), str(BUILD / "runtime.o"),
-    "-o", str(ROOT / "bluehead/assets/BlueHead.Runtime.exe"),
+    "-o", str(output),
     "-ladvapi32", "-lavrt", "-lole32", "-lbcrypt", "-lwinhttp", "-lcrypt32",
 ], check=True)

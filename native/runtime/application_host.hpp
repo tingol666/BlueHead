@@ -53,7 +53,7 @@ struct Arguments {
         source = value();
       else if (key == L"--parent-pid")
         parent = std::stoul(value());
-      else if (key == L"--ldac-worker") {
+      else if ((key == L"--ldac-worker" || key == L"--codec-worker")) {
         mapping = reinterpret_cast<HANDLE>(std::stoull(value()));
         request = reinterpret_cast<HANDLE>(std::stoull(value()));
         done = reinterpret_cast<HANDLE>(std::stoull(value()));
@@ -97,6 +97,8 @@ class Host {
       return name + ":" + j.value("bus", std::string());
     if (name == "mute")
       return name;
+    if (name == "heartbeat")
+      return name;
     if (name == "gain")
       return name + ":" + j.value("key", std::string()) + ":" +
              j.value("direction", std::string("down"));
@@ -114,7 +116,8 @@ class Host {
       std::vector<std::string> seen;
       for (auto it = queue.rbegin(); it != queue.rend(); ++it) {
         auto parameter = coalesce_key(json::parse(*it));
-        if (parameter.empty() || std::find(seen.begin(), seen.end(), parameter) != seen.end())
+        if (parameter.empty() || parameter == "heartbeat" ||
+            std::find(seen.begin(), seen.end(), parameter) != seen.end())
           continue;
         seen.push_back(parameter);
         retained.push_front(*it);
@@ -149,8 +152,14 @@ class Host {
       rpc.execute(
           {{"op", "mute"}, {"muted", request["muted"]}, {"revision", ++parameter_revision}});
     if (command == "stop" || command == "shutdown") {
-      stop_at = ticks() + frequency() * 5;
-      rpc.execute({{"op", "quiesce"}});
+      // Endpoint retirement has its own 12 s OS watchdog. The old 5 s
+      // application deadline could kill a valid duplex/SCO shutdown first.
+      // Repeated clicks must never extend the overall shutdown deadline.
+      uint64_t idle = 0;
+      if (stop_at.compare_exchange_strong(idle, ticks() + frequency() * 20)) {
+        emit_line(json{{"protocol", 1}, {"event", "stopping"}}.dump() + "\n");
+        rpc.execute({{"op", "quiesce"}});
+      }
     }
   }
   static bool line(HANDLE h, std::string &out) {
@@ -265,20 +274,32 @@ private:
 public:
   int run() {
     std::atomic<bool> finished{false};
+    std::atomic<DWORD> result{0};
     Handle stdin_thread;
     HANDLE duplicate = nullptr;
     DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &duplicate,
                     THREAD_TERMINATE | THREAD_QUERY_INFORMATION, FALSE, 0);
     stdin_thread.reset(duplicate);
-    std::thread monitor([this, &finished, &stdin_thread] {
+    std::thread monitor([this, &finished, &result, &stdin_thread] {
       while (!finished) {
-        if (WaitForSingleObject(child.process, 100) == WAIT_OBJECT_0 || rpc.exited() ||
-            control_failed) {
+        bool exited = WaitForSingleObject(child.process, 100) == WAIT_OBJECT_0;
+        if (finished)
+          break;
+        if (exited || rpc.exited() || control_failed) {
+          DWORD code = 1;
+          if (exited && GetExitCodeProcess(child.process, &code) && code == 0)
+            code = 1; // An unsolicited clean child exit still loses the session.
+          result = code;
+          auto report = "Native runtime: control session ended (code " + std::to_string(code) + ")\n";
+          write_all(GetStdHandle(STD_ERROR_HANDLE), report.data(), static_cast<uint32_t>(report.size()));
           if (stdin_thread)
             CancelSynchronousIo(stdin_thread);
           break;
         }
-        if (stop_at && ticks() > stop_at) {
+        auto deadline = stop_at.load();
+        if (deadline && ticks() > deadline && stop_at.compare_exchange_strong(deadline, 0)) {
+          const char reason[] = "Native runtime: receiver stop exceeded its 20 second deadline\n";
+          write_all(GetStdHandle(STD_ERROR_HANDLE), reason, sizeof(reason) - 1);
           child.job.reset();
           // Covers a stuck native OS operation too. Closing this process also
           // closes its kill-on-close child job; no stale USB/audio owner survives.
@@ -303,7 +324,7 @@ public:
     }
     finished = true;
     monitor.join();
-    return 0;
+    return static_cast<int>(result.load());
   }
 };
 } // namespace bh

@@ -52,7 +52,9 @@ class EndpointActor {
   uint32_t capture_rate =
       48000; // Protected by bridge_mutex; diagnostic counts use canonical frames.
   void *loop_capture = nullptr, *loop_converter = nullptr;
-  std::string output_selection, input_selection;
+  std::string output_selection, input_selection, system_selection, output_actual;
+  bool system_isolated = true; // bridge_mutex; closed before starting a conflicting renderer.
+  std::atomic<bool> system_blocked{false};
   std::array<std::string, 2> wanted_endpoint{};
   std::array<std::string, 2> retry_endpoint{};
   std::atomic<bool> simulated_inventory_enabled{false};
@@ -101,6 +103,31 @@ public:
   }
 
 private:
+  static bool same_endpoint(const std::string &a, const std::string &b) {
+    auto left = wide(a), right = wide(b);
+    return CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE) == CSTR_EQUAL;
+  }
+  static bool source_conflicts(const std::string &source, bool rendering,
+                               const std::string &actual) {
+    return !source.empty() && rendering && (actual.empty() || same_endpoint(source, actual));
+  }
+  std::string actual_endpoint(BhAudioDevice *stream) {
+    wchar_t id[512]{};
+    return stream && api.bh_device_endpoint(stream, id, 512) == 0 ? utf8(id) : std::string();
+  }
+  void protect_system_route(bool rendering, const std::string &actual) {
+    if (!system_wanted || system_selection.empty())
+      return;
+    if (!source_conflicts(system_selection, rendering, actual))
+      return;
+    std::lock_guard<std::mutex> bridge(bridge_mutex);
+    system_isolated = false;
+    system_blocked = true;
+    system_active = false;
+    system_fault = true;
+    api.bh_up_clear(uplink, 1);
+    recovery[2].fail(Fault::format, -10010, seconds(), false);
+  }
   void finish(const AudioJob &j, const json &result) {
     std::lock_guard<std::mutex> lock(audio_mutex);
     audio_results[j.id] = result;
@@ -139,7 +166,7 @@ private:
         job.direction == "output" ? output && api.bh_device_active(output)
         : job.direction == "input"
             ? capture && api.bh_device_active(capture)
-            : loop_capture && SUCCEEDED(static_cast<HRESULT>(api.bh_loop_error(loop_capture)));
+            : loop_capture && system_active && SUCCEEDED(static_cast<HRESULT>(api.bh_loop_error(loop_capture)));
     if (previous_active && !job.automatic)
       state.keep_previous(seconds());
     finish(job, {{"done", true},
@@ -248,7 +275,7 @@ private:
                        : job.direction == "input"
                            ? capture && input_selection == job.endpoint && !microphone_fault &&
                                  api.bh_device_active(capture)
-                           : loop_capture && !system_fault &&
+                           : loop_capture && system_selection == job.endpoint && !system_fault &&
                                  SUCCEEDED(static_cast<HRESULT>(api.bh_loop_error(loop_capture)));
       if (unchanged) {
         route_recovery.manual();
@@ -265,7 +292,14 @@ private:
       void *candidate = nullptr, *converter = nullptr;
       DWORD error = 0;
       if (job.start) {
-        candidate = api.bh_loop_open(GetCurrentProcessId(), &error);
+        if (source_conflicts(job.endpoint, output != nullptr, output_actual))
+          throw AudioFailure(Fault::format, -10010,
+              "所选电脑声音设备也正在播放 BlueHead 设备声音。为避免返送，请选择另一个设备，或改用“全部应用声音（排除 BlueHead）”。");
+      }
+      if (job.start && !job.simulated) {
+        auto selected = wide(job.endpoint);
+        candidate = selected.empty() ? api.bh_loop_open(GetCurrentProcessId(), &error)
+                                     : api.bh_loop_open_endpoint(selected.c_str(), &error);
         if (!candidate) {
           auto failure = static_cast<HRESULT>(error);
           Fault fault = failure == E_ACCESSDENIED                          ? Fault::permission
@@ -304,6 +338,9 @@ private:
         old_converter = loop_converter;
         loop_capture = candidate;
         loop_converter = converter;
+        system_selection = job.endpoint;
+        system_isolated = true;
+        system_blocked = false;
         api.bh_up_clear(uplink, 1);
       }
       audio_results[job.id] = {{"done", true}, {"success", true}};
@@ -381,6 +418,10 @@ private:
         throw AudioFailure(device_fault(stopped), stopped,
                            "Previous playback endpoint did not stop; new consumer was not started");
       }
+      // Windows endpoint loopback includes every renderer. Close its publish
+      // gate and purge uplink PCM BEFORE a conflicting renderer can start.
+      auto candidate_identity = job.simulated ? job.endpoint : actual_endpoint(candidate);
+      protect_system_route(candidate != nullptr, candidate_identity);
       int started = candidate ? api.bh_device_start(candidate) : 0;
       if (started != 0) {
         if (old && api.bh_device_start(old) != 0)
@@ -389,6 +430,7 @@ private:
         throw AudioFailure(device_fault(started), started, "New playback endpoint could not start");
       }
       output = candidate;
+      output_actual = candidate_identity;
       output_active = job.start;
       output_selection = job.endpoint;
       output_wanted = job.start;
@@ -440,6 +482,8 @@ private:
     result["recovery"] = {{"output", recovery[0].snapshot(seconds())},
                           {"microphone", recovery[1].snapshot(seconds())},
                           {"system", recovery[2].snapshot(seconds())}};
+    result["system_source"] = {{"endpoint_id", system_selection},
+                                {"feedback_blocked", system_blocked.load()}};
     for (auto direction : {"output", "microphone"}) {
       auto *stream = std::strcmp(direction, "output") == 0 ? output : capture;
       BhDeviceStats stats{};
@@ -458,6 +502,8 @@ private:
                            {"max_callback_gap_us", api.bh_device_timing(stream, 0)},
                            {"max_callback_excess_us", api.bh_device_timing(stream, 1)},
                            {"callback_gap_events", api.bh_device_timing(stream, 2)},
+                           {"period_us", api.bh_device_timing(stream, 3)},
+                           {"buffer_us", api.bh_device_timing(stream, 4)},
                            {"notifications", stats.notifications},
                            {"dropped_frames", stats.dropped_frames},
                            {"queued_frames", stats.queued_frames},
@@ -487,11 +533,14 @@ private:
       pending_system = std::any_of(audio_jobs.begin(), audio_jobs.end(),
                                    [](const auto &j) { return j.direction == "system"; });
     }
+    if (system_blocked && !source_conflicts(system_selection, output != nullptr, output_actual))
+      recovery[2].manual();
     if (system_wanted && !quiesced && !pending_system &&
+        !source_conflicts(system_selection, output != nullptr, output_actual) &&
         (system_fault || (recovery[2].pending && recovery[2].automatic)) &&
         recovery[2].ready(now)) {
       device_reopens++;
-      schedule("system", "", true, voice_epoch, false, 0, system_ticket, true);
+      schedule("system", system_selection, true, voice_epoch, false, 0, system_ticket, true);
     }
     if (!output_wanted && !capture_wanted)
       return;
@@ -597,7 +646,7 @@ private:
               SetEvent(bridge_wake);
           }
         }
-        if (loop_capture && loop_converter) {
+        if (loop_capture && loop_converter && system_isolated) {
           uint64_t position = 0, arrival = 0;
           if (api.bh_loop_clock(loop_capture, &position, &arrival) > 0)
             api.bh_up_observe(uplink, 1, position, arrival);
@@ -605,6 +654,7 @@ private:
           if (n < 0) {
             bridge_errors++;
             system_fault = true;
+            system_active = false;
           }
           if (n > 0) {
             api.bh_capture_push(loop_converter, system.data(), n);
@@ -683,6 +733,18 @@ public:
     bridge_stall = ms;
     SetEvent(bridge_wake);
   }
+  // Same offline device callback as test_capture, callable by the exclusive
+  // native replay without a Python producer. No physical microphone is opened.
+  void offline_capture(uint32_t frames, uint64_t position = 0) {
+    require(offline && frames && frames<=4800,"Invalid offline capture quantum");
+    std::lock_guard<std::mutex> lock(bridge_mutex);
+    std::array<float,4800> pcm{};
+    for(uint32_t i=0;i<frames;++i)
+      pcm[i]=.2f*std::sin((position+i)*6.283185307179586*1000/capture_rate);
+    require(capture,"Offline microphone is not prepared");
+    require(api.bh_device_offline_process(capture,pcm.data(),nullptr,frames)==0,
+            "Offline capture callback failed");
+  }
   std::optional<json> command(const json &request) {
     std::string op = request.at("op");
     if (offline && (op == "audio_switch" || op == "system_audio"))
@@ -691,7 +753,7 @@ public:
       require(offline, "Offline-test mode required");
       std::string direction = request.at("direction");
       auto delay = request.value("delay_ms", 0u);
-      require((direction == "input" || direction == "output") && delay <= 2000,
+      require((direction == "input" || direction == "output" || direction == "system") && delay <= 2000,
               "Invalid offline audio job");
       auto rate = request.value("sample_rate", 48000u);
       require(rate >= 8000 && rate <= 384000, "Invalid offline endpoint rate");
@@ -731,6 +793,8 @@ public:
       std::lock_guard<std::mutex> lock(audio_mutex);
       return json{{"output", output_selection},
                   {"input", input_selection},
+                  {"system", system_selection},
+                  {"system_feedback_blocked", system_blocked.load()},
                   {"wanted_output", wanted_endpoint[0]},
                   {"wanted_input", wanted_endpoint[1]}};
     }
@@ -738,13 +802,7 @@ public:
       require(offline, "Offline-test mode required");
       uint32_t frames = request.value("frames", 480u);
       require(frames && frames <= 4800, "Invalid offline capture quantum");
-      std::lock_guard<std::mutex> lock(bridge_mutex);
-      std::vector<float> pcm(frames);
-      for (uint32_t i = 0; i < frames; i++)
-        pcm[i] = .2f * std::sin(i * 6.283185307179586 * 1000 / capture_rate);
-      require(capture, "Offline microphone is not prepared");
-      require(api.bh_device_offline_process(capture, pcm.data(), nullptr, frames) == 0,
-              "Offline capture callback failed");
+      offline_capture(frames);
       return true;
     }
     if (op == "audio_switch") {
@@ -775,7 +833,7 @@ public:
         if (capture_wanted && available("input"))
           routes.emplace_back("input", retry_endpoint[1], latest_job[1]);
         if (system_wanted && available("system"))
-          routes.emplace_back("system", "", latest_job[2]);
+          routes.emplace_back("system", system_selection, latest_job[2]);
       }
       json tickets = json::array();
       for (const auto &route : routes)
@@ -808,7 +866,9 @@ public:
       if (generation && generation != voice_epoch)
         return 0;
       mix_enabled = request.at("enabled").get<bool>();
-      return schedule("system", "", mix_enabled, generation);
+      std::string selected;
+      { std::lock_guard<std::mutex> lock(audio_mutex); selected = system_selection; }
+      return schedule("system", request.value("endpoint_id", selected), mix_enabled, generation);
     }
     return std::nullopt;
   }
@@ -821,6 +881,7 @@ public:
     return {{"devices", devices},
             {"microphone_active", microphone_active.load()},
             {"system_active", system_active.load()},
+            {"system_feedback_blocked", system_blocked.load()},
             {"output_active", output_active.load()},
             {"microphone_frames", bridge_frames.load()},
             {"system_frames", system_frames.load()},

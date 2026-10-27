@@ -22,7 +22,7 @@ REQUIRED_LICENSES = {
     "libwdi/COPYING-LGPL", "libusb/COPYING", "spandsp-plc/COPYING", "miniaudio/LICENSE",
     "speexdsp/COPYING", "liblc3/LICENSE", "pipewire-rate-control/LICENSE", "gcc-runtime/COPYING.RUNTIME",
     "winpthreads/COPYING", "dotnet/LICENSE.TXT", "wpf-ui/LICENSE.md", "wpf-ui-abstractions/LICENSE.md",
-    "libldacdec-MIT.txt", "nlohmann-json/LICENSE.MIT",
+    "libldacdec-MIT.txt", "nlohmann-json/LICENSE.MIT", "lhdc5-decoder/LICENSE",
     "intel-bluetooth-firmware/LICENCE.ibt_firmware",
     "realtek-bluetooth-firmware/LICENCE.rtlwifi_firmware.txt",
 }

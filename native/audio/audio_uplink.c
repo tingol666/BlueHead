@@ -28,6 +28,7 @@ int bh_mix_render(Mixer *, float *, uint32_t, float);
 uint64_t bh_mix_value(Mixer *, int, int);
 int bh_mix_clock_config(Mixer *, float, float);
 int bh_mix_continuity(Mixer *, int, int, uint32_t, uint32_t);
+int bh_mix_budget(Mixer *, int, uint32_t);
 int bh_mix_timeline(Mixer *, int, int);
 void bh_mix_observe(Mixer *, int, uint64_t, uint64_t);
 int bh_mix_format(Mixer *, int, uint32_t);
@@ -349,6 +350,15 @@ API int bh_up_continuity(Uplink *u, int enabled) {
     if (bh_mix_continuity(u->clock, u->input[bus], enabled, 720, 2880) < 0)
       return -1;
     bh_mix_timeline(u->clock, u->input[bus], enabled ? BHT_CAPTURE : BHT_GENERIC);
+  }
+  return 0;
+}
+API int bh_up_budget(Uplink *u, uint32_t frames, int fixed) {
+  if (!u || frames > 3840) return -1;
+  for (int bus = 0; bus < 2; bus++) {
+    if (bh_mix_budget(u->clock, u->input[bus], frames) < 0 ||
+        bh_mix_continuity(u->clock, u->input[bus], 1, fixed ? frames : 720, fixed ? frames : 2880) < 0)
+      return -1;
   }
   return 0;
 }

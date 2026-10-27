@@ -10,7 +10,7 @@ using MessageBox = System.Windows.MessageBox;
 
 namespace BlueHead.Desktop;
 
-internal static class Program
+internal static partial class Program
 {
     [STAThread]
     public static int Main(string[] arguments)
@@ -21,10 +21,18 @@ internal static class Program
         Wpf.Ui.Appearance.ApplicationAccentColorManager.Apply(Color.FromRgb(7, 139, 78), Wpf.Ui.Appearance.ApplicationTheme.Light);
         if (arguments.Length == 2 && arguments[0] == "--self-test") return SelfTest(app, arguments[1]);
         if (arguments.Length == 2 && arguments[0] == "--engine-smoke") return EngineSmoke(app, arguments[1]);
+        if (arguments.Length == 2 && arguments[0] == "--exit-self-test") return ExitSelfTest(app, arguments[1]);
         if (arguments.Contains("--recovery")) { app.Run(new RecoveryWindow()); return 0; }
         using var mutex = new Mutex(true, "Local\\BlueHead.Desktop." + Environment.UserName, out var first);
-        if (!first) { MessageBox.Show("BlueHead 已在运行，可从系统托盘打开。", "BlueHead"); return 0; }
-        var main = new MainWindow();
+        if (!first)
+        {
+            if (!InstanceActivation.TrySignal(InstanceActivation.Name)) MessageBox.Show("BlueHead 正在启动或退出，请稍候再打开。", "BlueHead");
+            return 0;
+        }
+        MainWindow? main = null;
+        using var activation = new InstanceActivation(InstanceActivation.Name, () =>
+        { if (!app.Dispatcher.HasShutdownStarted) app.Dispatcher.BeginInvoke(() => main?.ShowFromTray()); });
+        main = new MainWindow();
         if (arguments.Contains("--diagnostics")) main.Loaded += (_, _) => main.ShowPage("help");
         if (arguments.Contains("--tray")) main.Loaded += (_, _) => main.Hide();
         app.DispatcherUnhandledException += (_, error) =>
@@ -48,6 +56,8 @@ internal static class Program
     }
     private static int SelfTest(Application app, string folder)
     {
+        // Match Application.Run: async UI handlers must resume on the dispatcher.
+        System.Threading.SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(app.Dispatcher));
         Directory.CreateDirectory(folder);
         var checks = new Dictionary<string, bool>();
         var window = new MainWindow(true); app.MainWindow = window;
@@ -75,27 +85,56 @@ internal static class Program
         window.EngineState.Text = "界面示例 · 无真实连接";
         app.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
         void Event(string json) { using var document = JsonDocument.Parse(json); window.ApplyEvent(document.RootElement); }
+        void Click(System.Windows.Controls.Primitives.ButtonBase button) { button.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent)); Pump(); }
         window.ApplyDriverInventory([]);
         Event("""{"event":"inventory","adapters":[],"audio":[]}""");
-        checks["first_use_exposes_bluetooth_setup_on_home"] = window.SetupCard.IsVisible && window.NeedsBluetoothSetup && Equals(window.StartButton.Content, "设置蓝牙接收") && !window.EmptyState.IsVisible;
+        checks["first_use_exposes_bluetooth_setup_on_home"] = window.SetupCard.IsVisible && window.NeedsBluetoothSetup && Equals(window.StartButton.Content, "打开蓝牙驱动设置") && !window.EmptyState.IsVisible;
         Capture(window, Path.Combine(folder, "first-use.png"));
         Event("""{"event":"inventory","adapters":[{"transport":"usb:1234:abcd#0","name":"USB Bluetooth（示例）"}],"audio":[{"index":1,"name":"电脑耳机（界面示例）","max_output_channels":2,"max_input_channels":0},{"index":2,"name":"麦克风（界面示例）","max_output_channels":0,"max_input_channels":1}]}""");
         checks["prepared_adapter_shows_start_and_pairing"] = !window.SetupCard.IsVisible && !window.NeedsBluetoothSetup && window.EmptyState.IsVisible && Equals(window.StartButton.Content, "开始接收");
         var restartAdapter = new DriverDevice(@"USB\VID_1234&PID_ABCD\offline", "USB Bluetooth（示例）", "WinUSB", "offline.inf", "", false, false) { RebootRequired = true };
         window.ApplyDriverInventory([restartAdapter]); Pump();
-        checks["pending_restart_is_visible_on_home"] = window.AdapterNeedsRestart && window.SetupCard.IsVisible && window.StatusTitle.Text == "需要重启 Windows" && Equals(window.StartButton.Content, "查看重启要求");
-        checks["restart_requirement_is_not_shown_as_healthy"] = window.DriverStatus.Text.Contains("请重启电脑") && !window.InstallDriverButton.IsEnabled;
+        checks["pending_restart_is_visible_on_home"] = window.AdapterNeedsRestart && window.SetupCard.IsVisible && window.StatusTitle.Text == "等待重启" && Equals(window.StartButton.Content, "查看重启要求");
+        checks["restart_requirement_is_not_shown_as_healthy"] = window.DriverStatus.Text.Contains("请重启电脑") && !window.DriverInstallButton.IsEnabled && !window.OriginalBootstrapButton.IsEnabled;
         checks["restart_card_hides_redundant_setup_benefits"] = window.SetupBenefits.Visibility == Visibility.Collapsed;
         window.StartButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent)); Pump();
         checks["pending_restart_start_button_does_not_start_receiver"] = !window.SelfTestCommands.Any(command => command.Text("command") == "start");
         window.ShowPage("home"); Capture(window, Path.Combine(folder, "restart-required.png"));
         window.ApplyDriverInventory([restartAdapter with { RebootRequired = false, Healthy = true }]); Pump();
         checks["cleared_restart_restores_normal_start"] = !window.AdapterNeedsRestart && !window.SetupCard.IsVisible && Equals(window.StartButton.Content, "开始接收");
+        checks["adapter_choice_always_precedes_mode_even_for_one_adapter"] = window.DriverChoiceRow.Visibility == Visibility.Visible && window.DriverPicker.Items.Count == 1 && window.DriverChoiceRow.TranslatePoint(new(0,0),window.BluetoothSetupCard).Y < window.ModePicker.TranslatePoint(new(0,0),window.BluetoothSetupCard).Y;
         checks["labels_distinguish_mobile_devices_and_computer_inputs"] = window.PlaybackGain.Label == "设备声音" && window.MicrophoneGain.Label == "电脑麦克风" && window.SystemGain.Label == "电脑声音";
         checks["codec_and_playback_mode_share_home_row"] = window.CodecPicker.IsVisible && window.PlaybackModePicker.IsVisible && Math.Abs(window.CodecPicker.TranslatePoint(new(0,0),window).Y - window.PlaybackModePicker.TranslatePoint(new(0,0),window).Y) < 2;
         checks["media_selector_and_automatic_voice_codec_are_distinguished"] = window.MediaCodecLabel.Text == "媒体编码" && window.VoiceCodecHint.Text.StartsWith("语音编码：自动协商");
         checks["mix_switch_is_on_home_and_off_means_two_controls"] = window.SystemAudioToggle.IsVisible && window.SystemGain.Visibility == Visibility.Collapsed;
         Capture(window, Path.Combine(folder, "home-empty.png"));
+        checks["all_four_context_help_actions_are_visible"] = window.UsageHelpButton.IsVisible && window.PlaybackHelpButton.IsVisible && window.CodecHelpButton.IsVisible && window.SystemAudioHelpButton.IsVisible;
+        Click(window.UsageHelpButton);
+        checks["usage_help_explains_owner_features_and_switch_without_repeating_voice_guard"] = window.AudioOptionHelpPopup.IsOpen && window.AudioOptionHelpTitle.Text == "蓝牙使用方式" && window.OptionHelpPlainText.Contains("多设备同时连接") && window.OptionHelpPlainText.Contains("管理员授权") && !window.OptionHelpPlainText.Contains("通话／语音保护");
+        Capture((FrameworkElement)window.AudioOptionHelpPopup.Child, Path.Combine(folder, "help-usage-popup.png"));
+        Click(window.CodecHelpButton);
+        checks["codec_help_opens_from_icon_and_replaces_previous_topic"] = window.AudioOptionHelpPopup.IsOpen && window.AudioOptionHelpTitle.Text == "媒体编码" && window.OptionHelpPlainText.Contains("语音编码") && window.OptionHelpPlainText.Contains("怎样应用");
+        Capture((FrameworkElement)window.AudioOptionHelpPopup.Child, Path.Combine(folder, "help-codec-popup.png"));
+        Click(window.CodecHelpButton);
+        checks["clicking_same_help_icon_closes_popup"] = !window.AudioOptionHelpPopup.IsOpen;
+        window.ShowPage("settings"); window.MaximumPicker.SelectedIndex = 3; Click(window.SaveButton); window.ShowPage("home");
+        Click(window.PlaybackHelpButton);
+        checks["playback_help_shows_saved_connection_limit_and_current_count"] = window.AudioOptionHelpPopup.IsOpen && window.AudioOptionHelpTitle.Text == "多设备播放" && window.AudioOptionHelpFact.IsVisible && window.AudioOptionHelpFactText.Text.Contains("最多同时连接 4 台设备") && window.AudioOptionHelpFactText.Text.Contains("当前已连接 0 台");
+        Capture((FrameworkElement)window.AudioOptionHelpPopup.Child, Path.Combine(folder, "help-playback-popup.png"));
+        Click(window.CloseOptionHelpButton);
+        checks["help_close_button_works"] = !window.AudioOptionHelpPopup.IsOpen;
+        window.ShowPage("settings"); window.MaximumPicker.SelectedIndex = 2; Click(window.SaveButton); window.ShowPage("home");
+        Click(window.SystemAudioHelpButton);
+        checks["system_sound_help_explains_target_mix_gains_and_return_exclusion"] = window.AudioOptionHelpPopup.IsOpen && window.AudioOptionHelpTitle.Text == "同时发送电脑声音" && window.OptionHelpPlainText.Contains("当前使用蓝牙麦克风") && window.OptionHelpPlainText.Contains("麦克风发送") && window.OptionHelpPlainText.Contains("排除 BlueHead");
+        Capture((FrameworkElement)window.AudioOptionHelpPopup.Child, Path.Combine(folder, "help-system-popup.png"));
+        window.ShowPage("settings");
+        checks["navigating_away_closes_context_help"] = !window.AudioOptionHelpPopup.IsOpen;
+        window.ShowPage("home"); window.Hide(); window.WindowState = WindowState.Minimized;
+        window.TrayMouseClick(null, new System.Windows.Forms.MouseEventArgs(System.Windows.Forms.MouseButtons.Right, 1, 0, 0, 0)); Pump();
+        checks["tray_right_click_does_not_unhide_main_window"] = !window.IsVisible;
+        window.TrayMouseClick(null, new System.Windows.Forms.MouseEventArgs(System.Windows.Forms.MouseButtons.Left, 1, 0, 0, 0)); Pump();
+        checks["tray_single_left_click_shows_and_restores_main_window"] = window.IsVisible && window.WindowState == WindowState.Normal;
+
         Event("""{"event":"starting"}""");
         Event("""{"event":"status","message":"已就绪：在移动设备蓝牙列表连接 BlueHead PC"}""");
         Event("""{"event":"device","key":"demo-phone","state":"已连接"}""");
@@ -169,6 +208,13 @@ internal static class Program
         Event("""{"event":"media_mode","success":true,"mode":"mix"}"""); Pump();
 
         Capture(window, Path.Combine(folder, "home-connected-demo.png"));
+        Click(window.PlaybackHelpButton);
+        var helpCount = window.State.Devices.Count;
+        Event("""{"event":"device","key":"help-count-check","state":"已连接"}"""); Pump();
+        checks["open_playback_help_updates_current_connection_count"] = window.AudioOptionHelpPopup.IsOpen && window.AudioOptionHelpFactText.Text.Contains($"当前已连接 {helpCount + 1} 台");
+        Event("""{"event":"device","key":"help-count-check","state":"已断开"}"""); Pump();
+        Click(window.CloseOptionHelpButton);
+
         window.PlaybackGain.IsOpen = true; Pump();
         checks["volume_editor_opens_with_bound_device_picker"] = window.PlaybackGain.EditorPanel.IsVisible && window.OutputPicker.Items.Count == window.State.Outputs.Count && window.OutputPicker.SelectedItem is AudioChoice;
         Capture(window.PlaybackGain.EditorPanel, Path.Combine(folder, "volume-playback.png"));
@@ -207,6 +253,9 @@ internal static class Program
         checks["active_call_actions"] = !window.State.Devices[0].CanAnswer && window.State.Devices[0].CanHangup;
         Event("""{"event":"telemetry","audio":{},"devices":[{"key":"demo-phone","media":{"codec":"aptx_hd","rate":48000,"bitrate":576000,"packets_per_second":100,"playing":true,"buffer_ms":60,"recoveries":2},"call":{}}]}""");
         checks["live_media_protocol_rate_measured_bitrate"] = window.State.Devices[0].MediaDescription.Contains("aptX HD") && window.State.Devices[0].MediaDescription.Contains("576 kb/s") && window.State.Devices[0].LiveDetails.Contains("重同步 2");
+        checks["native_rate_details_show_reported_rate"] = window.State.Devices[0].LiveDetails.Contains("100 包/s") && window.State.Devices[0].LiveDetails.Contains("实际缓冲 60 ms");
+        Event("""{"event":"telemetry","audio":{},"devices":[{"key":"demo-phone","media":{"codec":"aac","rate":48000,"playing":true},"call":{}}]}""");
+        checks["unavailable_counters_are_not_fabricated_as_zero"] = !window.State.Devices[0].LiveDetails.Contains("包/s") && !window.State.Devices[0].LiveDetails.Contains("实际缓冲");
         Event("""{"event":"telemetry","audio":{},"devices":[{"key":"demo-phone","media":{},"call":{"active":true,"codec":"msbc","rate":16000,"rx_bitrate":60800,"tx_bitrate":60800,"rx_packets":160,"microphone_active":true,"system_audio_active":true}}]}""");
         checks["call_uses_same_live_protocol_line"] = window.State.Devices[0].MediaDescription.Contains("HFP / mSBC") && window.State.Devices[0].MediaDescription.Contains("60.8 kb/s") && window.State.Devices[0].LiveDetails.Contains("电脑声音已加入");
         window.PlaybackGain.Value = 180; window.MicrophoneGain.Value = 160;
@@ -226,6 +275,17 @@ internal static class Program
         }
         Capture(window, Path.Combine(folder, "home-mixing.png"));
         window.SystemGain.IsOpen = true; Pump();
+        checks["computer_source_selection_is_next_to_its_gain"] = window.SystemPicker.IsVisible && window.State.SystemSources.Count >= 2;
+        window.State.SystemSources[1] = new(1, "电脑耳机（界面示例）", "demo-output");
+        window.SystemPicker.SelectedIndex = 1; Pump();
+        var sourceChoice = window.SelfTestCommands.Last();
+        checks["computer_source_switch_uses_stable_endpoint_and_keeps_bluetooth"] = sourceChoice.Text("command") == "audio_device" && sourceChoice.Text("direction") == "system" && sourceChoice.Text("endpoint_id") == "demo-output";
+        Event(JsonSerializer.Serialize(new { @event = "audio_device", direction = "system", device = 1, endpoint_id = "demo-output", request_id = sourceChoice.GetProperty("request_id").GetInt32(), success = true }));
+        checks["computer_source_ack_commits_selection"] = window.SystemPicker.SelectedIndex == 1 && window.SystemPicker.IsEnabled;
+        window.SystemPicker.SelectedIndex = 0; Pump();
+        var allSources = window.SelfTestCommands.Last();
+        Event(JsonSerializer.Serialize(new { @event = "audio_device", direction = "system", device = (int?)null, endpoint_id = (string?)null, request_id = allSources.GetProperty("request_id").GetInt32(), success = true }));
+        checks["computer_source_default_excludes_bluehead"] = window.SystemPicker.SelectedIndex == 0 && window.SystemGain.Secondary.Contains("排除 BlueHead");
         Capture(window.SystemGain.EditorPanel, Path.Combine(folder, "volume-system.png"));
         window.CloseAudioEditors();
         var levels = window.AudioEditors().Where(level => level.Compact).ToArray();
@@ -319,75 +379,161 @@ internal static class Program
         Event("""{"event":"stopped"}""");
         var systemAdapter = restartAdapter with { Service = "BTHUSB", RebootRequired = false, Healthy = true, HasBackup = true, SystemRadioReady = true };
         var dedicatedAdapter = restartAdapter with { RebootRequired = false, Healthy = true, HasBackup = true };
+        int Starts() => window.SelfTestCommands.Count(command => command.Text("command") == "start");
+        string SavedMode() => window.SelfTestCommands.Last(command => command.Text("command") == "configure").GetProperty("settings").Text("mode");
         window.ApplyDriverInventory([systemAdapter], true);
-        window.ModePicker.SelectedIndex = 1; Pump();
+        window.ShowPage("adapters"); window.ModePicker.SelectedIndex = 1; Pump();
+        checks["ready_system_driver_allows_basic_mode_without_uac"] = !window.HasPendingMode && SavedMode() == "native" && window.SelfTestDriverOperations.Count == 0;
+        checks["home_and_driver_mode_selectors_share_effective_value"] = window.ModePicker.SelectedIndex == 1 && window.HomeModePicker.SelectedIndex == 1;
         checks["mode_switch_clears_unrelated_previous_mode_footer"] = window.FooterStatus.Text == "本机蓝牙 · 无需同一 Wi-Fi";
-        checks["shared_mode_hides_dedicated_uplink_mute_indicator"] = window.MutedIndicator.Visibility == Visibility.Collapsed;
-        checks["shared_mode_uses_ready_system_radio"] = !window.SetupCard.IsVisible && !window.NeedsBluetoothSetup;
+        checks["system_driver_hides_restore_and_repair_in_basic_mode"] = window.DriverRestoreButton.Visibility == Visibility.Collapsed && window.OriginalBootstrapButton.Visibility == Visibility.Collapsed && window.DriverInstallButton.Visibility == Visibility.Collapsed;
+        Capture(window, Path.Combine(folder, "driver-basic-ready.png"));
+        window.ShowPage("home"); Pump();
+        checks["basic_mode_explains_exact_computer_and_mobile_steps"] = window.HomeNextStep.Text.Contains("电脑") && window.HomeNextStep.Text.Contains("Windows 蓝牙设置") && window.HomeNextStep.Text.Contains("BlueHead") && window.HomeNextStep.Text.Contains("开始接收") && window.HomeNextStep.Text.Contains("手机／平板播放");
+        checks["basic_mode_has_direct_windows_pairing_action"] = window.HomePairButton.IsVisible;
+        checks["basic_mode_keeps_only_applicable_audio_controls"] = window.SharedAudioFooter.IsVisible && window.DedicatedAudioFooter.Visibility == Visibility.Collapsed && window.MediaProfileCard.Visibility == Visibility.Collapsed;
         checks["windows_managed_settings_disabled_in_shared_mode"] = !window.NameEntry.IsEnabled && !window.CallsToggle.IsEnabled && !window.CodecPicker.IsEnabled;
-        checks["shared_mode_explains_mic_and_codec_prerequisites_on_home"] = window.SharedModeNotice.IsVisible && window.SharedAudioFooter.IsVisible && window.DedicatedAudioFooter.Visibility == Visibility.Collapsed && window.SharedCodecValue.IsVisible;
         checks["shared_mode_does_not_advertise_dedicated_voice_negotiation"] = window.VoiceCodecHint.Text.Contains("不提供蓝牙语音") && !window.VoiceCodecHint.Text.Contains("自动协商");
-        checks["restored_system_driver_disables_repeat_restore_even_with_backup"] = !window.RestoreDriverButton.IsEnabled && window.RestoreDriverButton.Content.ToString()!.Contains("系统蓝牙");
-        window.RestoreDriverButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent)); Pump();
-        checks["repeat_restore_is_rejected_before_uac"] = window.SelfTestDriverOperations.Count == 0;
-        window.ShowPage("settings"); Pump();
-        checks["shared_settings_offer_dedicated_mode_instead_of_dead_controls"] = window.SharedSettingsNotice.IsVisible && window.SharedNameFields.IsVisible && window.AdvancedAudio.Visibility == Visibility.Collapsed;
-        window.ModePicker.SelectedIndex = 0; window.ShowPage("home"); Pump();
-        checks["selecting_dedicated_on_system_driver_requires_preparation"] = window.NeedsBluetoothSetup && window.SetupCard.IsVisible && Equals(window.StartButton.Content, "启用专用接收") && !window.FinishBluetoothButton.IsEnabled;
-        var startsBeforeSetup = window.SelfTestCommands.Count(command => command.Text("command") == "start");
-        window.StartButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent)); Pump();
-        checks["unprepared_dedicated_mode_opens_setup_without_starting"] = window.AdaptersPage.IsVisible && window.SelfTestCommands.Count(command => command.Text("command") == "start") == startsBeforeSetup;
-        window.ApplyDriverInventory([dedicatedAdapter], false);
-        window.ModePicker.SelectedIndex = 1; window.ShowPage("home"); Pump();
-        checks["shared_with_only_dedicated_adapter_requires_restore"] = window.NeedsBluetoothSetup && Equals(window.StartButton.Content, "恢复系统蓝牙") && window.SetupCard.IsVisible;
-        window.ShowPage("adapters"); Pump();
-        checks["driver_restore_remains_available_in_shared_mode"] = window.RestoreDriverButton.IsVisible && window.RestoreDriverButton.IsEnabled && !window.InstallDriverButton.IsVisible;
-        Capture(window, Path.Combine(folder, "shared-restore-required.png"));
-        window.ApplySuccessfulDriverOperation("restore", dedicatedAdapter);
-        window.ApplyDriverInventory([systemAdapter], true); window.ShowPage("home"); Pump();
-        checks["restore_completion_aligns_mode_and_all_pages"] = window.ModePicker.SelectedIndex == 1 && !window.NeedsBluetoothSetup && !window.RestoreDriverButton.IsEnabled && window.SharedAudioFooter.IsVisible;
         Capture(window, Path.Combine(folder, "shared-mode.png"));
-        window.ShowPage("settings"); window.SettingsPage.ScrollToTop(); Pump(); Capture(window, Path.Combine(folder, "shared-settings.png"));
-        window.ShowPage("adapters"); Pump(); Capture(window, Path.Combine(folder, "shared-restored.png"));
-        window.Width = window.MinWidth; window.Height = window.MinHeight; Pump(); Capture(window, Path.Combine(folder, "shared-restored-minimum.png"));
-        checks["bluetooth_finish_action_remains_visible_at_minimum_size"] = window.FinishBluetoothButton.IsVisible && window.FinishBluetoothButton.TranslatePoint(new Point(0, window.FinishBluetoothButton.ActualHeight), window).Y < window.ActualHeight - 16;
-        checks["shared_settings_hide_inapplicable_voice_switch"] = window.VoiceSettingsRow.Visibility == Visibility.Collapsed;
-        WindowSizing.Apply(window, true); window.ShowPage("home"); Pump();
-        window.ApplyDriverInventory([systemAdapter with { RebootRequired = true, SystemRadioReady = false }], false); Pump();
-        checks["system_restore_pending_restart_is_not_offered_again"] = window.AdapterNeedsRestart && window.SetupCard.IsVisible && !window.RestoreDriverButton.IsEnabled && !window.FinishBluetoothButton.IsEnabled;
-        window.ApplyDriverInventory([systemAdapter], true);
-        Event("""{"event":"starting"}""");
+        Click(window.HomePairButton);
+        checks["basic_pairing_button_opens_windows_bluetooth"] = window.SelfTestExternalLinks.Last() == "ms-settings:bluetooth";
+        window.ShowPage("settings"); Pump();
+        checks["shared_settings_explain_advanced_features_instead_of_dead_controls"] = window.SharedSettingsNotice.IsVisible && window.SharedNameFields.IsVisible && window.AdvancedAudio.Visibility == Visibility.Collapsed;
+        window.ShowPage("adapters"); window.ModePicker.SelectedIndex = 0; Pump();
+        checks["unprepared_mode_is_a_draft_not_an_effective_setting"] = window.HasPendingMode && window.RequestedMode == "advanced" && window.ModePicker.SelectedIndex == 1 && window.HomeModePicker.SelectedIndex == 1 && SavedMode() == "native";
+        checks["unprepared_mode_states_next_step_and_driver_impact"] = window.ModePendingTitle.Text.Contains("待你确认") && window.ChoiceFeedback.Text.Contains("尚未切换") && window.ModePendingText.Text.Contains("返回或取消") && window.DriverImpactTitle.Text.Contains("鼠标") && window.DriverImpactTitle.Text.Contains("断开") && window.DriverImpactText.Text.Contains("Windows") && window.DriverImpactText.Text.Contains("蓝牙开关会消失");
+        checks["system_driver_offers_only_backup_install_for_advanced_choice"] = window.DriverInstallButton.IsVisible && window.DriverInstallButton.IsEnabled && window.DriverRestoreButton.Visibility == Visibility.Collapsed && window.OriginalBootstrapButton.Visibility == Visibility.Collapsed;
+        var operationsBeforeDraft = window.SelfTestDriverOperations.Count;
+        Click(window.SaveButton);
+        checks["saving_settings_cannot_persist_an_unprepared_mode"] = SavedMode() == "native" && window.HasPendingMode && window.SelfTestDriverOperations.Count == operationsBeforeDraft;
+        window.ApplyDriverInventory([systemAdapter], true); Pump();
+        checks["refresh_does_not_commit_a_pending_mode"] = window.HasPendingMode && window.HomeModePicker.SelectedIndex == 1;
+        Capture(window, Path.Combine(folder, "driver-advanced-pending.png"));
+        window.ShowPage("home"); Pump();
+        checks["leaving_driver_page_discards_unfinished_mode_choice"] = !window.HasPendingMode && window.ModePicker.SelectedIndex == 1 && SavedMode() == "native";
+        window.HomeModePicker.SelectedIndex = 0; Pump();
+        checks["home_advanced_choice_opens_driver_preparation_without_uac"] = window.AdaptersPage.IsVisible && window.HasPendingMode && window.HomeModePicker.SelectedIndex == 1 && window.SelfTestDriverOperations.Count == operationsBeforeDraft;
+        Click(window.FinishBluetoothButton);
+        checks["return_home_discards_draft_without_starting_receiver"] = window.HomePage.IsVisible && !window.HasPendingMode && SavedMode() == "native";
+        window.HomeModePicker.SelectedIndex = 0; Pump();
+        var modeSwitchStarts = Starts();
+        window.SelfTestDriverRunner = (_, _) => Task.FromException<(int, DriverRecord?)>(new System.ComponentModel.Win32Exception(1223));
+        Click(window.DriverInstallButton);
+        checks["cancelled_install_preserves_basic_mode_and_driver"] = !window.HasPendingMode && window.ModePicker.SelectedIndex == 1 && SavedMode() == "native" && window.NoticeText.Text.Contains("已取消切换");
         window.ModePicker.SelectedIndex = 0; Pump();
-        checks["mode_selection_waits_until_reception_is_stopped"] = window.ModePicker.SelectedIndex == 1 && window.DriverStopButton.Visibility == Visibility.Visible && !window.ModePicker.IsEnabled;
+        window.SelfTestDriverRunner = (_, device) => Task.FromResult((1, (DriverRecord?)new DriverRecord { InstanceId = device.InstanceId, Stage = "failed", Error = "device busy" }));
+        Click(window.DriverInstallButton);
+        checks["busy_driver_has_specific_close_refresh_and_restart_steps"] = window.DriverResult.Text.Contains("占用") && window.DriverResult.Text.Contains("关闭") && window.DriverResult.Text.Contains("刷新状态") && window.DriverResult.Text.Contains("重启电脑后重试") && window.HasPendingMode && SavedMode() == "native";
+        var pendingInstall = new TaskCompletionSource<(int ExitCode, DriverRecord? Record)>();
+        window.SelfTestDriverRunner = (_, _) => pendingInstall.Task;
+        Click(window.DriverInstallButton);
+        checks["driver_install_shows_permission_then_working_progress"] = window.SelfTestDriverActivities.Any(item => item.Operation == "install" && item.Waiting && item.Title.Contains("管理员授权")) && window.DriverActivityNotice.IsVisible && window.DriverActivityTitle.Text.Contains("正在备份原驱动") && !window.CancelModeButton.IsEnabled && !window.ModePicker.IsEnabled;
+        Capture(window, Path.Combine(folder, "driver-install-working.png"));
+        window.ApplyDriverInventory([dedicatedAdapter], false);
+        pendingInstall.SetResult((0, new DriverRecord { InstanceId = dedicatedAdapter.InstanceId, Stage = "winusb_ready" })); Pump();
+        Event("""{"event":"inventory","adapters":[{"transport":"usb:1234:abcd#0","name":"专用适配器（示例）"}],"audio":[]}"""); Pump();
+        checks["verified_install_commits_advanced_mode_without_starting"] = !window.HasPendingMode && SavedMode() == "advanced" && window.ModePicker.SelectedIndex == 0 && window.HomeModePicker.SelectedIndex == 0 && Starts() == modeSwitchStarts;
+        checks["dedicated_driver_hides_install_and_groups_restore_repair"] = window.DriverInstallButton.Visibility == Visibility.Collapsed && window.DriverRestoreButton.IsVisible && window.DriverRestoreButton.IsEnabled && window.OriginalBootstrapButton.IsVisible && window.OriginalBootstrapButton.IsEnabled;
+        checks["actual_driver_status_is_separate_from_selected_mode"] = window.DriverStateTitle.Text.Contains("专用") && window.EffectiveModeLabel.Text.Contains("BlueHead 专用蓝牙");
+        Capture(window, Path.Combine(folder, "driver-dedicated-ready.png"));
+        window.ModePicker.SelectedIndex = 1; Pump();
+        checks["basic_choice_on_dedicated_driver_remains_pending"] = window.HasPendingMode && SavedMode() == "advanced" && window.HomeModePicker.SelectedIndex == 0 && window.DriverRestoreButton.IsVisible && window.DriverInstallButton.Visibility == Visibility.Collapsed;
+        checks["restore_preview_explains_restoration_instead_of_repeating_install_warning"] = window.ModePendingTitle.Text.Contains("恢复 Windows 共用蓝牙") && window.DriverImpactTitle.Text.Contains("系统蓝牙可用") && window.DriverImpactText.Text.Contains("不再通过此适配器发送电脑麦克风") && window.DriverImpactTitle.Foreground is SolidColorBrush restoreBrush && restoreBrush.Color.B > restoreBrush.Color.R && window.OriginalBootstrapButton.Visibility == Visibility.Collapsed;
+        Capture(window, Path.Combine(folder, "shared-restore-required.png"));
+        window.ShowPage("home"); Pump();
+        checks["pending_restore_cannot_change_home_effective_mode"] = !window.HasPendingMode && window.HomeModePicker.SelectedIndex == 0 && !window.SharedAudioFooter.IsVisible;
+        window.ShowPage("adapters"); window.ModePicker.SelectedIndex = 1; Pump();
+        window.SelfTestDriverRunner = (_, _) => Task.FromException<(int, DriverRecord?)>(new System.ComponentModel.Win32Exception(1223));
+        Click(window.DriverRestoreButton);
+        checks["cancelled_restore_preserves_advanced_mode"] = !window.HasPendingMode && window.ModePicker.SelectedIndex == 0 && SavedMode() == "advanced";
+        window.ModePicker.SelectedIndex = 1; Pump();
+        window.SelfTestDriverRunner = (_, device) =>
+        {
+            window.ApplyDriverInventory([systemAdapter], true);
+            return Task.FromResult((0, (DriverRecord?)new DriverRecord { InstanceId = device.InstanceId, Stage = "restored" }));
+        };
+        Click(window.DriverRestoreButton);
+        checks["verified_restore_commits_basic_mode_without_starting"] = !window.HasPendingMode && SavedMode() == "native" && window.ModePicker.SelectedIndex == 1 && Starts() == modeSwitchStarts && window.AdaptersPage.IsVisible;
+        checks["restored_system_driver_cannot_be_restored_again"] = window.DriverRestoreButton.Visibility == Visibility.Collapsed && window.OriginalBootstrapButton.Visibility == Visibility.Collapsed;
+        Capture(window, Path.Combine(folder, "shared-restored.png"));
+        window.Width = window.MinWidth; window.Height = window.MinHeight; Pump(); Capture(window, Path.Combine(folder, "shared-restored-minimum.png"));
+        checks["driver_steps_remain_ordered_at_minimum_size"] = window.DriverPicker.TranslatePoint(new(0,0),window.BluetoothSetupCard).Y < window.ModePicker.TranslatePoint(new(0,0),window.BluetoothSetupCard).Y && window.ModePicker.TranslatePoint(new(0,0),window.BluetoothSetupCard).Y < window.DriverStateTitle.TranslatePoint(new(0,0),window.BluetoothSetupCard).Y;
+        checks["driver_operations_are_grouped_on_the_right"] = window.DriverActions.HorizontalAlignment == HorizontalAlignment.Right;
+        checks["primary_driver_actions_stay_visible_without_scrolling"] = window.DriverActions.TranslatePoint(new(0,window.DriverActions.ActualHeight),window).Y < window.ActualHeight - 16 && window.FinishBluetoothButton.IsVisible && window.DriverStateTitle.IsVisible;
+        window.ApplyDriverInventory([dedicatedAdapter], false); window.ModePicker.SelectedIndex = 0; Pump(); window.ModePicker.SelectedIndex = 1; Pump();
+        checks["pending_restore_and_its_consequences_stay_with_actions"] = window.ModePendingNotice.IsVisible && window.DriverImpact.IsVisible && window.CancelModeButton.IsVisible && window.DriverImpact.TranslatePoint(new(0,window.DriverImpact.ActualHeight),window).Y < window.DriverActions.TranslatePoint(new(0,0),window).Y && window.DriverActions.TranslatePoint(new(0,window.DriverActions.ActualHeight),window).Y < window.ActualHeight - 16;
+        Click(window.CancelModeButton);
+        checks["explicit_cancel_restores_both_visible_mode_choices"] = !window.HasPendingMode && window.HomeModePicker.SelectedIndex == 0 && window.ModePicker.SelectedIndex == 0;
+        window.ApplySuccessfulDriverOperation("restore", dedicatedAdapter);
+
+        checks["driver_page_scrolls_without_clipping_controls"] = window.AdaptersScroll.ScrollableHeight > 0 && window.AdaptersScroll.ViewportHeight > 100;
+        window.ApplyDriverInventory([systemAdapter with { RebootRequired = true, SystemRadioReady = false }], false); Pump();
+        checks["pending_restart_hides_install_and_restore"] = window.DriverInstallButton.Visibility == Visibility.Collapsed && window.DriverRestoreButton.Visibility == Visibility.Collapsed && window.OriginalBootstrapButton.Visibility == Visibility.Collapsed && window.DriverActionHint.Text.Contains("重启");
+        checks["restart_requirement_is_also_visible_on_home"] = window.AdapterNeedsRestart && window.SetupCard.Visibility == Visibility.Visible;
+        WindowSizing.Apply(window, true);
+        window.ApplyDriverInventory([systemAdapter], true); window.ShowPage("home");
+        Event("""{"event":"starting"}""");
+        window.HomeModePicker.SelectedIndex = 0; Pump();
+        checks["running_mode_choice_is_disabled_and_programmatic_change_reverted"] = window.HomeModePicker.SelectedIndex == 1 && !window.HomeModePicker.IsEnabled && !window.ModePicker.IsEnabled && !window.HasPendingMode;
         Event("""{"event":"stopped"}""");
-        window.ModePicker.SelectedIndex = 0;
+        window.ApplyDriverInventory([dedicatedAdapter], false); window.ShowPage("adapters"); window.ModePicker.SelectedIndex = 0; Pump();
+        checks["matching_dedicated_driver_applies_mode_without_reinstall"] = SavedMode() == "advanced" && !window.HasPendingMode;
         var otherDedicated = dedicatedAdapter with { InstanceId = @"USB\VID_1234&PID_5678\other", Name = "其他适配器（示例）" };
         window.ApplyDriverInventory([dedicatedAdapter, otherDedicated], false);
-        Event("""{"event":"inventory","adapters":[{"transport":"usb:1234:abcd#0","name":"专用适配器（示例）"}],"audio":[]}""");
         window.ApplySuccessfulDriverOperation("restore", otherDedicated);
-        checks["restoring_another_adapter_keeps_selected_dedicated_mode"] = window.ModePicker.SelectedIndex == 0 && !window.NeedsBluetoothSetup;
-        window.ApplyDriverInventory([dedicatedAdapter, otherDedicated with { Service = "BTHUSB", SystemRadioReady = true }], true);
-        window.DriverPicker.SelectedIndex = 0;
-        window.ApplyDriverInventory([dedicatedAdapter, otherDedicated with { Service = "BTHUSB", SystemRadioReady = true }], true);
-        checks["restored_adapter_does_not_override_later_manual_selection"] = (window.DriverPicker.SelectedItem as DriverDevice)?.InstanceId == dedicatedAdapter.InstanceId;
-        Event("""{"event":"error","category":"missing_firmware","firmware_profile":"realtek-8761bu","message":"Firmware: verified artifact unavailable"}""");
-        Event("""{"event":"stopped"}"""); window.ShowPage("home"); Pump();
-        checks["firmware_failure_has_home_next_step"] = window.NeedsBluetoothSetup && Equals(window.StartButton.Content, "检查蓝牙启动") && window.SetupCard.IsVisible;
-        Capture(window, Path.Combine(folder, "firmware-required-home.png"));
-        window.ShowPage("adapters"); Pump();
-        checks["firmware_actions_match_specific_verified_profile"] = window.ControllerPreparation.IsExpanded && window.AcquireFirmwareButton.IsEnabled && window.ImportFirmwareButton.IsEnabled && window.OriginalBootstrapButton.IsEnabled;
-        window.ControllerPreparation.BringIntoView(); Pump();
-        checks["firmware_actions_visible_without_searching_below_fold"] = window.AcquireFirmwareButton.TranslatePoint(new Point(0, window.AcquireFirmwareButton.ActualHeight), window).Y < window.FinishBluetoothButton.TranslatePoint(new Point(0, 0), window).Y;
+        checks["restoring_another_adapter_keeps_effective_receiver_mode"] = window.ModePicker.SelectedIndex == 0;
+        window.ApplyDriverInventory([dedicatedAdapter], false);
+        window.ShowPage("home");
+        Event("""{"event":"error","category":"missing_firmware","message":"missing firmware","firmware_profile":"intel-tlv-0041"}"""); Pump();
+        checks["firmware_failure_has_home_driver_action"] = window.NeedsBluetoothSetup && window.SetupCard.IsVisible && window.NoticeAction.IsVisible;
+        Click(window.NoticeAction);
+        checks["firmware_actions_only_appear_when_needed"] = window.ControllerPreparation.IsVisible && window.AcquireFirmwareButton.IsEnabled && window.ImportFirmwareButton.IsEnabled;
         Capture(window, Path.Combine(folder, "firmware-required-adapter.png"));
-        window.ModePicker.SelectedIndex = 1; Pump();
-        checks["shared_mode_disables_dedicated_firmware_actions"] = !window.AcquireFirmwareButton.IsEnabled && !window.OriginalBootstrapButton.IsEnabled && !window.RetryControllerButton.IsEnabled;
-        window.ModePicker.SelectedIndex = 0;
-        Event("""{"event":"error","category":"catalog_untrusted","message":"Firmware: catalog signature verification failed"}"""); Pump();
-        checks["untrusted_catalog_cannot_download_or_initialize"] = !window.AcquireFirmwareButton.IsEnabled && !window.ImportFirmwareButton.IsEnabled && !window.OriginalBootstrapButton.IsEnabled && !window.RetryControllerButton.IsEnabled;
+        Event("""{"event":"controller_capabilities","voice_transport":true}""");
+        window.ShowPage("home"); Click(window.StartButton);
         Event("""{"event":"starting"}""");
-        Event("""{"event":"controller_capabilities","media_transport":true,"voice_transport":false,"backend":"standard-hci"}"""); Pump();
-        checks["media_only_capability_disables_voice_controls_but_preserves_media"] = !window.MicrophoneGain.IsEnabled && !window.SystemAudioToggle.IsEnabled && window.PlaybackGain.IsEnabled;
+        Event("""{"event":"device","key":"lost-controller-demo","state":"已连接"}""");
+        var previousDriverOperations = window.SelfTestDriverOperations.Count;
+        Event("""{"event":"error","category":"controller_hardware_error","message":"Controller error"}""");
+        Event("""{"event":"stopping"}""");
+        checks["controller_failure_clears_ghost_devices_promptly"] = window.State.Devices.Count == 0;
+        Event("""{"event":"stopped"}"""); Pump();
+        checks["controller_failure_never_opens_uac"] = window.SelfTestDriverOperations.Count == previousDriverOperations && window.NoticeText.Text.Contains("由你确认") && window.NoticeAction.IsVisible;
+        Click(window.NoticeAction);
+        checks["fault_page_offers_named_repair_action_without_background_uac"] = window.AdaptersPage.IsVisible && window.OriginalBootstrapButton.IsVisible && window.OriginalBootstrapButton.IsEnabled && window.SelfTestDriverOperations.Count == previousDriverOperations;
+        checks["fault_page_hides_unneeded_firmware_download"] = window.ControllerPreparation.Visibility == Visibility.Collapsed && window.DriverInstallButton.Visibility == Visibility.Collapsed;
+        Capture(window, Path.Combine(folder, "controller-recovery.png"));
+        window.SelfTestDriverRunner = (_, _) => Task.FromException<(int, DriverRecord?)>(new System.ComponentModel.Win32Exception(1223));
+        Click(window.OriginalBootstrapButton);
+        checks["cancelled_repair_keeps_manual_action_available"] = window.NoticeText.Text.Contains("已取消恢复") && window.OriginalBootstrapButton.IsEnabled && window.ControllerNeedsInitialization;
+        window.SelfTestDriverRunner = (_, device) => Task.FromResult((0, (DriverRecord?)new DriverRecord { InstanceId = device.InstanceId, Stage = "winusb_ready" }));
+        var recoveryStarts = Starts();
+        Click(window.OriginalBootstrapButton);
+        checks["verified_repair_does_not_start_reception"] = Starts() == recoveryStarts && window.AdaptersPage.IsVisible && !window.ControllerNeedsInitialization && window.SelfTestDriverOperations.Last() == "initialize-original";
+        Click(window.FinishBluetoothButton);
+        checks["return_home_does_not_start_reception"] = window.HomePage.IsVisible && Starts() == recoveryStarts;
+        Click(window.StartButton);
+        checks["only_home_start_begins_reception"] = Starts() == recoveryStarts + 1;
+        Event("""{"event":"voice_protection","state":"active","message":"通话／语音保护已开启：暂时只连接使用电脑麦克风的设备。"}"""); Pump();
+        checks["voice_protection_is_default_and_explained_on_home"] = window.VoiceProtectionToggle.IsChecked == true && !window.VoiceProtectionToggle.IsEnabled && window.VoiceProtectionNotice.IsVisible && window.VoiceProtectionText.Text.Contains("电脑麦克风");
+        Event("""{"event":"voice_protection","state":"blocked","message":"有其它设备尝试连接。当前设备正在使用电脑麦克风，为避免蓝牙中断，已暂时限制为单设备连接。"}""");
+        checks["blocked_connection_notice_avoids_codec_jargon"] = window.VoiceProtectionText.Text.Contains("其它设备尝试连接") && !window.VoiceProtectionText.Text.Contains("mSBC");
+        Event("""{"event":"voice_protection","state":"released","message":"通话／语音保护已结束，可以重新连接其它设备。"}""");
+        checks["voice_end_explains_reconnection"] = window.VoiceProtectionText.Text.Contains("可以重新连接");
         Event("""{"event":"stopped"}""");
+        checks["stop_clears_voice_protection_banner"] = window.VoiceProtectionNotice.Visibility == Visibility.Collapsed && window.VoiceProtectionToggle.IsEnabled;
+        window.ShowPage("adapters");
+        Event("""{"event":"error","category":"controller_unresponsive","message":"Controller still unresponsive"}""");
+        window.SelfTestDriverRunner = (_, device) =>
+        {
+            window.ApplyDriverInventory([systemAdapter with { RebootRequired = true, SystemRadioReady = false }], false);
+            return Task.FromResult((3010, (DriverRecord?)new DriverRecord { InstanceId = device.InstanceId, Stage = "restored_restart_required", RebootRequired = true }));
+        };
+        recoveryStarts = Starts(); Click(window.OriginalBootstrapButton);
+        checks["repair_needing_restart_has_exact_instruction_and_no_restart_loop"] = window.AdapterNeedsRestart && Starts() == recoveryStarts && window.NoticeText.Text == "驱动恢复完成，请重启电脑。" && window.OriginalBootstrapButton.Visibility == Visibility.Collapsed;
+        window.ApplyDriverInventory([dedicatedAdapter], false); window.ModePicker.SelectedIndex = 0; Pump();
+        Event("""{"event":"controller_capabilities","voice_transport":true}""");
+        window.SelfTestDriverRunner = null;
         Event("""{"event":"starting"}""");
         Event("""{"event":"status","message":"已就绪：在移动设备蓝牙列表连接 BlueHead PC"}""");
         Event("""{"event":"device","key":"remote-demo","state":"已连接"}""");
@@ -442,6 +588,38 @@ internal static class Program
         Event("""{"event":"device","key":"remote-demo","state":"已断开"}""");
         Event("""{"event":"avrcp","key":"remote-demo","connected":true,"controls":true,"title":"late"}""");
         checks["late_avrcp_events_cannot_recreate_disconnected_devices"] = window.State.Devices.Count == 0;
+        Event("""{"event":"starting"}""");
+        Event("""{"event":"device","key":"lifecycle-a","state":"已连接"}""");
+        Event("""{"event":"device","key":"lifecycle-b","state":"已连接"}""");
+        Event("""{"event":"telemetry","running":true,"audio":{},"devices":[{"key":"lifecycle-b","media":{},"call":{"active":true,"codec":"msbc","rate":16000}}]}""");
+        checks["full_snapshot_removes_stale_connection_card"] = window.State.Devices.Count == 1 && window.State.Devices[0].Key == "lifecycle-b";
+        Event("""{"event":"stopping"}""");
+        checks["stop_immediately_invalidates_connections_and_disables_driver_changes"] = window.State.Devices.Count == 0 && !window.StartButton.IsEnabled && !window.DriverInstallButton.IsEnabled && !window.DriverRestoreButton.IsEnabled;
+        Event("""{"event":"device","key":"late-during-stop","state":"已连接"}""");
+        Event("""{"event":"system_audio_state","active":true}""");
+        checks["events_during_retirement_cannot_resurrect_devices"] = window.State.Devices.Count == 0;
+        Event("""{"event":"stopped"}""");
+        checks["completed_stop_restores_start_action"] = window.StartButton.IsEnabled;
+        Event("""{"event":"starting"}""");
+        Event("""{"event":"device","key":"new-session","state":"已连接"}""");
+        using (var stale = JsonDocument.Parse("""{"event":"device","key":"obsolete","state":"已连接"}""")) window.ApplyEngineMessage(-1, stale.RootElement);
+        window.ApplyEngineFailure(-1, "obsolete failure");
+        checks["queued_old_backend_events_and_faults_do_not_touch_current_session"] = window.State.Devices.Count == 1 && window.State.Devices[0].Key == "new-session";
+        window.ApplyEngineFailure(0, "synthetic native failure");
+        checks["backend_failure_clears_device_voice_and_pending_session_state"] = window.State.Devices.Count == 0 && window.StartButton.IsEnabled && window.EngineState.Text == "后台已断开";
+        Event("""{"event":"starting"}""");
+        Event("""{"event":"telemetry","running":true,"audio":{},"devices":[{"key":"reconciled","media":{},"call":{}}]}""");
+        checks["full_snapshot_can_recover_a_missing_connection_event"] = window.State.Devices.Count == 1 && window.State.Devices[0].Key == "reconciled";
+        Event("""{"event":"telemetry","running":true,"devices_complete":false,"audio":{},"devices":[]}""");
+        checks["partial_system_snapshot_does_not_delete_windows_owned_connections"] = window.State.Devices.Count == 1;
+        Event("""{"event":"telemetry","running":false,"audio":{},"devices":[]}""");
+        checks["stopped_receiver_snapshot_clears_remaining_ui_state"] = window.State.Devices.Count == 0 && window.StartButton.IsEnabled;
+        try { ProtocolChecks(window, checks, folder, Event); checks["protocol_checks_completed"] = true; }
+        catch (Exception error)
+        {
+            checks["protocol_checks_completed"] = false;
+            File.WriteAllText(Path.Combine(folder, "protocol-check-exception.txt"), error.ToString());
+        }
         var passed = checks.Values.All(value => value);
         File.WriteAllText(Path.Combine(folder, "desktop-self-test.json"), JsonSerializer.Serialize(new { passed, checks, scope = "WPF UI state and rendering; no radio links or driver changes" }, new JsonSerializerOptions { WriteIndented = true }));
         window.Close(); return passed ? 0 : 1;
@@ -456,12 +634,12 @@ internal static class Program
             var phase = "prepare";
             var hello = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var inventory = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-            client.Message += message =>
+            client.Message += (_, message) =>
             {
                 if (message.Text("event") == "hello") hello.TrySetResult(true);
                 if (message.Text("event") == "inventory") inventory.TrySetResult(message.GetProperty("audio").GetArrayLength());
             };
-            client.Failed += message =>
+            client.Failed += (_, message) =>
             {
                 var failure = new IOException(message);
                 hello.TrySetException(failure);
@@ -484,7 +662,7 @@ internal static class Program
                 phase = "shutdown";
                 await client.ShutdownAsync();
                 phase = "complete";
-                File.WriteAllText(report, JsonSerializer.Serialize(new { passed = true, phase, audio_endpoints = endpoints, protocol = 1, clean_shutdown = true, scope = "Packaged desktop-engine handshake and readonly inventory" }));
+                File.WriteAllText(report, JsonSerializer.Serialize(new { passed = true, phase, audio_endpoints = endpoints, protocol = 1, clean_shutdown = true, scope = (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("BLUEHEAD_SOURCE_ROOT")) ? "Packaged" : "Source") + " desktop-engine handshake and readonly inventory" }));
                 passed = true;
             }
             catch (Exception error) { File.WriteAllText(report, JsonSerializer.Serialize(new { passed = false, phase, error = error.ToString() })); }

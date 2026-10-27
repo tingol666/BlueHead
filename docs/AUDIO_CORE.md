@@ -54,16 +54,7 @@ USB/HCI 只有一个物理所有者。端点准备后必须先停止／等待旧
 
 构建工具链见 [BUILDING](BUILDING.md)。以下命令不打开声卡、麦克风或蓝牙：
 
-```powershell
-.venv/Scripts/python.exe -m pytest tests -q --tb=short
-.venv/Scripts/python.exe tools/audio_fidelity_audit.py --report work/fidelity.json
-.venv/Scripts/python.exe tools/asrc_benchmark.py --report work/asrc-cost.json
-.venv/Scripts/python.exe tools/build_clock_stress.py
-work/clock-stress/clock-stress.exe bluehead/assets work/clock-96.json 3600 96000 96000
-work/clock-stress/clock-stress.exe bluehead/assets work/clock-441-to96.json 1800 44100 96000
-.venv/Scripts/python.exe tools/native_soak.py --seconds 120 --codec aac --voice-codec 3 --drop-every 31 --jitter-ms 3 --gil-stall-ms 2000 --report work/continuous.json
-.venv/Scripts/python.exe tools/native_soak.py --seconds 120 --codec aac --voice-codec 3 --drop-every 31 --jitter-ms 3 --native-stall-ms 10 --bounded-stall-recovery --report work/stall-recovery.json
-```
+公开构建与产品内置离线诊断见 [BUILDING](BUILDING.md) 和 [DIAGNOSTICS](DIAGNOSTICS.md)。以下描述维护阶段的验证设计，回归测试及基准不属于公开构建输入。
 
 虚拟时钟用真实原生 PCM 运算加速，不需要等同长度的墙上时间。稳态回放要求零期限缺口；
 主动阻塞解码器再叠加丢包的检查保留缺口／过期计数，要求影响有界且不重缓冲、重复过期或搜索周期。

@@ -186,7 +186,7 @@ struct Packet {
 };
 struct SmallPacket {
   uint32_t size = 0, epoch = 0, status = 0;
-  uint64_t arrival = 0;
+  uint64_t arrival = 0, link_epoch = 0;
   std::array<uint8_t, 4096> data;
   SmallPacket() = default;
   SmallPacket(const SmallPacket &other) { *this = other; }
@@ -195,6 +195,7 @@ struct SmallPacket {
     epoch = other.epoch;
     status = other.status;
     arrival = other.arrival;
+    link_epoch = other.link_epoch;
     if (this != &other)
       std::memcpy(data.data(), other.data.data(), size);
     return *this;

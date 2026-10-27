@@ -34,10 +34,7 @@
 
 ## 用什么验证
 
-```powershell
-.venv\Scripts\python.exe -m pytest tests/test_audio_quality.py tests/test_continuity.py tests/test_realtime.py tests/test_output_formats.py tests/test_callback_timing.py tests/test_audio_counters.py -q
-.venv\Scripts\python.exe tools/audio_quality_benchmark.py --report work/audio-quality-cost.json
-```
+公开构建与产品内置离线诊断见 [BUILDING](BUILDING.md) 和 [DIAGNOSTICS](DIAGNOSTICS.md)。以下描述维护阶段的验证设计，回归测试及基准不属于公开构建输入。
 
 `test_audio_quality.py` 使用真正的生产 C 音频库：
 

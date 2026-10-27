@@ -189,7 +189,7 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
       }
     }
     s->buffering = 0;
-    float gate_target = atomic_load(&s->enabled) ? 1 : 0;
+    float gate_target = (atomic_load(&s->enabled) && atomic_load(&s->connected)) ? 1 : 0;
     uint32_t prefix = 0;
     /* Buffer targets are followed by the smooth clock controller below.
      * Periodic waveform copies are unsafe for general music: low-frequency

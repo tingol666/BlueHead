@@ -1,0 +1,48 @@
+<UserControl x:Class="BlueHead.Desktop.BroadcastPanel"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml" xmlns:local="clr-namespace:BlueHead.Desktop">
+ <Grid>
+  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+  <StackPanel Margin="0,0,0,12">
+   <TextBlock Text="音频广播" Style="{StaticResource Heading}"/>
+   <TextBlock Text="收听附近设备分享的 Auracast / LE Audio 广播，不需要普通蓝牙配对。" Style="{StaticResource Caption}" Margin="0,5,0,0"/>
+  </StackPanel>
+  <Border Grid.Row="1" Style="{StaticResource Card}" Padding="12,10" Margin="0,0,0,10">
+   <StackPanel>
+    <DockPanel>
+     <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
+      <local:AudioLevel x:Name="BroadcastVolume" Compact="True" CompactLabel="广播音量" Label="广播播放音量" Hint="只调整当前广播的声音；与音频中心的设备声音总音量共同生效。" ValueChanged="VolumeChanged" CanAdjust="False" Margin="0,0,9,0"/>
+      <ui:Button x:Name="StopButton" Content="停止播放" Padding="9,4" Click="StopClick" IsEnabled="False"/>
+     </StackPanel>
+     <TextBlock x:Name="Status" Text="尚未连接音频广播" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,12,0"/>
+    </DockPanel>
+    <TextBlock x:Name="AudioStatus" Text="" Style="{StaticResource Caption}" Margin="0,4,0,0" Visibility="Collapsed"/>
+    <TextBlock x:Name="Guidance" Text="先在设置中开启 LE Audio，再开始接收。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,7,0,0"/>
+    <ui:Button x:Name="SettingsButton" Content="打开高级音频设置 ↗" Click="SettingsClick" Padding="0,3" Margin="0,5,0,0" HorizontalAlignment="Left" Background="Transparent" BorderThickness="0" Foreground="{StaticResource Accent}"/>
+    <StackPanel x:Name="PasswordRow" Orientation="Horizontal" Margin="0,10,0,0" Visibility="Collapsed">
+     <TextBlock Text="广播密码" VerticalAlignment="Center" Margin="0,0,9,0"/><PasswordBox x:Name="Password" Width="150" MaxLength="16" Padding="7,4" AutomationProperties.Name="发送设备提供的广播密码"/>
+     <ui:Button Content="连接" Click="PasswordClick" Padding="10,4" Margin="7,0,0,0"/>
+    </StackPanel>
+    <StackPanel x:Name="ProgramsRow" Orientation="Horizontal" Margin="0,9,0,0" Visibility="Collapsed">
+     <TextBlock Text="音频节目" VerticalAlignment="Center" Margin="0,0,9,0"/><ComboBox x:Name="Programs" MinWidth="200" MaxWidth="330" DisplayMemberPath="Title" SelectionChanged="ProgramChanged" AutomationProperties.Name="选择广播节目或语言"/>
+    </StackPanel>
+   </StackPanel>
+  </Border>
+  <Border Grid.Row="2" Style="{StaticResource Card}" Padding="12,10">
+   <Grid>
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+    <DockPanel Margin="0,0,0,6"><ui:Button x:Name="ScanButton" Content="搜索附近广播" Click="ScanClick" Padding="10,4" DockPanel.Dock="Right" IsEnabled="False"/><TextBlock Text="附近的音频广播" FontWeight="SemiBold" VerticalAlignment="Center"/></DockPanel>
+    <TextBlock Grid.Row="1" Text="请先在发送设备上开启“音频分享”或“广播音频”，然后点击下方对应广播的“播放”。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+    <Grid Grid.Row="2">
+     <ListBox x:Name="Sources" BorderThickness="0" Background="Transparent" ScrollViewer.HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch" AutomationProperties.Name="发现的音频广播">
+      <ListBox.ItemTemplate><DataTemplate><Grid Margin="3,5"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+       <StackPanel VerticalAlignment="Center"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/><TextBlock Text="{Binding Details}" Style="{StaticResource Caption}" Margin="0,3,0,0"/></StackPanel>
+       <ui:Button Grid.Column="1" Content="播放" Click="PlayClick" Tag="{Binding}" Padding="11,4" Margin="12,0,0,0" VerticalAlignment="Center" AutomationProperties.Name="播放此音频广播"/>
+      </Grid></DataTemplate></ListBox.ItemTemplate>
+     </ListBox>
+     <TextBlock x:Name="Empty" Text="搜索后，附近的广播会显示在这里。" Style="{StaticResource Caption}" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"/>
+    </Grid>
+   </Grid>
+  </Border>
+ </Grid>
+</UserControl>

@@ -11,17 +11,6 @@
     "scope": "development"
   },
   {
-    "name": "av",
-    "version": "19.0.2",
-    "license": "BSD-3-Clause",
-    "project_urls": [
-      "Bug Tracker, https://github.com/PyAV-Org/PyAV/issues",
-      "Source Code, https://github.com/PyAV-Org/PyAV",
-      "homepage, https://pyav.basswood.io"
-    ],
-    "scope": "development"
-  },
-  {
     "name": "bumble",
     "version": "0.1.dev1+ge1fe43c9b",
     "license": "Apache-2.0",
@@ -89,15 +78,6 @@
     "scope": "runtime"
   },
   {
-    "name": "iniconfig",
-    "version": "2.3.1",
-    "license": "MIT",
-    "project_urls": [
-      "Homepage, https://github.com/pytest-dev/iniconfig"
-    ],
-    "scope": "development"
-  },
-  {
     "name": "libusb-package",
     "version": "1.0.26.4",
     "license": "Apache 2.0",
@@ -114,20 +94,6 @@
     "license": "LGPL-2.1-or-later",
     "project_urls": [],
     "scope": "runtime"
-  },
-  {
-    "name": "numpy",
-    "version": "2.5.4",
-    "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
-    "project_urls": [
-      "homepage, https://numpy.org",
-      "documentation, https://numpy.org/doc/",
-      "source, https://github.com/numpy/numpy",
-      "download, https://pypi.org/project/numpy/#files",
-      "tracker, https://github.com/numpy/numpy/issues",
-      "release notes, https://numpy.org/doc/stable/release"
-    ],
-    "scope": "development"
   },
   {
     "name": "packaging",
@@ -158,20 +124,6 @@
       "Tracker, https://github.com/tox-dev/platformdirs/issues"
     ],
     "scope": "runtime"
-  },
-  {
-    "name": "pluggy",
-    "version": "1.7.0",
-    "license": "MIT",
-    "project_urls": [
-      "Homepage, https://github.com/pytest-dev/pluggy",
-      "Documentation, https://pluggy.readthedocs.io/",
-      "Changelog, https://pluggy.readthedocs.io/en/latest/changelog.html",
-      "Repository, https://github.com/pytest-dev/pluggy",
-      "Issues, https://github.com/pytest-dev/pluggy/issues",
-      "Funding, https://tidelift.com/subscription/pkg/pypi-pluggy"
-    ],
-    "scope": "development"
   },
   {
     "name": "prompt_toolkit",
@@ -249,33 +201,6 @@
     "scope": "runtime"
   },
   {
-    "name": "pytest",
-    "version": "9.1.1",
-    "license": "MIT",
-    "project_urls": [
-      "Changelog, https://docs.pytest.org/en/stable/changelog.html",
-      "Contact, https://docs.pytest.org/en/stable/contact.html",
-      "Funding, https://docs.pytest.org/en/stable/sponsor.html",
-      "Homepage, https://docs.pytest.org/en/latest/",
-      "Source, https://github.com/pytest-dev/pytest",
-      "Tracker, https://github.com/pytest-dev/pytest/issues"
-    ],
-    "scope": "development"
-  },
-  {
-    "name": "pytest-asyncio",
-    "version": "1.4.0",
-    "license": "Apache-2.0",
-    "project_urls": [
-      "Bug Tracker, https://github.com/pytest-dev/pytest-asyncio/issues",
-      "Changelog, https://pytest-asyncio.readthedocs.io/en/stable/reference/changelog.html",
-      "Documentation, https://pytest-asyncio.readthedocs.io",
-      "Homepage, https://github.com/pytest-dev/pytest-asyncio",
-      "Source Code, https://github.com/pytest-dev/pytest-asyncio"
-    ],
-    "scope": "development"
-  },
-  {
     "name": "pyusb",
     "version": "1.3.1",
     "license": "See bundled license text",
@@ -312,17 +237,6 @@
       "Source, https://github.com/pypa/setuptools",
       "Documentation, https://setuptools.pypa.io/",
       "Changelog, https://setuptools.pypa.io/en/stable/history.html"
-    ],
-    "scope": "development"
-  },
-  {
-    "name": "sounddevice",
-    "version": "0.5.6",
-    "license": "MIT",
-    "project_urls": [
-      "Documentation, https://python-sounddevice.readthedocs.io/",
-      "Repository, https://github.com/spatialaudio/python-sounddevice/",
-      "Issues, https://github.com/spatialaudio/python-sounddevice/issues"
     ],
     "scope": "development"
   },
@@ -447,5 +361,15 @@
       "https://gitlab.com/kernel-firmware/linux-firmware"
     ],
     "revision": "98b55c84e8da5c09dd9b8d21f5667c63db5993fa"
+  },
+  {
+    "name": "lhdc5-decoder",
+    "version": "cf857ce1a142",
+    "revision": "cf857ce1a1429965e161e54adbc3f293fd9ce273",
+    "license": "Apache-2.0; declared by upstream README",
+    "scope": "runtime-native",
+    "project_urls": [
+      "https://github.com/WillyBilly06/LHDC-V5-Decoder"
+    ]
   }
 ]

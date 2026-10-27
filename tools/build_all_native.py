@@ -19,7 +19,7 @@ def main():
         raise RuntimeError('Pinned libusb redistributable does not match its source record')
     steps = [] if args.skip_ffmpeg else [('build_ffmpeg', '--native-only')]
     steps += [(name,) for name in ('build_icon', 'build_native', 'build_audio', 'build_voice',
-                                  'build_device', 'build_ldac_media', 'build_loopback',
+                                  'build_device', 'build_ldac_media', 'build_lhdc5', 'build_loopback',
                                   'build_trace', 'build_wdi', 'build_runtime')]
     for name, *arguments in steps:
         print('Building ' + name, flush=True)

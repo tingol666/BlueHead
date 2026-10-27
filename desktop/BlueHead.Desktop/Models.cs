@@ -139,6 +139,7 @@ public sealed class DesktopState
     public ObservableCollection<DeviceCard> Devices { get; } = [];
     public ObservableCollection<AudioChoice> Outputs { get; } = [];
     public ObservableCollection<AudioChoice> Inputs { get; } = [];
+    public ObservableCollection<AudioChoice> SystemSources { get; } = [];
 }
 public sealed class EngineSettings
 {
@@ -152,10 +153,15 @@ public sealed class EngineSettings
     public int maximum_devices { get; set; } = 3;
     public int? output_device { get; set; }
     public int? input_device { get; set; }
+    public int? system_device { get; set; }
     public string? output_endpoint_id { get; set; }
     public string? input_endpoint_id { get; set; }
+    public string? system_endpoint_id { get; set; }
     public bool calls { get; set; } = true;
+    public bool voice_single_device { get; set; } = true;
     public bool ldac_enabled { get; set; }
+    public bool lhdc5_enabled { get; set; }
+    public bool le_audio_enabled { get; set; }
     public bool microphone_muted { get; set; }
     public double playback_gain { get; set; } = 1;
     public double microphone_gain { get; set; } = 1;
@@ -172,15 +178,4 @@ public sealed class UiSettings
 {
     public bool Tray { get; set; } = true;
     public bool AutoStart { get; set; }
-}
-public static class JsonValue
-{
-    public static string Text(this JsonElement json, string name, string fallback = "") =>
-        json.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? fallback : fallback;
-    public static int? Endpoint(this JsonElement json, string name) =>
-        json.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number ? value.GetInt32() : null;
-    public static double Number(this JsonElement json, string name) =>
-        json.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number ? value.GetDouble() : 0;
-    public static bool Flag(this JsonElement json, string name) =>
-        json.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
 }

@@ -89,7 +89,7 @@ relative-volume key completes that notification once; the peer must re-register.
 
 ## Verification and compatibility claims
 
-Run `python -m pytest tests/test_avrcp.py`. The tests exchange actual BR/EDR,
+The maintainer regression suite exchanges actual BR/EDR,
 SDP, L2CAP, AV/C and AVRCP packets through Bumble virtual controllers. They cover
 both roles, two peers, long metadata continuation, notification re-registration,
 volume feedback rules, late replies, cancellation, malformed input, collisions
@@ -112,3 +112,5 @@ Apple certification or Apple LC3-SWB support.
 - [Apple Accessory Design Guidelines](https://developer.apple.com/accessories/Accessory-Design-Guidelines.pdf), 2026-09-21 edition: sections 53 and 57.11.5
 - [Apple profile compatibility](https://support.apple.com/en-us/102842)
 - [AVAudioSession allowBluetoothHFP](https://developer.apple.com/documentation/avfaudio/avaudiosession/categoryoptions-swift.struct/allowbluetoothhfp)
+
+Maintenance regression fixtures and stress harnesses mentioned here are not part of the public build inputs. For the built-in product diagnostics available from a clean checkout, see [DIAGNOSTICS](DIAGNOSTICS.md).

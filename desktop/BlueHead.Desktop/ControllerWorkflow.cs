@@ -11,7 +11,8 @@ namespace BlueHead.Desktop;
 public partial class MainWindow
 {
     private string? controllerFailureId, controllerCode, controllerProfile, controllerDiagnostic;
-    private bool sessionMediaOnly;
+    private bool sessionMediaOnly, controllerNotice;
+    private string? driverDiagnostic;
     private CancellationTokenSource? firmwareCancellation;
     private AdapterChoice LabelAdapter(AdapterChoice choice)
     {
@@ -20,23 +21,26 @@ public partial class MainWindow
     }
     internal ControllerGuide? CurrentControllerGuide => settings.mode != "native" && ReceptionAdapter is { } adapter &&
         adapter.AdapterId == controllerFailureId && controllerCode != null ? BluetoothSetup.Controller(controllerCode, controllerProfile ?? "") : null;
+    internal bool ControllerNeedsInitialization => CurrentControllerGuide != null && ReceptionAdapter?.HasBackup == true &&
+        controllerCode is "controller_unresponsive" or "controller_hardware_error" or "controller_restarted" or "controller_connection_lost";
     private ControllerGuide? SelectedControllerGuide => DriverPicker.SelectedItem is DriverDevice adapter &&
         adapter.AdapterId == controllerFailureId && controllerCode != null ? BluetoothSetup.Controller(controllerCode, controllerProfile ?? "") : null;
     private bool ApplyControllerFailure(JsonElement message)
     {
         string code = message.Text("category");
-        if (code.Length == 0 || ReceptionAdapter == null) return false;
+        if (code.Length == 0 || code.StartsWith("audio_", StringComparison.Ordinal) ||
+            code is "source_expired" or "native_channel" or "session_cleanup" or "usb_callback_failed" or "device_removed" || ReceptionAdapter == null) return false;
         controllerFailureId = ReceptionAdapter.AdapterId;
         controllerCode = code; controllerProfile = message.Text("firmware_profile"); controllerDiagnostic = message.Text("message");
         var guide = BluetoothSetup.Controller(code, controllerProfile);
-        ControllerPreparation.IsExpanded = true;
-        ShowNotice(guide.Title + "。" + guide.Detail);
+        ControllerPreparation.IsExpanded = guide.CanAcquire;
+        ShowNotice(guide.Title + "。" + guide.Detail); controllerNotice = true;
         UpdateControllerActions(); UpdateSetupState();
-        if (AdaptersPage.IsVisible) Dispatcher.BeginInvoke(() => ControllerPreparation.BringIntoView());
         return true;
     }
     private void ClearControllerFailure()
     {
+        if (controllerNotice) { Notice.Visibility = Visibility.Collapsed; controllerNotice = false; }
         controllerFailureId = controllerCode = controllerProfile = controllerDiagnostic = null;
         UpdateControllerActions(); UpdateSetupState();
     }
@@ -45,23 +49,22 @@ public partial class MainWindow
         if (ControllerPreparation == null) return;
         var device = DriverPicker.SelectedItem as DriverDevice;
         var guide = SelectedControllerGuide;
-        ControllerPreparation.Visibility = settings.mode == "native" ? Visibility.Collapsed : Visibility.Visible;
-        ControllerTitle.Visibility = ControllerDetail.Visibility = guide == null ? Visibility.Visible : Visibility.Collapsed;
         bool dedicated = device != null && BluetoothSetup.Dedicated(device);
-        bool available = !running && !driverBusy && !driverChecking && device?.RebootRequired == false && dedicated && settings.mode != "native";
-        ControllerTitle.Text = guide?.Title ?? (device?.RebootRequired == true ? "请先重启 Windows" : dedicated ? "开始接收时自动检查" : "当前由 Windows 负责蓝牙启动");
-        ControllerDetail.Text = guide?.Detail ?? (device?.RebootRequired == true ? "驱动操作已完成，重启后继续；无需反复更换驱动。" : dedicated ?
-            "匹配固件会自动初始化。启动失败时，这里提供已验证固件和原厂引导。" : "共用接收无需额外固件操作。需要电脑麦克风时，先启用专用接收。");
-        if (device != null && BluetoothSetup.Interrupted(device.RecoveryStage))
-            ControllerDetail.Text += "\n上次准备未完成，请刷新状态；仍不可用时恢复系统蓝牙。原厂备份已保留。";
+        bool available = !running && !stopping && !starting && !driverBusy && !driverChecking && !closing && device?.RebootRequired == false && dedicated;
+        ControllerPreparation.Visibility = dedicated && guide?.CanAcquire == true ? Visibility.Visible : Visibility.Collapsed;
+        ControllerTitle.Text = guide?.Title ?? "蓝牙启动文件";
+        ControllerDetail.Text = guide?.Detail ?? "正常使用时无需操作。只有页面提示缺少启动文件时，才需获取或导入。";
         AcquireFirmwareButton.IsEnabled = ImportFirmwareButton.IsEnabled = available && guide?.CanAcquire == true;
-        OriginalBootstrapButton.IsEnabled = available && device?.HasBackup == true && (guide?.CanOriginal ?? true);
         RetryControllerButton.IsEnabled = available && (guide?.CanRetry ?? true);
+        AcquireFirmwareButton.Visibility = ImportFirmwareButton.Visibility = guide?.CanAcquire == true ? Visibility.Visible : Visibility.Collapsed;
         CancelFirmwareButton.Visibility = firmwareCancellation != null ? Visibility.Visible : Visibility.Collapsed;
         DriverNativeDetails.Text = device == null ? "未检测到可配置的 USB 蓝牙适配器。" : $"驱动服务：{device.Service}\n驱动文件：{device.Inf}";
+        if (device != null) DriverNativeDetails.Text += device.HasBackup ? "\n原厂驱动备份已保留。" : "\n尚无原厂驱动备份。";
         if (device != null && device.AdapterId == controllerFailureId && controllerDiagnostic != null)
             DriverNativeDetails.Text += "\n启动详情：" + controllerDiagnostic;
-        if (guide != null) { DriverStateTitle.Text = guide.Title; DriverStatus.Text = guide.Detail; }
+        if (device != null && device.InstanceId == driverResultInstance && driverDiagnostic != null)
+            DriverNativeDetails.Text += "\n恢复详情：" + driverDiagnostic;
+        if (guide != null && dedicated) { DriverStateTitle.Text = "3  " + guide.Title; DriverStatus.Text = guide.CanAcquire ? "在“需要准备蓝牙启动文件”区域点击“自动获取启动文件”，或“从原厂驱动包提取”。完成后回音频中心点击“开始接收”。" : "此设备仍是专用驱动，但蓝牙没有正常响应。在本页底部右侧点击“修复专用蓝牙”，并允许管理员授权；完成后回音频中心点击“开始接收”。"; }
     }
     private static string RuntimeTool()
     {
@@ -125,7 +128,7 @@ public partial class MainWindow
             // source entries can supply the remainder, verified in native code.
             arguments.Add("--allow-network");
             await RunFirmwareTool(arguments, firmwareCancellation.Token);
-            ClearControllerFailure(); DriverResult.Text = "固件校验完成，正在重新开始接收。";
+            ClearControllerFailure(); DriverResult.Text = "启动文件已准备好。回到“音频中心”，点击右上角“开始接收”。";
         }
         catch (OperationCanceledException) { DriverResult.Text = "已取消。原有配对和驱动未改变。"; return; }
         catch (Exception error) { DriverResult.Text = error.Message; return; }
@@ -134,7 +137,7 @@ public partial class MainWindow
             firmwareCancellation.Dispose(); firmwareCancellation = null; driverBusy = false;
             DriverProgress.Visibility = Visibility.Collapsed; SetRunning(false);
         }
-        ShowPage("home"); StartClick(StartButton, new RoutedEventArgs());
+        UpdateDriverActions(); UpdateSetupState();
     }
     private sealed class ExtractionLifetime : IDisposable { public FirmwarePackage? Package; public void Dispose() => Package?.Dispose(); }
     private async void AcquireFirmwareClick(object sender, RoutedEventArgs e) => await PrepareFirmware(null);
@@ -149,6 +152,6 @@ public partial class MainWindow
     private void RetryControllerClick(object sender, RoutedEventArgs e)
     {
         if (!RetryControllerButton.IsEnabled) return;
-        ClearControllerFailure(); ShowPage("home"); StartClick(StartButton, new RoutedEventArgs());
+        ClearControllerFailure(); DriverResult.Text = "回到“音频中心”，点击右上角“开始接收”重试。";
     }
 }

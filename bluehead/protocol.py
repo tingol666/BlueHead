@@ -17,6 +17,7 @@ class Format:
     codec: str
     rate: int
     channels: int
+    depth: int = 0
 
 
 def capabilities(codec: str, *, selected: bool = False):
@@ -49,6 +50,7 @@ def capabilities(codec: str, *, selected: bool = False):
             "aptx": (0x4F, 1, bytes([0x12 if selected else 0x32])),
             "aptx_hd": (0xD7, 0x24, bytes([0x12 if selected else 0x32, 0, 0, 0, 0])),
             "ldac": (0x12D, 0xAA, bytes([0x10 if selected else 0x3C, 1])),
+            "lhdc5": (0x053A, 0x4C35, bytes([0x10 if selected else 0x35, 0x02 if selected else 0x06, 0x11, 0, 0])),
         }[codec]
         info = a2dp.VendorSpecificMediaCodecInformation(vendor, identifier, data)
         codec_type = a2dp.CodecType.NON_A2DP
@@ -72,6 +74,7 @@ def negotiated(codec: str, config) -> Format:
         if value not in mapping:
             raise PacketError(f"Unsupported or ambiguous selected value: {value}")
         return mapping[value]
+    depth = 0
     if codec == "sbc":
         rate = choose(raw[0] >> 4, {1: 48000, 2: 44100})
         channels = choose(raw[0] & 15, {1: 2, 2: 2, 4: 2, 8: 1})
@@ -89,13 +92,19 @@ def negotiated(codec: str, config) -> Format:
     else:
         if raw[:6] != offered_raw[:6]:
             raise PacketError("Vendor codec identifier mismatch")
-        if codec == "ldac":
+        if codec == "lhdc5":
+            rate = choose(raw[6], {0x20: 44100, 0x10: 48000, 0x04: 96000, 0x01: 192000})
+            depth = choose(raw[7] & 7, {4: 16, 2: 24})
+            if raw[7] & 8 or raw[8] != 0x11 or raw[9] or raw[10]:
+                raise PacketError("Unsupported LHDC V5 version, duration or extension")
+            channels = 2
+        elif codec == "ldac":
             rate = choose(raw[6], {0x20: 44100, 0x10: 48000, 8: 88200, 4: 96000})
             channels = choose(raw[7], {1: 2})
         else:
             rate = choose(raw[6] >> 4, {1: 48000, 2: 44100})
             channels = choose(raw[6] & 15, {2: 2})
-    return Format(codec, rate, channels)
+    return Format(codec, rate, channels, depth)
 
 
 @dataclass(frozen=True)

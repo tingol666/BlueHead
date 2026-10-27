@@ -68,6 +68,7 @@ def build(output: Path | None = None, compiler: str | None = None, ffmpeg: Path 
         objects = []
         for source in [
             ROOT / "native/codecs/voice_engine.c",
+            ROOT / "native/codecs/lc3_stream.c",
             speex / "resample.c",
             *(vendor / "src" / (name + ".c") for name in SOURCES),
         ]:

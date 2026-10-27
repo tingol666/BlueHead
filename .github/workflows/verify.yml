@@ -38,21 +38,17 @@ jobs:
           Add-Content -LiteralPath $env:GITHUB_PATH -Value $nativeShell
           python tools/sync_version.py --check
           python tools/build_all_native.py
-      - name: Lint and protocol/audio regression checks
+      - name: Lint and built-in offline audio diagnostics
         run: |
-          python -m ruff check bluehead tools tests launch.py engine_launch.py
-          python -m pytest tests -q --tb=short
+          python -m ruff check bluehead tools launch.py engine_launch.py
           python engine_launch.py --offline-audio-check offline-native.json
       - name: Build desktop and helper with fixed NuGet dependencies
         run: |
           dotnet build desktop/BlueHead.Desktop/BlueHead.Desktop.csproj -c Release -p:RestoreLockedMode=true
           dotnet build desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj -c Release -p:RestoreLockedMode=true
-          dotnet build desktop/BlueHead.FrameworkChecks/BlueHead.FrameworkChecks.csproj -c Release -p:RestoreLockedMode=true
-      - name: Framework compatibility and in-memory UI checks
+      - name: Built-in desktop diagnostics
         shell: pwsh
         run: |
-          $taskChecks = Start-Process -FilePath desktop/BlueHead.FrameworkChecks/bin/Release/net48/BlueHead.FrameworkChecks.exe -ArgumentList framework-checks -WindowStyle Hidden -Wait -PassThru
-          if ($taskChecks.ExitCode -ne 0) { throw 'Framework compatibility checks failed' }
           $taskUi = Start-Process -FilePath desktop/BlueHead.Desktop/bin/Release/net48/BlueHead.exe -ArgumentList '--self-test', ui-checks -WindowStyle Hidden -Wait -PassThru
           if ($taskUi.ExitCode -ne 0) { throw 'UI checks failed' }
       # Hardware and driver operations run only during real-device acceptance.

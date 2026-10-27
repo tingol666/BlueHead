@@ -1,9 +1,15 @@
 /* Single native libusb/HCI owner. Apache-2.0. No Python callbacks or PCM IPC.
  */
 #pragma once
+#include "command_deadline.hpp"
 #include "runtime_common.hpp"
 #include "runtime_hci_events.hpp"
 #include "hci_dispatch.hpp"
+#include "hci_links.hpp"
+#include "hci_framing.hpp"
+#include "le_capabilities.hpp"
+#include "iso_sender.hpp"
+#include "controller_health.hpp"
 #include "bootstrap_registry.hpp"
 #include "controller_identity.hpp"
 #include <bcrypt.h>
@@ -128,10 +134,6 @@ class Usb {
     uint32_t capacity = 0;
     bool submitted = false, iso = false;
   };
-  struct Splitter {
-    uint32_t size = 0, wanted = 0;
-    std::array<uint8_t, 65540> bytes{};
-  };
   std::mutex event_mutex;
   UsbApi api;
   fs::path assets;
@@ -140,19 +142,25 @@ class Usb {
   HciDispatch dispatch;
   libusb_context *context = nullptr;
   libusb_device_handle *device = nullptr;
-  Setting acl;
+  Setting acl, serialized;
+  bool iso_requested = false, serialized_mode = false, retiring_reads = false;
+  LeCapabilities le_capabilities;
+  IsoSender iso_sender;
+  CommandDeadline command_deadline;
+  std::atomic<bool> command_failed{false};
+  uint16_t sync_handle=0xffff;
+  uint32_t sync_epoch=0;
+  std::array<Transfer *,4> iso_bulk_out{};
+  std::atomic<bool> iso_flow_failed{false};
+  Transfer *serialized_voice_out = nullptr;
   std::map<int, Setting> sco_settings;
   int sco_interface = -1, current_alt = 0, wanted_alt = 0;
   bool acl_claimed = false, sco_claimed = false;
-  struct ScoLink {
-    uint16_t handle = 0xffff;
-    uint8_t mode = 0;
-  };
-  std::array<ScoLink, 3> sco_links;
+  HciLinks link_lifetime;
   bool sixteen = true;
   std::vector<std::unique_ptr<Transfer>> normal, iso;
   Transfer *control_out = nullptr;
-  std::array<Splitter, 5> splitters;
+  std::array<HciPacketReader, 6> readers;
   Spsc<SmallPacket, 256> controls;
   Spsc<SmallPacket, 128> writes;
   std::thread worker, pacer;
@@ -173,12 +181,16 @@ class Usb {
   std::unique_ptr<ControllerBootstrap> bootstrap;
   std::atomic<bool> initializing{false};
   uint64_t sco_completed = 0;
+  uint32_t synchronous_limit=0;
   uint64_t tx_next = 0;
   uint16_t vid = 0, pid = 0;
   unsigned index = 0;
   std::atomic<uint64_t> rx_packets{0}, tx_packets{0}, iso_errors{0}, control_overflows{0},
       deadline_misses{0};
   std::atomic<int> last_submit_error{0}, last_transfer_status{LIBUSB_TRANSFER_COMPLETED};
+  std::atomic<bool> startup_complete{false}, controller_failed{false}, controller_restarted{false}, callback_failed{false};
+  std::atomic<uint32_t> hardware_error{0}, last_event{0}, last_opcode{0};
+  std::atomic<uint64_t> last_receive{0};
   void check(int result, const char *stage) {
     if (result < 0)
       throw std::runtime_error(std::string(stage) + ": " + api.libusb_error_name(result) + " (" +
@@ -323,12 +335,17 @@ class Usb {
             }
           }
         }
-        if (interrupt && bulk_in && bulk_out &&
+        if (candidate.alt == 0 && interrupt && bulk_in && bulk_out &&
             (s.bInterfaceClass == 0xe0 || descriptor.bDeviceClass == 0xe0)) {
           acl = candidate;
           acl.in = bulk_in;
           acl.out = bulk_out;
           acl.in_size = interrupt;
+        }
+        if (candidate.alt == 1 && s.bNumEndpoints == 2 && bulk_in && bulk_out &&
+            !interrupt && !candidate.in && !candidate.out && s.bInterfaceSubClass == 1 &&
+            s.bInterfaceProtocol == 1 && (s.bInterfaceClass == 0xe0 || descriptor.bDeviceClass == 0xe0)) {
+          serialized = candidate; serialized.in = bulk_in; serialized.out = bulk_out;
         }
         if (candidate.in && candidate.out) {
           sco_settings[candidate.alt] = candidate;
@@ -344,6 +361,11 @@ class Usb {
     }
     check(api.libusb_claim_interface(device, acl.interface), "Cannot claim HCI USB interface");
     acl_claimed = true;
+    // Restore legacy before touching the SCO interface after a crashed host.
+    check(api.libusb_set_interface_alt_setting(device, acl.interface, 0),
+          "Cannot reset HCI alternate setting");
+    if (serialized.interface != acl.interface) serialized = {};
+
     if (sco_interface >= 0) {
       check(api.libusb_claim_interface(device, sco_interface), "Cannot claim voice USB interface");
       sco_claimed = true;
@@ -399,34 +421,43 @@ class Usb {
     p.size = size + 1;
     p.data[0] = type;
     std::memcpy(p.data.data() + 1, data, size);
+    p.link_epoch=packet_link_identity(target,type,data,size);
     if (!controls.push(p)) {
       control_overflows++;
       stopping = true;
     }
   }
   void event(const uint8_t *p, uint32_t n) {
-    if (n >= 19 && p[0] == 0x2c && p[2] == 0) {
-      uint16_t handle = le16(p + 3) & 0xfff;
-      auto found = std::find_if(sco_links.begin(), sco_links.end(),
-                                [handle](const auto &v) { return v.handle == handle; });
-      if (found == sco_links.end())
-        found = std::find_if(sco_links.begin(), sco_links.end(),
-                             [](const auto &v) { return v.handle == 0xffff; });
-      if (found != sco_links.end())
-        *found = {handle, p[18]};
-      else {
-        control_overflows++;
-        stopping = true;
-      }
-    }
-    if (n >= 6 && p[0] == 5 && p[2] == 0) {
-      uint16_t handle = le16(p + 3) & 0xfff;
-      for (auto &v : sco_links)
-        if (v.handle == handle)
-          v.handle = 0xffff;
+    if (!link_lifetime.event(p, n, [this](uint16_t handle) {
+      iso_sender.disconnected(handle);
       dispatch.reset(handle);
       target.disconnected(handle);
+    })) {
+      control_overflows++;
+      stopping = true;
     }
+    // A TX Sync return has a THREE-octet offset (Core 7.8.96).
+    // The command was captured by this same HCI owner, so a late result
+    // cannot steer a replacement microphone after an ASE/CIS change.
+    if(n>=5 && p[0]==0x0e && le16(p+3)==0x2061) {
+      if(n==17 && p[1]==15 && !p[5] && le16(p+6)==sync_handle && sync_epoch) {
+        uint32_t stamp=uint32_t(p[10])|uint32_t(p[11])<<8|uint32_t(p[12])<<16|uint32_t(p[13])<<24;
+        uint32_t offset=uint32_t(p[14])|uint32_t(p[15])<<8|uint32_t(p[16])<<16;
+        target.iso_clock_sample(sync_handle,sync_epoch,le16(p+8),stamp,offset,ticks());
+      }
+      sync_handle=0xffff;sync_epoch=0;
+    }
+    if(n==13 && p[0]==0x0e && p[1]==11 && le16(p+3)==0x1005 && !p[5])
+      synchronous_limit=p[8];
+    le_capabilities.observe(p, n);
+    if (le_capabilities.mode()!=IsoTransport::None) {
+      if (n>=6 && p[0]==0x0e && p[3]==3 && p[4]==0x0c && !p[5]) iso_sender={};
+      if (le_capabilities.transmit()) iso_sender.configure(le_capabilities.packet_length(),le_capabilities.packet_count());
+      if (!iso_sender.event(p,n)) { iso_flow_failed=true; stopping=true; }
+    }
+
+    if (serialized_mode) { wanted_alt = 0; return; }
+    const auto &sco_links = link_lifetime.sco;
     wanted_alt = 0;
     size_t links = std::count_if(sco_links.begin(), sco_links.end(),
                                  [](const auto &v) { return v.handle != 0xffff; });
@@ -449,11 +480,20 @@ class Usb {
   }
   void packet(uint8_t type, const uint8_t *p, uint32_t n) {
     rx_packets++;
+    last_receive = ticks();
     if (bootstrap) {
       if (type == 4)
         bootstrap->event(p, n);
       // No ACL or voice packet is valid for the host until bootstrap commits.
       return;
+    }
+    // Some controllers carry ISO on the legacy bulk endpoint. Route only
+    // explicitly registered ISO handles; never guess by numeric handle range.
+    if (type == 5 || (type == 2 && n >= 4 &&
+        le_capabilities.mode() == IsoTransport::IntelLegacyBulk &&
+        (link_lifetime.is_iso(le16(p) & 0xfff) || target.iso_handle(le16(p) & 0xfff)))) {
+      if (!target.iso_packet(p, n)) iso_errors++;
+      return; // Retired/unrouted ISO never crosses Python either.
     }
     if (type == 2 && dispatch.acl(p, n))
       return;
@@ -466,13 +506,27 @@ class Usb {
         return;
     }
     if (type == 4) {
+      if(iso_requested) {
+        auto state=command_deadline.observe(p,n);
+        if(state==CommandDeadline::Event::Stale) return;
+        if(state==CommandDeadline::Event::Invalid) {command_failed=true;stopping=true;return;}
+      }
+      if (n) last_event = p[0];
+      auto signal = controller_signal(p, n, startup_complete.load(), capabilities.backend == "intel-tlv");
+      if (signal != ControllerSignal::Normal) {
+        controller_failed = signal == ControllerSignal::HardwareError;
+        controller_restarted = signal == ControllerSignal::Restarted;
+        if (signal == ControllerSignal::HardwareError) hardware_error = p[2];
+        stopping = true;
+        return;
+      }
       event(p, n);
       std::array<uint8_t, 257> filtered{};
       uint32_t length = 0;
       if (filter_completions(
               p, n, filtered, length,
               [this](uint16_t handle) {
-                return std::any_of(sco_links.begin(), sco_links.end(),
+                return iso_sender.owns(handle) || link_lifetime.is_iso(handle) || std::any_of(link_lifetime.sco.begin(), link_lifetime.sco.end(),
                                    [handle](const auto &v) { return v.handle == handle; });
               },
               sco_completed)) {
@@ -484,28 +538,13 @@ class Usb {
     forward(type, p, n);
   }
   void feed(uint8_t type, const uint8_t *p, uint32_t n) {
-    auto &s = splitters[type];
-    bool boot_event = type == 2 && bootstrap && bootstrap->bulk_events;
-    uint32_t header = boot_event ? 2 : type == 2 ? 4 : type == 3 ? 3 : 2;
-    while (n) {
-      uint32_t want = s.size < header ? header : s.wanted;
-      if (want < s.size || want > s.bytes.size()) {
-        s.size = s.wanted = 0;
-        iso_errors++;
-        return;
-      }
-      uint32_t take = std::min(n, want - s.size);
-      std::memcpy(s.bytes.data() + s.size, p, take);
-      s.size += take;
-      p += take;
-      n -= take;
-      if (s.size == header && !s.wanted)
-        s.wanted = header + (type == 2 && !boot_event ? le16(s.bytes.data() + 2)
-                                                      : s.bytes[type == 3 ? 2 : 1]);
-      if (s.wanted && s.size == s.wanted) {
-        packet(boot_event ? 4 : type, s.bytes.data(), s.size);
-        s.size = s.wanted = 0;
-      }
+    uint8_t actual = type == 2 && bootstrap && bootstrap->bulk_events ? 4 : type;
+    if (actual >= readers.size() || !readers[type].feed(actual, p, n,
+        [this](uint8_t kind, const uint8_t *bytes, uint32_t count) {
+          packet(kind, bytes, count); return !stopping.load();
+        })) {
+      iso_errors++;
+      stopping = true; // Reliable HCI framing cannot be resynchronized safely.
     }
   }
   static void LIBUSB_CALL complete(libusb_transfer *v) noexcept {
@@ -514,6 +553,7 @@ class Usb {
     } catch (...) {
       auto *t = static_cast<Transfer *>(v->user_data);
       t->submitted = false;
+      t->owner->callback_failed = true;
       t->owner->stopping = true;
     }
   }
@@ -528,7 +568,9 @@ class Usb {
     if (t == u->control_out || t->type == 0) {
       if (v->status != LIBUSB_TRANSFER_COMPLETED) {
         u->iso_errors++;
-        if (t == u->control_out)
+        // A failed reliable ISO OUT has consumed a controller credit. Its
+        // delivery is unknown: never guess a credit refund and continue.
+        if (t == u->control_out || std::find(u->iso_bulk_out.begin(),u->iso_bulk_out.end(),t)!=u->iso_bulk_out.end())
           u->stopping = true;
       }
       return;
@@ -546,7 +588,7 @@ class Usb {
           if (d.status != LIBUSB_TRANSFER_COMPLETED || d.actual_length > t->capacity ||
               offset + d.actual_length > t->buffer.size()) {
             u->iso_errors++;
-            u->splitters[3].size = u->splitters[3].wanted = 0;
+            u->readers[3].reset();
             continue;
           }
           if (d.actual_length)
@@ -554,17 +596,17 @@ class Usb {
           v->iso_packet_desc[i].length = t->capacity;
         }
       } else if (v->actual_length >= 0 && static_cast<size_t>(v->actual_length) <= t->buffer.size())
-        u->feed(t->type, t->buffer.data(), v->actual_length);
+        u->feed(t->type == 6 ? 0 : t->type, t->buffer.data(), v->actual_length);
       else
         u->iso_errors++;
     } else {
       u->iso_errors++;
       if (t->iso)
-        u->splitters[3].size = u->splitters[3].wanted = 0;
+        u->readers[3].reset();
       else
         u->stopping = true; // A broken reliable HCI stream has no safe byte resync.
     }
-    if (!u->stopping && (!t->iso || u->wanted_alt == u->current_alt))
+    if (!u->stopping && !u->retiring_reads && (!t->iso || u->wanted_alt == u->current_alt))
       u->submit(t);
   }
   void cancel(std::vector<std::unique_ptr<Transfer>> &group) {
@@ -602,7 +644,7 @@ class Usb {
         TerminateProcess(GetCurrentProcess(), ERROR_TIMEOUT);
     }
     release(iso);
-    splitters[3].size = splitters[3].wanted = 0;
+    readers[3].reset();
     tx_next = 0;
     require(sco_interface >= 0 &&
                 api.libusb_set_interface_alt_setting(device, sco_interface, wanted_alt) == 0,
@@ -620,6 +662,62 @@ class Usb {
         make(iso, 0, s.out, s.out_size, count);
     }
   }
+  void select_iso_transport() {
+    if (!iso_requested) return;
+    const auto manufacturer = capabilities.hci.value("manufacturer", 0u);
+    if (serialized.interface >= 0) {
+      // Drain old reads before changing endpoint framing; never resubmit while retiring.
+      retiring_reads = true; cancel(normal);
+      auto deadline = seconds() + 3;
+      while (pending(normal)) {
+        events(); if (seconds() > deadline) TerminateProcess(GetCurrentProcess(), ERROR_TIMEOUT);
+      }
+      require(!stopping, "USB stopped during ISO transport selection");
+      release(normal); control_out = nullptr;
+      check(api.libusb_set_interface_alt_setting(device, acl.interface, 1),
+            "Cannot enable HCI bulk serialization");
+      acl.in = serialized.in; acl.out = serialized.out; serialized_mode = true;
+      for (auto &reader : readers) reader.reset();
+      retiring_reads = false;
+      submit(make(normal, 6, acl.in, 4096)); // H4 on one serialized BULK IN stream.
+      control_out = make(normal, 0, acl.out, 4104);
+      serialized_voice_out = make(normal, 0, acl.out, 260);
+      le_capabilities.select(IsoTransport::BulkSerialization);
+    } else le_capabilities.select(iso_transport(false, vid, uint16_t(manufacturer)));
+    if (le_capabilities.mode()!=IsoTransport::None)
+      for (auto &out:iso_bulk_out) out=make(normal,0,acl.out,4104);
+  }
+  void pump_iso() {
+    if (!le_capabilities.transmit()) return;
+    for (auto *out:iso_bulk_out) {
+      if (!out || out->submitted) continue;
+      uint32_t offset=serialized_mode?1u:0u;
+      auto n=iso_sender.output(target,out->buffer.data()+offset,uint32_t(out->buffer.size())-offset);
+      if (!n) break;
+      if (offset) out->buffer[0]=5;
+      out->native->endpoint=acl.out;out->native->type=LIBUSB_TRANSFER_TYPE_BULK;out->native->length=int(n+offset);
+      tx_packets++;submit(out);
+    }
+  }
+  void pump_serialized_voice() {
+    auto rate = target.voice_byte_rate();
+    if (!serialized_voice_out || serialized_voice_out->submitted || !rate) { if (!rate) tx_next = 0; return; }
+    auto now = ticks(); if (tx_next && now < tx_next) return;
+    auto *t = serialized_voice_out; uint16_t handle = 0;
+    // Controllers expose different synchronous packet capacities. Preserve
+    // the encoded byte stream; splitting H2/CVSD across HCI packets is legal.
+    uint32_t capacity=std::min(60u,synchronous_limit)&~1u;
+    if(!capacity) return;
+    uint32_t got = target.voice_output(handle, t->buffer.data()+4, capacity);
+    if (got != capacity) return;
+    t->buffer[0] = 3; put16(t->buffer.data()+1, handle); t->buffer[3] = uint8_t(got);
+    t->native->endpoint = acl.out; t->native->type = LIBUSB_TRANSFER_TYPE_BULK;
+    t->native->length = int(got+4);
+    uint64_t interval = std::max<uint64_t>(1, frequency()*got/rate);
+    if (tx_next && now > tx_next + 2*interval) { deadline_misses++; tx_next=now; }
+    tx_next = (tx_next ? tx_next : now) + interval;
+    tx_packets++; submit(t);
+  }
   void pump_send() {
     if (control_out && !control_out->submitted) {
       SmallPacket p;
@@ -632,8 +730,17 @@ class Usb {
             iso_errors++;
             return;
           }
+          if(iso_requested && !command_deadline.sent(le16(p.data.data()+1),ticks())) {
+            command_failed=true;stopping=true;return;
+          }
+          if(le16(p.data.data()+1)==0x2061 && p.size==6) {
+            uint16_t active;uint32_t epoch;
+            sync_handle=0xffff;sync_epoch=0;
+            if(target.iso_transmit_route(active,epoch) && active==le16(p.data.data()+4)) {sync_handle=active;sync_epoch=epoch;}
+          }
           if (le16(p.data.data() + 1) == 0x0c26 && p.size >= 6)
             sixteen = (le16(p.data.data() + 4) & 0x20) != 0;
+          last_opcode = le16(p.data.data() + 1);
           libusb_control_setup setup{};
           setup.bmRequestType = 0x20 | (acl.interface ? 1 : 0);
           setup.bRequest = 0;
@@ -651,10 +758,16 @@ class Usb {
           v->length = static_cast<int>(p.size - 1);
         } else
           return;
+        if (serialized_mode) {
+          std::memcpy(t->buffer.data(), p.data.data(), p.size);
+          v->endpoint=acl.out; v->type=LIBUSB_TRANSFER_TYPE_BULK; v->length=int(p.size);
+        }
         tx_packets++;
         submit(t);
       }
     }
+    pump_iso();
+    if (serialized_mode) { pump_serialized_voice(); return; }
     if (!current_alt)
       return;
     auto now = ticks();
@@ -759,7 +872,8 @@ class Usb {
     }
     bootstrap.reset();
     // Bulk changes from event framing to ACL framing after the boot event.
-    splitters[2].size = splitters[2].wanted = 0;
+    readers[2].reset();
+    readers[4].reset();
   }
   void run() {
     Priority priority;
@@ -784,6 +898,14 @@ class Usb {
       check(last_submit_error, "Cannot submit initial HCI USB reads");
       control_out = make(normal, 0, acl.out, 4104);
       initialize_firmware();
+      synchronous_limit=capabilities.hci.value("sco_packet_bytes",0u);
+      select_iso_transport();
+      {
+        std::lock_guard<std::mutex> lock(init_mutex);
+        capabilities.voice_transport = (sco_interface >= 0 || (serialized_mode && synchronous_limit>=2)) &&
+                                        capabilities.hci.value("voice_capable", false);
+      }
+      startup_complete = true;
       alive = true;
       initializing = false;
       SetEvent(ready);
@@ -791,8 +913,16 @@ class Usb {
         events();
         if (stopping)
           break;
-        if (wanted_alt != current_alt)
-          change_alt();
+        if(iso_requested && command_deadline.expired(ticks(),frequency()*5)) {
+          command_failed=true;stopping=true;break;
+        }
+        if (!serialized_mode && wanted_alt != current_alt) change_alt();
+        {
+          uint16_t iso_handle;uint32_t iso_epoch;
+          bool pacing = current_alt!=0 || (serialized_mode && target.voice_byte_rate()!=0) ||
+                        (le_capabilities.transmit() && target.iso_transmit_route(iso_handle,iso_epoch));
+          if (pace_voice.exchange(pacing)!=pacing) SetEvent(pace_wake);
+        }
         pump_send();
       }
     } catch (const std::exception &e) {
@@ -812,6 +942,10 @@ class Usb {
     initializing = false;
     SetEvent(ready);
     target.transport_lost();
+    {
+      std::lock_guard<std::mutex> lock(init_mutex);
+      if (capabilities.hci.contains("ready")) capabilities.hci["ready"] = false;
+    }
     stop_pacer = true;
     SetEvent(pace_wake);
     if (pacer.joinable())
@@ -828,6 +962,7 @@ class Usb {
     release(iso);
     control_out = nullptr;
     if (device) {
+      if (serialized_mode && acl_claimed) api.libusb_set_interface_alt_setting(device, acl.interface, 0);
       if (sco_claimed) {
         api.libusb_set_interface_alt_setting(device, sco_interface, 0);
         api.libusb_release_interface(device, sco_interface);
@@ -853,8 +988,11 @@ public:
   Usb(const fs::path &p, HciTarget &t, bool preparing_driver = false,
       std::function<std::string(unsigned long)> resolver = windows_instance)
       : api(p), assets(p), driver_prepare(preparing_driver), target(t), dispatch(t),
-        resolve_instance(std::move(resolver)) {}
+        resolve_instance(std::move(resolver)) {
+    link_lifetime.on_acquire(&target,[](void *context,uint16_t h){static_cast<HciTarget*>(context)->connected(h);});
+  }
   ~Usb() { close(); }
+  void request_iso(bool enabled) { require(!worker.joinable(), "Select ISO transport before starting USB"); iso_requested=enabled; }
   void start(uint16_t v, uint16_t p, unsigned i) {
     require(!worker.joinable(), "USB owner already started");
     vid = v;
@@ -898,8 +1036,8 @@ public:
     }
   }
   bool send(const uint8_t *p, uint32_t n) {
-    if (!alive || !p || n < 1 || n > 4096)
-      return false;
+    if (!alive || !p || n < 1 || n > 4096 || (p[0] != 1 && p[0] != 2))
+      return false; // Real-time SCO/ISO is exclusively native.
     SmallPacket packet;
     packet.size = n;
     std::memcpy(packet.data.data(), p, n);
@@ -911,19 +1049,35 @@ public:
     }
     return queued;
   }
+  void poke() {
+    std::lock_guard<std::mutex> lock(event_mutex);
+    if(context) api.libusb_interrupt_event_handler(context);
+  }
   bool pop(SmallPacket &p) { return controls.pop(p); }
   bool active() const { return alive.load(); }
   json startup() const {
     std::lock_guard<std::mutex> lock(init_mutex);
     return {{"starting", initializing.load()},
+            {"startup_complete", startup_complete.load()},
             {"firmware_state", firmware_state},
             {"firmware_progress", firmware_progress},
             {"capabilities", capabilities.snapshot()},
+            {"le_audio", {{"transport", le_capabilities.mode()==IsoTransport::BulkSerialization ? "bulk_serialization" :
+                                       le_capabilities.mode()==IsoTransport::IntelLegacyBulk ? "intel_legacy_bulk" : "unavailable"},
+                          {"features_probed", le_capabilities.probed()},
+                          {"unicast_receive", le_capabilities.receive()}, {"unicast_transmit", le_capabilities.transmit()},
+                          {"broadcast_receive", le_capabilities.broadcast()},
+                          {"iso_packet_length", le_capabilities.packet_length()}, {"iso_packets", le_capabilities.packet_count()}}},
             {"firmware_error", init_code},
             {"firmware_profile", init_profile},
             {"error", init_error}};
   }
   const char *terminal_reason() const {
+    if(command_failed.load()) return "controller_command_failed";
+    if (iso_flow_failed.load()) return "iso_flow_control";
+    if (controller_failed.load()) return "controller_hardware_error";
+    if (controller_restarted.load()) return "controller_restarted";
+    if (callback_failed.load()) return "usb_callback_failed";
     if (control_overflows.load())
       return "control_backpressure";
     if (last_transfer_status.load() == LIBUSB_TRANSFER_NO_DEVICE)
@@ -936,6 +1090,12 @@ public:
   }
   json snapshot() const {
     auto result = startup();
+    result.update({{"last_transfer_status", last_transfer_status.load()},
+                   {"last_submit_error", last_submit_error.load()},
+                   {"callback_failed", callback_failed.load()},
+                   {"hardware_error", hardware_error.load()},
+                   {"last_hci_event", last_event.load()}, {"last_hci_opcode", last_opcode.load()},
+                   {"last_receive_age_ms", last_receive.load() ? age_ticks(last_receive.load()) * 1000.0 / frequency() : -1.0}});
     result.update({{"active", active()},
                    {"rx_packets", rx_packets.load()},
                    {"tx_packets", tx_packets.load()},

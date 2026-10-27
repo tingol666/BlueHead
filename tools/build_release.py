@@ -67,6 +67,7 @@ def main():
     # Development-only packages remain documented in source, not in the app.
     records = __import__("json").loads((ROOT / "dependencies.json").read_text("utf-8"))
     development = {entry["name"].lower().replace("_", "-") for entry in records if entry.get("scope") == "development"}
+    development.update({"av", "numpy", "iniconfig", "pluggy", "pytest", "pytest-asyncio", "sounddevice"})
     for source in (ROOT / "licenses").iterdir():
         # PyInstaller is a build dependency, but its bootloader/runtime hooks
         # are embedded in the frozen executable: retain their license/exception.

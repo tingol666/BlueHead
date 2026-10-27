@@ -8,10 +8,7 @@
 
 先按 [BUILDING](BUILDING.md) 构建原生组件，再运行：
 
-```powershell
-.venv\Scripts\python.exe -m pytest tests -q --tb=short
-.venv\Scripts\python.exe -m ruff check bluehead tools tests launch.py engine_launch.py
-```
+公开构建与产品内置离线诊断见 [BUILDING](BUILDING.md) 和 [DIAGNOSTICS](DIAGNOSTICS.md)。以下描述维护阶段的验证设计，回归测试及基准不属于公开构建输入。
 
 `test_native_runtime.py` 启动真实原生 EXE，验证 HCI 分片、旧会话隔离、原生采集事件、超时取消、暂停与 PCM 提交、静音状态及启动退出。它还让 Python 持有 GIL，并暂停独立 Python 控制进程的全部线程，检查原生媒体和双向语音继续运行。无对端下行音频的录音场景单独验证麦克风发送。
 

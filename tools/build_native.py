@@ -10,9 +10,3 @@ subprocess.run([
     compiler(), "-shared", "-std=gnu11", "-O2", "-static", "-static-libgcc", "-Wl,--no-insert-timestamp",
     "-o", str(root / "bluehead/assets/bluehead_ldac.dll"), *[str(vendor / f) for f in sources], "-lm",
 ], check=True)
-encoder = root / "vendor/libldac_encoder"
-subprocess.run([
-    compiler(), "-shared", "-std=gnu11", "-O2", "-static-libgcc", "-DLDACBT_API=__declspec(dllexport)",
-    "-I" + str(encoder / "inc"), "-I" + str(encoder / "src"),
-    "-o", str(root / "tests/ldac_encoder.dll"), str(encoder / "src/ldaclib.c"), str(encoder / "src/ldacBT.c"), "-lm",
-], check=True)

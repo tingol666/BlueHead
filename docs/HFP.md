@@ -87,11 +87,10 @@ correct scheduling and the AG's negotiated capabilities.
 ## Offline verification and acceptance
 
 Run `python tools/build_voice.py` after building the pinned FFmpeg libraries.
-Run `python -m pytest tests/test_native_voice.py tests/test_hfp_compat.py` for
-actual codec, H2, PLC, virtual RFCOMM and duplex callback coverage. These tests
+The maintainer suite covers actual codec, H2, PLC, virtual RFCOMM and duplex callbacks. These checks
 do not open a physical microphone, speaker or Bluetooth adapter.
 
-`python tools/voice_stress.py --minutes 30 --report work/voice-stress.json` runs
+The private maintenance voice stress harness runs
 30 simulated minutes per codec as fast as the real native algorithms execute.
 The report records complete frame counts, checksums, loss and bounded-queue
 statistics. It is an offline timing/robustness check, not a radio-range,
@@ -105,3 +104,5 @@ not constitute Bluetooth qualification or prove every device supports LC3-SWB.
 Protocol references: [HFP 1.9](https://www.bluetooth.org/DocMan/handlers/DownloadDoc.ashx?doc_id=574215),
 [HFP test suite](https://files.bluetooth.com/wp-content/uploads/dlm_uploads/2025/02/HFP.TS_.p28.pdf),
 [LC3 specification and test software](https://www.bluetooth.com/specifications/specs/low-complexity-communication-codec-1-0/).
+
+Maintenance regression fixtures and stress harnesses mentioned here are not part of the public build inputs. For the built-in product diagnostics available from a clean checkout, see [DIAGNOSTICS](DIAGNOSTICS.md).

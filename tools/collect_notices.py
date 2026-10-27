@@ -57,7 +57,7 @@ for distribution in sorted(metadata.distributions(), key=lambda d: d.metadata["N
 ) + "\n", "utf-8")
 firmware = json.loads((root / "vendor/intel-firmware/origin.json").read_text("utf-8"))
 records.append({"name": "intel-bluetooth-firmware", "version": firmware['firmware_version'],
-                "license": "Redistributable binary firmware; see LICENCE.ibt_firmware", "scope": "runtime",
+                "license": "Redistributable binary firmware; see LICENCE.ibt_firmware", "scope": "optional-runtime",
                 "project_urls": [firmware['upstream']], "revision": firmware['revision']})
 records.append({"name": "realtek-bluetooth-firmware", "version": firmware['revision'],
                 "license": "Redistributable binary firmware; see LICENCE.rtlwifi_firmware.txt",

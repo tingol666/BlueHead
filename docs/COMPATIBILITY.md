@@ -52,9 +52,13 @@ board configurations, an explicit USB board match. Each image/config/license
 has a fixed length and SHA-256. Equal-specificity matches fail closed. Firmware
 formats and protocols are compiled backends, never downloaded executable code.
 
-The content-addressed per-user cache is bounded and reverified on use. Minimal
-bundled resources work offline; optional profiles can acquire files from two
-signed HTTPS source entries pinned to an upstream revision. Redirect hosts,
+The content-addressed per-user cache is bounded and reverified on use. Base
+installers and portable archives contain metadata and license texts, without
+vendor firmware images or board configurations. Matching resources can be
+acquired from two signed HTTPS source entries pinned to an upstream revision.
+Original driver packages can supply matching resources under their original
+licenses. Verified legacy resources can migrate into the persistent cache
+before removing an old installation; later starts need no network. Redirect hosts,
 response size and time are restricted. Downloads run in a separate process
 that cannot also be an audio/HCI host. Atomic commits prevent partial files
 from becoming valid resources. License and immutable origin metadata accompany

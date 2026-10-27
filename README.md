@@ -6,6 +6,8 @@ BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free 
 
 **2.1.3**：采用通用控制器兼容架构，按物理设备选择和独占适配器；统一能力检测、已验证固件获取、原厂包提取及原厂驱动引导。首页直接提示下一步，保留既有原生音频、双向语音、热切换和多设备功能。
 
+安装版和绿色版不附带厂商固件镜像。需要时按提示获取匹配文件或从原厂驱动包导入；验证后持久缓存，之后可离线启动。
+
 [下载已发布稳定版](https://github.com/tingol666/BlueHead/releases/latest) · [使用指南](docs/UI_GUIDE.md) · [构建源码](docs/BUILDING.md) · [验证范围](docs/TESTING.md) · [报告问题](https://github.com/tingol666/BlueHead/issues)
 
 ![BlueHead 2.1.3 界面；设备、曲目信息和连接均为演示数据](docs/images/home-demo.png)
@@ -33,7 +35,7 @@ BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free 
 
 专用接收会占用所选适配器。使用内置蓝牙时，该适配器原有的耳机、键鼠等连接会断开；也可使用单独的受支持 USB 蓝牙适配器。应用会备份恢复所需的信息，驱动更换和恢复需 Windows 管理员授权。停止接收后可恢复系统蓝牙。
 
-不同适配器的启动方式不同。点击“开始接收”后，程序检查控制器状态和实际能力：匹配的内置固件可离线初始化，额外固件可按提示在线获取或从原厂包提取，文件须通过签名目录与摘要校验。未适配的格式可使用一次原厂驱动引导，交接后重新确认专用接收；固件不能保留时恢复系统蓝牙。需要重启时明确提示 **“驱动恢复完成，请重启电脑”**，不会自动重启。见 [固件与启动说明](docs/FIRMWARE.md) 和 [控制器兼容范围](docs/COMPATIBILITY.md)。
+不同适配器的启动方式不同。点击“开始接收”后，程序检查控制器状态和实际能力：已运行的固件直接验证使用；需要加载时使用本机已验证缓存，缺少文件则按提示在线获取或从原厂包提取。文件须通过签名目录与摘要校验。未适配的格式可使用一次原厂驱动引导，交接后重新确认专用接收；固件不能保留时恢复系统蓝牙。需要重启时明确提示 **“驱动恢复完成，请重启电脑”**，不会自动重启。见 [固件与启动说明](docs/FIRMWARE.md) 和 [控制器兼容范围](docs/COMPATIBILITY.md)。
 
 ## 第一次使用
 

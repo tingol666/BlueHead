@@ -432,7 +432,7 @@
     "name": "intel-bluetooth-firmware",
     "version": "BT_Solar_REL82200_23.50.26292.82200",
     "license": "Redistributable binary firmware; see LICENCE.ibt_firmware",
-    "scope": "runtime",
+    "scope": "optional-runtime",
     "project_urls": [
       "https://gitlab.com/kernel-firmware/linux-firmware"
     ],

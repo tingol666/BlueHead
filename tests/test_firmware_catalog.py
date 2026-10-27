@@ -71,19 +71,63 @@ def test_tampered_catalog_never_resolves_or_downloads(tmp_path, fault):
     assert not (tmp_path / 'cache').exists()
 
 
-def test_acquisition_has_no_audio_usb_libraries_and_repairs_corrupt_cache(tmp_path):
-    # Assets contain only catalog and known firmware; no native audio DLL or USB DLL.
+def test_acquisition_has_no_audio_usb_libraries_and_repairs_corrupt_cache(tmp_path, firmware_sample):
+    # Assets contain metadata/licenses only; payloads arrive through exact import.
     shutil.copytree(ASSETS / 'firmware', tmp_path / 'firmware')
-    shutil.copytree(ASSETS / 'intel', tmp_path / 'intel')
+    imported = tmp_path / 'import'
+    imported.mkdir()
     cache = tmp_path / 'cache'
     cache.mkdir()
     catalog = json.loads((tmp_path / 'firmware/catalog.json').read_text('utf-8'))
-    for artifact in catalog['artifacts'].values():
+    for name, artifact in catalog['artifacts'].items():
         if 'bundled' in artifact:
             (cache / artifact['sha256']).write_bytes(b'corrupt')
-    result = run('--assets', tmp_path, '--firmware', 'ensure', '--firmware-profile', 'intel-tlv-0041', '--firmware-cache', cache)
+        if name in ('intel-sfi', 'intel-ddc'):
+            (imported / Path(artifact['path']).name).write_bytes(firmware_sample(name))
+            (cache / artifact['sha256']).write_bytes(b'corrupt')
+    result = run('--assets', tmp_path, '--firmware', 'ensure', '--firmware-profile', 'intel-tlv-0041', '--firmware-cache', cache,
+                 '--firmware-import', imported)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)['ready']
+
+
+def test_offline_migration_survives_removal_of_old_application(tmp_path, firmware_sample):
+    assets, imported, cache = tmp_path / 'assets', tmp_path / 'old-app', tmp_path / 'cache'
+    shutil.copytree(ASSETS / 'firmware', assets / 'firmware')
+    (imported / 'intel').mkdir(parents=True)
+    catalog = json.loads((assets / 'firmware/catalog.json').read_text('utf-8'))
+    for name in ('intel-sfi', 'intel-ddc'):
+        artifact = catalog['artifacts'][name]
+        (imported / artifact['path']).write_bytes(firmware_sample(name))
+    arguments = ('--assets', assets, '--firmware-cache', cache)
+    result = run(*arguments, '--firmware', 'migrate', '--firmware-import', imported)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)['ready_profiles'] == ['intel-tlv-0041']
+    shutil.rmtree(imported)
+    result = run(*arguments, '--firmware', 'ensure', '--firmware-profile', 'intel-tlv-0041')
+    assert result.returncode == 0 and json.loads(result.stdout)['ready'], result.stderr
+    for name in ('intel-sfi', 'intel-ddc', 'intel-license'):
+        artifact = catalog['artifacts'][name]
+        assert hashlib.sha256((cache / artifact['sha256']).read_bytes()).hexdigest() == artifact['sha256']
+
+
+def test_migration_reports_missing_payload_without_claiming_profile_ready(tmp_path):
+    result = run('--firmware', 'migrate', '--firmware-cache', tmp_path / 'cache', '--firmware-import', tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)['ready_profiles'] == []
+
+
+def test_migration_rejects_modified_present_payload(tmp_path):
+    (tmp_path / 'ibt-1040-0041.sfi').write_bytes(b'bad')
+    result = run('--firmware', 'migrate', '--firmware-cache', tmp_path / 'cache', '--firmware-import', tmp_path)
+    assert result.returncode == 3 and 'digest or length' in result.stderr
+    catalog = json.loads((ASSETS / 'firmware/catalog.json').read_text('utf-8'))
+    assert not (tmp_path / 'cache' / catalog['artifacts']['intel-sfi']['sha256']).exists()
+
+
+def test_migration_never_enables_network_even_when_requested(tmp_path):
+    result = run('--firmware', 'migrate', '--firmware-import', tmp_path, '--allow-network')
+    assert result.returncode == 2 and 'offline only' in result.stderr
 
 
 def test_wrong_import_digest_never_commits(tmp_path):
@@ -92,7 +136,8 @@ def test_wrong_import_digest_never_commits(tmp_path):
     (folder / 'rtl8761bu_fw.bin').write_bytes(b'wrong')
     result = run('--firmware', 'ensure', '--firmware-profile', 'realtek-8761bu', '--firmware-cache', tmp_path / 'cache', '--firmware-import', folder)
     assert result.returncode == 3 and 'digest or length' in result.stderr
-    assert not (tmp_path / 'cache').exists()
+    artifact = json.loads((ASSETS / 'firmware/catalog.json').read_text('utf-8'))['artifacts']['rtl8761bu-image']
+    assert not (tmp_path / 'cache' / artifact['sha256']).exists()
 
 
 @pytest.mark.parametrize('mode', ['--engine', '--offline-test', '--prepare-controller'])

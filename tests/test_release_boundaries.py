@@ -44,7 +44,8 @@ def test_source_allowlist_prunes_private_cache_and_backup_material(source):
 def test_source_excludes_generated_binaries_but_keeps_pinned_external_runtime(source):
     assets = source / 'bluehead/assets'
     assets.mkdir(parents=True)
-    for name in ('BlueHead.Runtime.exe', 'bluehead_audio.dll', 'libusb-1.0.dll'):
+    for name in ('BlueHead.Runtime.exe', 'bluehead_audio.dll', 'libusb-1.0.dll',
+                 'vendor-image.sfi', 'vendor-config.ddc', 'other-vendor.bin', 'image.fw'):
         (assets / name).write_bytes(b'Synthetic material, never executed')
     (source / 'docs/example.OBJ').write_bytes(b'Generated')
     (source / 'licenses/gcc').mkdir(parents=True)

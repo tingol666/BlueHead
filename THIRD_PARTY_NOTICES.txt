@@ -92,8 +92,9 @@ Native runtime control messages use nlohmann/json 3.12.0 (MIT).
 Source and pinned hashes: vendor/nlohmann-json; license: licenses/nlohmann-json/LICENSE.MIT.
 This header-only JSON library handles control messages outside real-time callbacks.
 
-Intel Bluetooth RAM firmware: BT_Solar_REL82200_23.50.26292.82200, unmodified
-binary images distributed under Intel's LICENCE.ibt_firmware, not Apache-2.0.
+Intel Bluetooth RAM firmware (optional download or original-package import):
+BT_Solar_REL82200_23.50.26292.82200, unmodified binary images distributed under
+Intel's LICENCE.ibt_firmware, not Apache-2.0. The base application carries no image.
 Source: linux-firmware revision 98b55c84e8da5c09dd9b8d21f5667c63db5993fa.
 Origin, exact hashes and upstream aliases: vendor/intel-firmware/origin.json.
 Redistribution terms and disclaimer: licenses/intel-bluetooth-firmware/LICENCE.ibt_firmware.

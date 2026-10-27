@@ -47,15 +47,24 @@ int wmain(int count, wchar_t **values) {
     AddDllDirectory(args.assets.c_str());
     AddDllDirectory(args.assets.parent_path().parent_path().c_str());
     if (!args.firmware_operation.empty()) {
-      bh::require(!args.offline && !args.engine && !args.prepare_controller && !args.mapping && args.rpc.empty(),
+      bh::require(!args.offline && !args.engine && !args.prepare_controller && !args.mapping &&
+                      args.rpc.empty(),
                   "Firmware acquisition cannot run as an audio/HCI host");
       if (args.firmware_operation == "inspect") {
         bh::firmware::Catalog catalog(args.assets);
         std::cout << catalog.snapshot().dump() << '\n';
       } else if (args.firmware_operation == "ensure") {
         std::cout << bh::firmware::ensure(args.assets, args.firmware_cache, args.firmware_profile,
-                                         args.firmware_network, args.firmware_import).dump() << '\n';
-      } else throw std::runtime_error("Unknown firmware operation");
+                                          args.firmware_network, args.firmware_import)
+                         .dump()
+                  << '\n';
+      } else if (args.firmware_operation == "migrate") {
+        bh::require(!args.firmware_network, "Firmware migration is offline only");
+        std::cout
+            << bh::firmware::migrate(args.assets, args.firmware_cache, args.firmware_import).dump()
+            << '\n';
+      } else
+        throw std::runtime_error("Unknown firmware operation");
       return 0;
     }
     if (args.prepare_controller) {
@@ -66,7 +75,8 @@ int wmain(int count, wchar_t **values) {
       // This recovery-only command refuses ambiguous physical devices. It
       // releases every transfer and HCI lease BEFORE a driver can be rebound.
       bh::Usb usb(args.assets, target, true);
-      bh::require(bh::valid_adapter_id(args.adapter_id), "Driver firmware preparation requires a physical adapter identity");
+      bh::require(bh::valid_adapter_id(args.adapter_id),
+                  "Driver firmware preparation requires a physical adapter identity");
       usb.start_id(args.adapter_id);
       auto deadline = bh::seconds() + 65;
       while (usb.startup()["starting"] == true) {
@@ -78,8 +88,9 @@ int wmain(int count, wchar_t **values) {
       auto status = usb.startup();
       if (!usb.active())
         throw std::runtime_error(status.value("error", "Controller initialization failed"));
-      bh::require(status["capabilities"]["hci"].value("ready", false),
-                  "Controller native preparation is unavailable; use original-driver initialization");
+      bh::require(
+          status["capabilities"]["hci"].value("ready", false),
+          "Controller native preparation is unavailable; use original-driver initialization");
       usb.close();
       std::cout << status.dump() << '\n';
       return 0;
@@ -102,7 +113,8 @@ int wmain(int count, wchar_t **values) {
     }
     return 0;
   } catch (const bh::firmware::Error &e) {
-    std::cerr << bh::json({{"code", e.code}, {"profile", e.profile}, {"error", e.what()}}).dump() << '\n';
+    std::cerr << bh::json({{"code", e.code}, {"profile", e.profile}, {"error", e.what()}}).dump()
+              << '\n';
     return 3;
   } catch (const std::exception &e) {
     std::cerr << "Native runtime: " << e.what() << '\n';

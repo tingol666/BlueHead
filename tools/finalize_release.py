@@ -17,9 +17,8 @@ EXCLUDED = {"bin", "obj", "__pycache__", ".git", ".pytest_cache", ".ruff_cache",
 PRIVATE = {"pairing.json", "settings.json", "recovery.json", "desktop.json"}
 PRIVATE_SUFFIXES = {".pyc", ".pdb", ".log", ".dmp", ".user", ".suo", ".bak", ".tmp",
                     ".key", ".pem", ".pfx", ".p12"}
-GENERATED_SUFFIXES = {".dll", ".exe", ".a", ".o", ".obj", ".lib"}
-SOURCE_BINARIES = {"bluehead/assets/libusb-1.0.dll", "bluehead/assets/intel/ibt-1040-0041.sfi",
-                   "bluehead/assets/intel/ibt-1040-0041.ddc"}
+GENERATED_SUFFIXES = {".dll", ".exe", ".a", ".o", ".obj", ".lib", ".sfi", ".ddc", ".fw", ".bin"}
+SOURCE_BINARIES = {"bluehead/assets/libusb-1.0.dll"}
 
 
 def digest(path):
@@ -158,6 +157,14 @@ def main():
         for file, relative in sources:
             archive.write(file, "BlueHead/" + relative.as_posix())
     artifacts = [installer, portable_zip, source_zip, release / "VALIDATION.md"]
+    # Evidence is a separate download, never embedded in the application.
+    evidence = release / f"BlueHead-{VERSION}-Checks.zip"
+    if evidence.is_file():
+        checked_location(evidence, release)
+        with zipfile.ZipFile(evidence) as archive:
+            if archive.testzip():
+                raise RuntimeError("Evidence archive CRC validation failed: " + evidence.name)
+        artifacts.append(evidence)
     # Read every compressed member to verify CRC, then enforce public boundaries.
     for path in (portable_zip, source_zip):
         validate_archive(path)

@@ -88,6 +88,51 @@ inline std::vector<uint8_t> decode(const std::vector<uint8_t> &bytes, const json
         "invalid base64 firmware");
   return result;
 }
+// An offline upgrade/import operation. No directory recursion, USB ownership,
+// controller selection or downloads; only catalogued data can enter the cache.
+inline json migrate(const fs::path &assets, const fs::path &cache, const fs::path &imported) {
+  check(!imported.empty(), "migration requires an explicit source directory");
+  no_reparse(imported);
+  Catalog catalog(assets);
+  Store store(catalog, assets, cache);
+  json report = {{"artifacts", json::array()}, {"ready_profiles", json::array()}};
+  std::set<std::string> available;
+  for (auto it = catalog.snapshot().at("artifacts").begin();
+       it != catalog.snapshot().at("artifacts").end(); ++it) {
+    const auto &a = it.value();
+    std::string source = "verified_local";
+    bool ready = false;
+    try {
+      store.load(it.key(), "");
+      ready = true;
+    } catch (const Error &) {
+    }
+    if (!ready) {
+      std::vector<fs::path> candidates{imported / wide(a.at("path")),
+                                       imported / fs::path(wide(a.at("path"))).filename()};
+      if (a.contains("bundled"))
+        candidates.push_back(imported / wide(a.at("bundled")));
+      for (const auto &candidate : candidates) {
+        if (!fs::exists(candidate))
+          continue;
+        store.put(it.key(), read(candidate, max_artifact));
+        store.load(it.key(), "");
+        ready = true;
+        source = "verified_import";
+        break;
+      }
+    }
+    if (ready)
+      available.insert(it.key());
+    report["artifacts"].push_back(
+        {{"id", it.key()}, {"ready", ready}, {"source", ready ? source : "unavailable"}});
+  }
+  for (const auto &profile : catalog.snapshot().at("profiles"))
+    if (available.count(profile.at("image")) && available.count(profile.at("config")) &&
+        available.count(profile.at("license")))
+      report["ready_profiles"].push_back(profile.at("id"));
+  return report;
+}
 inline json ensure(const fs::path &assets, const fs::path &cache, const std::string &id,
                    bool network, const fs::path &imported = {}) {
   Catalog catalog(assets);

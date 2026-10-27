@@ -6,6 +6,12 @@
 
 ## 自动化入口
 
+基础源码不再包含可执行的厂商固件镜像。涉及原厂完整载荷的引导模型使用忽略目录 `work/firmware-fixtures` 中经过签名目录校验的资源；缺少时明确跳过，不自行联网。需要运行这些检查时，构建原生后台后执行：
+
+    bluehead/assets/BlueHead.Runtime.exe --firmware ensure --firmware-profile intel-tlv-0041 --firmware-cache work/firmware-fixtures --allow-network
+
+也可用 `BLUEHEAD_TEST_FIRMWARE` 指向已经准备好的内容缓存。普通构建、签名校验及错误路径测试不要求下载厂商镜像。
+
     .venv/Scripts/python.exe tools/sync_version.py --check
     .venv/Scripts/python.exe tools/build_all_native.py
     .venv/Scripts/python.exe -m pytest tests -q --tb=short --basetemp=work/test-run

@@ -54,6 +54,8 @@ FFmpeg直接供原生媒体/语音模块调用，发布只保留avcodec、avutil
 
 C++ 运行时使用固定 nlohmann/json 3.12.0 解析控制消息；构建时核对 vendored 头文件、许可证及 libusb 源码归档的摘要。EXE 的版本资源、原生握手与桌面版本均由项目版本生成。
 
+基础包构建只需要签名目录和许可文本，不需要下载厂商固件。构建与打包校验会拒绝把固件镜像或板卡配置混入应用资源。
+
 修改版本时只编辑 `pyproject.toml` 的 project.version，再运行 `tools/sync_version.py`；提交生成的 Python／MSBuild 常量。CI 和发布入口检查一致性。构建记录写到 `work/`，不会把本机绝对路径或构建诊断提交到源码。
 
 SpeexDSP固定版本及摘要用于有状态SRC；miniaudio0.11.25仅编译WASAPI；liblc3固定v1.1.3；SpanDSP PLC作为独立可替换动态库。不要为减少文件数把有许可证边界的库随意静态合并。libusb/libwdi继续保留其源码、修改及替换条件。

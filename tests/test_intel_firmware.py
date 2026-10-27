@@ -35,16 +35,21 @@ def intel_probe(tmp_path_factory):
 @pytest.mark.parametrize('fault', ['cold', 'warm', 'fragmented', 'boot-metadata', 'cancel', 'unsupported', 'ambiguous',
                                   'command-reject', 'signature-reject', 'ddc-reject',
                                   'command-timeout', 'boot-timeout', 'missing-image', 'corrupt-image'])
-def test_bootstrap_owns_hci_until_firmware_ready_and_retires_every_transfer(intel_probe, tmp_path, fault):
+def test_bootstrap_owns_hci_until_firmware_ready_and_retires_every_transfer(intel_probe, tmp_path, fault, firmware_sample):
     shutil.copy2(intel_probe.parent / 'libusb-1.0.dll', tmp_path)
-    shutil.copytree(ROOT / 'bluehead/assets/intel', tmp_path / 'intel')
     shutil.copytree(ROOT / 'bluehead/assets/firmware', tmp_path / 'firmware')
+    cache = tmp_path / 'local/BlueHead/Firmware'
+    cache.mkdir(parents=True)
+    catalog = json.loads((tmp_path / 'firmware/catalog.json').read_text('utf-8'))
+    for name in ('intel-sfi', 'intel-ddc'):
+        artifact = catalog['artifacts'][name]
+        (cache / artifact['sha256']).write_bytes(firmware_sample(name))
+    image = cache / catalog['artifacts']['intel-sfi']['sha256']
     if fault == 'missing-image':
-        (tmp_path / 'intel/ibt-1040-0041.sfi').unlink()
+        image.unlink()
     if fault == 'corrupt-image':
-        path = tmp_path / 'intel/ibt-1040-0041.sfi'
-        with path.open('r+b') as image:
-            image.write(b'bad!')
+        with image.open('r+b') as file:
+            file.write(b'bad!')
     env = dict(os.environ, BLUEHEAD_USB_FAULT='intel-' + fault, LOCALAPPDATA=str(tmp_path / 'local'))
     result = subprocess.run([str(intel_probe), str(tmp_path)], capture_output=True, text=True,
                             encoding='utf-8', env=env, timeout=14, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -72,8 +77,9 @@ def test_bootstrap_owns_hci_until_firmware_ready_and_retires_every_transfer(inte
             assert report['fake_upload_commands'] == 0, report
 
 
-def test_distribution_uses_one_pinned_firmware_pair_with_explicit_upstream_aliases():
-    assert len(verify()) == 6
+def test_base_distribution_contains_only_signed_metadata_and_licenses():
+    assert len(verify()) == 4
+    assert not (ROOT / 'bluehead/assets/intel').exists()
     origin = json.loads((ROOT / 'vendor/intel-firmware/origin.json').read_text('utf-8'))
     header = (ROOT / 'bluehead/assets/firmware/catalog.json').read_text('utf-8')
     for name, file in origin['files'].items():

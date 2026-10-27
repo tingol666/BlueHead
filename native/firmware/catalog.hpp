@@ -248,23 +248,32 @@ public:
     std::vector<fs::path> candidates{path(a)};
     if (a.contains("bundled"))
       candidates.push_back(assets / wide(a.at("bundled")));
+    // Older portable distributions kept payloads at their upstream relative
+    // path. Adopt only signed, exact bytes, then persist them outside the app.
+    candidates.push_back(assets / wide(a.at("path")));
     bool corrupt = false;
     for (const auto &candidate : candidates) {
       if (!fs::exists(candidate))
         continue;
+      std::vector<uint8_t> bytes;
       try {
-        auto bytes = read(candidate, max_artifact);
-        if (valid(bytes, a))
-          return bytes;
-        corrupt = true;
+        bytes = read(candidate, max_artifact);
       } catch (const std::exception &) {
         corrupt = true;
+        continue;
       }
+      if (!valid(bytes, a)) {
+        corrupt = true;
+        continue;
+      }
+      if (candidate != path(a))
+        put(name, bytes);
+      return bytes;
     }
     throw Error(corrupt ? "corrupt_firmware" : "missing_firmware", profile_id,
                 "verified artifact unavailable: " + name);
   }
-  void put(const std::string &name, const std::vector<uint8_t> &bytes) {
+  void put(const std::string &name, const std::vector<uint8_t> &bytes) const {
     auto &a = catalog.artifact(name);
     check(valid(bytes, a), "import/download digest or length mismatch");
     no_reparse(cache);

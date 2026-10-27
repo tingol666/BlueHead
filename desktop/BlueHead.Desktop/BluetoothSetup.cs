@@ -19,7 +19,7 @@ internal static class BluetoothSetup
         if (code == "unsupported_capability")
             return new("此适配器不支持经典蓝牙音频", "专用接收需要经典蓝牙 BR/EDR。请改用支持经典音频的适配器。", false, false, false);
         if (code is "missing_firmware" or "corrupt_firmware" or "source_unavailable")
-            return new("需要准备蓝牙启动固件", "可在线获取并验证匹配文件，或从原厂驱动包提取。完成后重新开始接收。", known, true, true);
+            return new("需要准备蓝牙启动固件", "可在线获取匹配文件，或从原厂驱动包提取。校验后保存在本机，之后无需联网。", known, true, true);
         if (code is "catalog_untrusted" or "invalid_firmware")
             return new("固件校验未通过", "请重新安装完整的官方 BlueHead 包。不会加载未经验证的文件；也可恢复系统蓝牙。", false, false, false);
         return new("蓝牙控制器尚未就绪", "先检查连接并重试。仍不能启动时，可让原厂驱动初始化，再验证专用接收；失败会恢复系统蓝牙。", false, true, true);

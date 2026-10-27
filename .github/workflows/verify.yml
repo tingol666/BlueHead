@@ -4,6 +4,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      ui_only:
+        description: Run desktop diagnostics without rebuilding unchanged native audio
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -21,14 +26,17 @@ jobs:
         with:
           global-json-file: global.json
       - uses: msys2/setup-msys2@v2
+        if: github.event_name != 'workflow_dispatch' || !inputs.ui_only
         id: msys2
         with:
           msystem: UCRT64
           update: true
           install: mingw-w64-ucrt-x86_64-gcc make diffutils
       - name: Install fixed Python dependencies
+        if: github.event_name != 'workflow_dispatch' || !inputs.ui_only
         run: python -m pip install -r requirements.lock.txt
       - name: Build native components from source
+        if: github.event_name != 'workflow_dispatch' || !inputs.ui_only
         shell: pwsh
         env:
           MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
@@ -41,6 +49,7 @@ jobs:
           python tools/sync_version.py --check
           python tools/build_all_native.py
       - name: Lint and built-in offline audio diagnostics
+        if: github.event_name != 'workflow_dispatch' || !inputs.ui_only
         run: |
           python -m ruff check bluehead tools launch.py engine_launch.py
           python engine_launch.py --offline-audio-check offline-native.json
@@ -57,6 +66,29 @@ jobs:
           New-ItemProperty -Path 'HKCU:\SOFTWARE\Microsoft\Avalon.Graphics' -Name DisableHWAcceleration -Value 1 -PropertyType DWord -Force | Out-Null
           $taskUi = Start-Process -FilePath desktop/BlueHead.Desktop/bin/Release/net48/BlueHead.exe -ArgumentList '--self-test', ui-checks -WindowStyle Hidden -PassThru -RedirectStandardOutput ui-stdout.txt -RedirectStandardError ui-stderr.txt
           if (-not $taskUi.WaitForExit(120000)) {
+            $taskUi.Refresh()
+            $taskUi | Select-Object Id,TotalProcessorTime,UserProcessorTime,PrivilegedProcessorTime | ConvertTo-Json | Set-Content ui-process.json
+            # Capture method names only, never heap objects or process dumps.
+            try {
+              New-Item -ItemType Directory -Path work/ui-stack -Force | Out-Null
+              @'
+            <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup><ItemGroup><PackageReference Include="Microsoft.Diagnostics.Runtime" Version="3.1.512801" /></ItemGroup></Project>
+            '@ | Set-Content work/ui-stack/UiStack.csproj
+              @'
+            using Microsoft.Diagnostics.Runtime;
+            using var target = DataTarget.AttachToProcess(int.Parse(args[0]), suspend: true);
+            foreach (var info in target.ClrVersions) {
+              using var runtime = info.CreateRuntime();
+              foreach (var thread in runtime.Threads.Where(t => t.IsAlive)) {
+                Console.WriteLine($"THREAD {thread.ManagedThreadId} OS {thread.OSThreadId:x}");
+                foreach (var frame in thread.EnumerateStackTrace().Take(80)) Console.WriteLine(frame.ToString());
+              }
+            }
+            '@ | Set-Content work/ui-stack/Program.cs
+              dotnet publish work/ui-stack/UiStack.csproj -c Release -o work/ui-stack-bin
+              $taskStack = Start-Process -FilePath work/ui-stack-bin/UiStack.exe -ArgumentList $taskUi.Id -WindowStyle Hidden -PassThru -RedirectStandardOutput ui-managed-stacks.txt -RedirectStandardError ui-stack-error.txt
+              if (-not $taskStack.WaitForExit(45000)) { $taskStack.Kill($true) }
+            } catch { $_.Exception.Message | Set-Content ui-stack-error.txt }
             $taskUi.Kill($true)
             throw 'Desktop diagnostics exceeded two minutes; inspect captured reports'
           }
@@ -74,4 +106,7 @@ jobs:
             ui-checks/
             ui-stdout.txt
             ui-stderr.txt
+            ui-process.json
+            ui-managed-stacks.txt
+            ui-stack-error.txt
       # Hardware and driver operations run only during real-device acceptance.

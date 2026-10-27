@@ -1,6 +1,7 @@
 name: Windows verification
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -8,6 +9,7 @@ permissions:
 jobs:
   verify:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,6 +51,23 @@ jobs:
       - name: Built-in desktop diagnostics
         shell: pwsh
         run: |
-          $taskUi = Start-Process -FilePath desktop/BlueHead.Desktop/bin/Release/net48/BlueHead.exe -ArgumentList '--self-test', ui-checks -WindowStyle Hidden -Wait -PassThru
+          $taskUi = Start-Process -FilePath desktop/BlueHead.Desktop/bin/Release/net48/BlueHead.exe -ArgumentList '--self-test', ui-checks -WindowStyle Hidden -PassThru -RedirectStandardOutput ui-stdout.txt -RedirectStandardError ui-stderr.txt
+          if (-not $taskUi.WaitForExit(120000)) {
+            $taskUi.Kill($true)
+            throw 'Desktop diagnostics exceeded two minutes; inspect captured reports'
+          }
           if ($taskUi.ExitCode -ne 0) { throw 'UI checks failed' }
+          $taskResult = Get-Content -LiteralPath ui-checks/desktop-self-test.json -Raw | ConvertFrom-Json
+          if (-not $taskResult.passed) { throw 'Desktop diagnostic report did not pass' }
+      - name: Save diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: |
+            offline-native.json
+            ui-checks/
+            ui-stdout.txt
+            ui-stderr.txt
       # Hardware and driver operations run only during real-device acceptance.

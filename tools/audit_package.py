@@ -24,6 +24,7 @@ REQUIRED_LICENSES = {
     "winpthreads/COPYING", "dotnet/LICENSE.TXT", "wpf-ui/LICENSE.md", "wpf-ui-abstractions/LICENSE.md",
     "libldacdec-MIT.txt", "nlohmann-json/LICENSE.MIT",
     "intel-bluetooth-firmware/LICENCE.ibt_firmware",
+    "realtek-bluetooth-firmware/LICENCE.rtlwifi_firmware.txt",
 }
 
 

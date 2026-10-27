@@ -697,15 +697,15 @@ class Usb {
     }
   }
   void bootstrap_pump() {
-    require(!stopping, "Intel firmware: initialization cancelled or USB transport failed");
+    require(!stopping, "Controller initialization: cancelled or USB transport failed");
     events();
-    require(!stopping, "Intel firmware: initialization cancelled or USB transport failed");
+    require(!stopping, "Controller initialization: cancelled or USB transport failed");
   }
   void bootstrap_write(uint16_t opcode, const std::vector<uint8_t> &data, bool bulk) {
-    require(data.size() <= 255, "Intel firmware: command exceeds HCI capacity");
+    require(data.size() <= 255, "Controller initialization: command exceeds HCI capacity");
     auto deadline = seconds() + 2.5;
     while (control_out->submitted) {
-      require(seconds() < deadline, "Intel firmware: USB write completion timeout");
+      require(seconds() < deadline, "Controller initialization: USB write completion timeout");
       bootstrap_pump();
     }
     auto *v = control_out->native;
@@ -726,7 +726,7 @@ class Usb {
     v->length = int(offset + 3 + data.size());
     tx_packets++;
     submit(control_out);
-    check(last_submit_error, "Cannot submit Intel firmware command");
+    check(last_submit_error, "Cannot submit controller initialization command");
   }
   void initialize_firmware() {
     bootstrap =
@@ -754,7 +754,7 @@ class Usb {
     }
     auto deadline = seconds() + 2.5;
     while (control_out->submitted) {
-      require(seconds() < deadline, "Intel firmware: final USB write completion timeout");
+      require(seconds() < deadline, "Controller initialization: final USB write completion timeout");
       bootstrap_pump();
     }
     bootstrap.reset();

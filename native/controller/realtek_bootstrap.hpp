@@ -88,12 +88,19 @@ public:
     firmware::Catalog catalog(assets);
     auto profile = catalog.select("realtek", initial.facts(vid, pid));
     std::string id = profile.at("id");
+    if (profile.at("format") != "realtek-epatch-v1")
+      throw firmware::Error("unsupported_firmware", id,
+                            "Realtek image format requires original-driver initialization");
+    if (profile.at("format") != "realtek-epatch-v1")
+      throw firmware::Error("unsupported_firmware", id,
+                            "Realtek image format requires original-driver initialization");
     firmware::Store store(catalog, assets);
     io.progress("validating", 0);
     store.load(profile.at("license"), id);
     auto bytes = store.load(profile.at("image"), id), config = store.load(profile.at("config"), id);
     auto rom = command(0xfc6d);
-    firmware::check(rom.size() == 2, "invalid Realtek ROM revision response");
+    if (rom.size() != 2)
+      throw firmware::Error("hci_protocol", id, "invalid Realtek ROM revision response");
     auto image = RealtekImage::parse(bytes, config, rom[1], profile.at("project"));
     size_t fragments = image.payload.size() / 252 + 1;
     for (size_t i = 0; i < fragments; ++i) {
@@ -103,15 +110,16 @@ public:
       fragment.insert(fragment.end(), image.payload.begin() + first,
                       image.payload.begin() + first + size);
       auto reply = command(0xfc20, fragment);
-      firmware::check(reply.size() == 2 && (reply[1] & 0x7f) == (index & 0x7f),
-                      "invalid Realtek download acknowledgement");
+      if (reply.size() != 2 || (reply[1] & 0x7f) != (index & 0x7f))
+        throw firmware::Error("hci_protocol", id, "invalid Realtek download acknowledgement");
       io.progress("downloading", unsigned((i + 1) * 100 / fragments));
     }
     command(0x0c03);
     auto loaded = ControllerVersion::parse(command(0x1001));
-    firmware::check(loaded.manufacturer == initial.manufacturer &&
-                        ((loaded.revision << 16) | loaded.rom) == image.version,
-                    "Realtek firmware did not enter the expected operational version");
+    if (loaded.manufacturer != initial.manufacturer ||
+        ((loaded.revision << 16) | loaded.rom) != image.version)
+      throw firmware::Error("hci_not_initialized", id,
+                            "Realtek firmware did not enter the expected operational version");
     io.progress("loaded", 100);
   }
 };

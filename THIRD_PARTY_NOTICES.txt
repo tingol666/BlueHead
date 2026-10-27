@@ -99,3 +99,10 @@ Origin, exact hashes and upstream aliases: vendor/intel-firmware/origin.json.
 Redistribution terms and disclaimer: licenses/intel-bluetooth-firmware/LICENCE.ibt_firmware.
 The native bootstrap protocol references Bumble's Apache-2.0 Intel driver;
 it loads verified RAM firmware and does not modify the firmware image.
+
+Realtek Bluetooth firmware (optional runtime / offline format test vectors)
+Unmodified resources at the immutable linux-firmware revision listed in
+bluehead/assets/firmware/catalog.json. Redistributable firmware under
+licenses/realtek-bluetooth-firmware/LICENCE.rtlwifi_firmware.txt. Firmware is
+not relicensed as Apache-2.0. Native bootstrap wire-format reference: Google
+Bumble drivers/rtk.py (Apache-2.0); BlueHead does not link Linux driver code.

@@ -16,9 +16,19 @@ public record DriverDevice(string InstanceId, string Name, string Service, strin
     public bool? SystemRadioReady { get; init; }
     public string PhysicalInstanceId { get; init; } = "";
     public string LocationPaths { get; init; } = "";
+    public string RecoveryStage { get; init; } = "";
     public string AdapterId => FrameworkCompat.HashPrefix((PhysicalInstanceId.Length > 0 ? PhysicalInstanceId : InstanceId).ToUpperInvariant()).ToLowerInvariant();
     public override string ToString() => DisplayName;
-    public string DisplayName => $"{Name} · {(RebootRequired ? "需要重启 Windows" : string.Equals(Service, "WinUSB", StringComparison.OrdinalIgnoreCase) ? "专用接收" : "系统蓝牙")}";
+    public string PortHint
+    {
+        get
+        {
+            var matches = Regex.Matches(LocationPaths.Split('\0')[0], @"USB\((\d+)\)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+            return matches.Count > 0 ? "USB " + string.Join(" / ", matches.Cast<Match>().Select(match => match.Groups[1].Value)) : "设备 " + AdapterId.Substring(0, 6);
+        }
+    }
+    public string DeviceLabel => Name + " · " + PortHint;
+    public string DisplayName => $"{DeviceLabel} · {(RebootRequired ? "需要重启 Windows" : string.Equals(Service, "WinUSB", StringComparison.OrdinalIgnoreCase) ? "专用接收" : "系统蓝牙")}";
 }
 public sealed class DriverRecord
 {
@@ -118,7 +128,7 @@ public static partial class Drivers
                 var healthy = queried && problem == 0 && (status & 8) != 0 && !restart;
                 bool? radioReady = service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase) ? null : healthy && BluetoothRadio.IsReady(instance);
                 var backupAvailable = record != null && File.Exists(Path.Combine(RecordDirectory(instance), record.BackupInf));
-                result.Add(new(instance, name, service, DeviceNative.DriverInf(set, ref device), hardware.Replace('\0', ';'), healthy, backupAvailable) { RebootRequired = restart, SystemRadioReady = radioReady, PhysicalInstanceId = DeviceNative.PhysicalInstance(device.Instance), LocationPaths = DeviceNative.Property(set, ref device, 35) });
+                result.Add(new(instance, name, service, DeviceNative.DriverInf(set, ref device), hardware.Replace('\0', ';'), healthy, backupAvailable) { RebootRequired = restart, SystemRadioReady = radioReady, PhysicalInstanceId = DeviceNative.PhysicalInstance(device.Instance), LocationPaths = DeviceNative.Property(set, ref device, 35), RecoveryStage = record?.Stage ?? "" });
             }
             return result;
         }

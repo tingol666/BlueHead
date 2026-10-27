@@ -1,9 +1,9 @@
 """Actual native recovery policy and route/codec transactions, without hardware."""
+from tools.native_build import compiler as find_compiler
 import ctypes as C
 import struct
 import time
 from pathlib import Path
-import shutil
 import subprocess
 from types import SimpleNamespace
 from io import StringIO
@@ -235,7 +235,7 @@ def float_environment(tmp_path_factory):
     source.write_text('#include <xmmintrin.h>\n'
                       '__declspec(dllexport) unsigned get_mode(void) { return _mm_getcsr(); }\n'
                       '__declspec(dllexport) void set_mode(unsigned mode) { _mm_setcsr(mode); }\n', 'utf-8')
-    compiler = shutil.which('gcc') or 'D:/Code/MSYS2/ucrt64/bin/gcc.exe'
+    compiler = find_compiler()
     if not Path(compiler).is_file():
         pytest.skip('Native float environment probe needs MinGW')
     library = folder/'environment.dll'

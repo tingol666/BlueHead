@@ -437,5 +437,15 @@
       "https://gitlab.com/kernel-firmware/linux-firmware"
     ],
     "revision": "98b55c84e8da5c09dd9b8d21f5667c63db5993fa"
+  },
+  {
+    "name": "realtek-bluetooth-firmware",
+    "version": "98b55c84e8da5c09dd9b8d21f5667c63db5993fa",
+    "license": "Redistributable binary firmware; see LICENCE.rtlwifi_firmware.txt",
+    "scope": "optional-runtime",
+    "project_urls": [
+      "https://gitlab.com/kernel-firmware/linux-firmware"
+    ],
+    "revision": "98b55c84e8da5c09dd9b8d21f5667c63db5993fa"
   }
 ]

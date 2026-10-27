@@ -76,6 +76,15 @@ internal static class FirmwareChecks
             package.Extract(cab);
             checks["firmware_cab_static_extraction"] = File.ReadAllBytes(Path.Combine(package.DirectoryPath, "test.bin")).SequenceEqual(new byte[] { 4, 5, 6 });
         }
+        var corruptCab = File.ReadAllBytes(cab);
+        Array.Copy(BitConverter.GetBytes(8 * 1024 * 1024 + 1), 0, corruptCab, 44, 4);
+        string oversizedCab = Path.Combine(packageRoot, "oversize.cab"); File.WriteAllBytes(oversizedCab, corruptCab);
+        using (var package = new FirmwarePackage(packageRoot, ["test.bin"]))
+        {
+            try { package.Extract(oversizedCab); checks["firmware_cab_oversize_aborts_before_write"] = false; }
+            catch (IOException) { checks["firmware_cab_oversize_aborts_before_write"] = package.ExtractedCount == 0; }
+            catch (System.ComponentModel.Win32Exception) { checks["firmware_cab_oversize_aborts_before_write"] = package.ExtractedCount == 0; }
+        }
         string msi = Path.Combine(packageRoot, "static.msi"); MakeMsi(msi, cab);
         using (var package = new FirmwarePackage(packageRoot, ["test.bin"]))
         {

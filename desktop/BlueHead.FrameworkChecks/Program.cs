@@ -39,21 +39,25 @@ internal static class Program
         checks["x64_process"] = Environment.Is64BitProcess && IntPtr.Size == 8;
         FirmwareChecks.Run(root, checks);
         HandoffChecks.Run(checks);
-        var restartAdapter = new DriverDevice(@"USB\VID_8087&PID_0033\offline", "offline", "WinUSB", "offline.inf", "", false, false) { RebootRequired = true };
-        checks["restart_matches_selected_adapter"] = Drivers.RequiresRestart("usb:8087:0033#0", [restartAdapter]) && !Drivers.RequiresRestart("usb:1111:2222#0", [restartAdapter]);
-        checks["duplicate_usb_models_do_not_guess_instance_order"] = !Drivers.RequiresRestart("usb:8087:0033#0", [restartAdapter, restartAdapter with { InstanceId = @"USB\VID_8087&PID_0033\another", RebootRequired = false }]);
+        checks["firmware_remedy_requires_profile_for_acquisition"] = BluetoothSetup.Controller("missing_firmware", "realtek-8761bu").CanAcquire && !BluetoothSetup.Controller("missing_firmware", "../../wrong").CanAcquire;
+        checks["untrusted_catalog_never_offers_native_loading"] = !BluetoothSetup.Controller("catalog_untrusted", "intel-tlv-0041").CanAcquire && !BluetoothSetup.Controller("catalog_untrusted", "intel-tlv-0041").CanOriginal;
+        checks["le_only_capability_requires_another_controller"] = !BluetoothSetup.Controller("unsupported_capability", "").CanOriginal && !BluetoothSetup.Controller("unsupported_capability", "").CanRetry;
+        checks["interrupted_driver_phases_are_not_ready_evidence"] = BluetoothSetup.Interrupted("bootstrap_binding_winusb") && BluetoothSetup.Interrupted("recovery_required") && !BluetoothSetup.Interrupted("winusb_ready") && !BluetoothSetup.Interrupted("restored");
+        var restartAdapter = new DriverDevice(@"USB\VID_1234&PID_ABCD\offline", "offline", "WinUSB", "offline.inf", "", false, false) { RebootRequired = true };
+        checks["restart_matches_selected_adapter"] = Drivers.RequiresRestart("usb:1234:abcd#0", [restartAdapter]) && !Drivers.RequiresRestart("usb:1111:2222#0", [restartAdapter]);
+        checks["duplicate_usb_models_do_not_guess_instance_order"] = !Drivers.RequiresRestart("usb:1234:abcd#0", [restartAdapter, restartAdapter with { InstanceId = @"USB\VID_1234&PID_ABCD\another", RebootRequired = false }]);
         checks["driver_restart_state_roundtrips"] = JsonSerializer.Deserialize<DriverDevice>(JsonSerializer.Serialize(restartAdapter))?.RebootRequired == true && restartAdapter.DisplayName.Contains("需要重启 Windows");
         var dedicated = restartAdapter with { RebootRequired = false, Healthy = true, HasBackup = true };
-        var system = dedicated with { Service = "ibtusb", SystemRadioReady = true };
-        var other = dedicated with { InstanceId = @"USB\VID_8087&PID_0033\other" };
+        var system = dedicated with { Service = "BTHUSB", SystemRadioReady = true };
+        var other = dedicated with { InstanceId = @"USB\VID_1234&PID_ABCD\other" };
         checks["physical_identity_disambiguates_identical_usb_models"] = Drivers.MatchTransport("usb-id:" + dedicated.AdapterId, new[] { other, dedicated }).Single().InstanceId == dedicated.InstanceId;
         checks["physical_identity_survives_driver_binding_and_case"] = dedicated.AdapterId == (system with { InstanceId = system.InstanceId.ToLowerInvariant() }).AdapterId;
-        checks["composite_function_uses_physical_parent_identity"] = (dedicated with { InstanceId = @"USB\VID_8087&PID_0033&MI_00\function", PhysicalInstanceId = dedicated.InstanceId }).AdapterId == dedicated.AdapterId;
+        checks["composite_function_uses_physical_parent_identity"] = (dedicated with { InstanceId = @"USB\VID_1234&PID_ABCD&MI_00\function", PhysicalInstanceId = dedicated.InstanceId }).AdapterId == dedicated.AdapterId;
         checks["missing_physical_identity_never_selects_other_device"] = Drivers.MatchTransport("usb-id:" + new string('0', 24), new[] { other, dedicated }).Count == 0;
-        var oneChoice = new[] { ("usb-id:" + dedicated.AdapterId, 0x8087, 0x0033) };
-        var twoChoices = oneChoice.Concat(new[] { ("usb-id:" + other.AdapterId, 0x8087, 0x0033) }).ToArray();
-        checks["legacy_unique_choice_migrates_to_physical_identity"] = Drivers.SelectTransport("usb:8087:0033#0", oneChoice) == oneChoice[0].Item1;
-        checks["legacy_identical_models_require_explicit_selection"] = Drivers.SelectTransport("usb:8087:0033#1", twoChoices) == null;
+        var oneChoice = new[] { ("usb-id:" + dedicated.AdapterId, 0x1234, 0xabcd) };
+        var twoChoices = oneChoice.Concat(new[] { ("usb-id:" + other.AdapterId, 0x1234, 0xabcd) }).ToArray();
+        checks["legacy_unique_choice_migrates_to_physical_identity"] = Drivers.SelectTransport("usb:1234:abcd#0", oneChoice) == oneChoice[0].Item1;
+        checks["legacy_identical_models_require_explicit_selection"] = Drivers.SelectTransport("usb:1234:abcd#1", twoChoices) == null;
         checks["missing_saved_identity_never_falls_back_to_first_model"] = Drivers.SelectTransport("usb-id:" + other.AdapterId, oneChoice) == null;
         checks["explicit_identity_survives_inventory_reordering"] = Drivers.SelectTransport(oneChoice[0].Item1, Enumerable.Reverse(twoChoices)) == oneChoice[0].Item1;
         var driverA = new DriverCandidate("a.inf", "设备驱动", "Vendor A", 10, 2, 20, true, 0);
@@ -98,8 +102,8 @@ internal static class Program
             Marshal.SizeOf(platform.GetType("BlueHead.Platform.DeviceNative+InstallParameters")!) == 584 &&
             Marshal.SizeOf(platform.GetType("BlueHead.Platform.BluetoothRadio+InterfaceData")!) == 32 &&
             Marshal.SizeOf(platform.GetType("BlueHead.Platform.BluetoothRadio+RadioInfo")!) == 520;
-        checks["same_legacy_driver_record_hash"] = FrameworkCompat.HashPrefix(@"USB\VID_8087&PID_0033\5&ABC&0&10") == "CF044A274D54482A6C8165B5";
-        var arguments = new[] { "", "plain", "with spaces", "中英🙂", "\tline\n", @"C:\ends with slash\", "a\\\"b", "a\"b\\", @"USB\VID_8087&PID_0033\5&ABC&0&10", "&|<>^%" };
+        checks["same_legacy_driver_record_hash"] = FrameworkCompat.HashPrefix(@"USB\VID_1234&PID_ABCD\5&ABC&0&10") == "91EBCCA9E24D5998E73B2823";
+        var arguments = new[] { "", "plain", "with spaces", "中英🙂", "\tline\n", @"C:\ends with slash\", "a\\\"b", "a\"b\\", @"USB\VID_1234&PID_ABCD\5&ABC&0&10", "&|<>^%" };
         using (var child = Start(new[] { "--echo" }.Concat(arguments).ToArray()))
         {
             var output = await child.StandardOutput.ReadToEndAsync(); await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));

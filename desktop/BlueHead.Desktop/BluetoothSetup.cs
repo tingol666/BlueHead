@@ -4,14 +4,28 @@ namespace BlueHead.Desktop;
 
 // Pure presentation policy shared by the main and independent recovery views.
 // No driver writes, radio access, UI objects or saved-setting side effects.
-internal enum BluetoothSetupStage { Checking, Ready, SelectAdapter, DedicatedRequired, SystemRestoreRequired, SystemBluetoothRequired, RestartRequired, Unavailable, CheckFailed }
+internal enum BluetoothSetupStage { Checking, Ready, SelectAdapter, DedicatedRequired, SystemRestoreRequired, SystemBluetoothRequired, RestartRequired, Unavailable, CheckFailed, InitializationRequired }
 internal sealed record ReceptionGuide(BluetoothSetupStage Stage, string Title, string Detail, string Action)
 {
     public bool Ready => Stage == BluetoothSetupStage.Ready;
 }
 internal sealed record AdapterGuide(string State, string Detail, bool CanInstall, bool CanRestore, string InstallLabel, string RestoreLabel);
+internal sealed record ControllerGuide(string Title, string Detail, bool CanAcquire, bool CanOriginal, bool CanRetry);
 internal static class BluetoothSetup
 {
+    public static ControllerGuide Controller(string code, string profile)
+    {
+        bool known = profile.Length is > 0 and <= 80 && profile.All(c => char.IsLetterOrDigit(c) || c is '-' or '_' or '.');
+        if (code == "unsupported_capability")
+            return new("此适配器不支持经典蓝牙音频", "专用接收需要经典蓝牙 BR/EDR。请改用支持经典音频的适配器。", false, false, false);
+        if (code is "missing_firmware" or "corrupt_firmware" or "source_unavailable")
+            return new("需要准备蓝牙启动固件", "可在线获取并验证匹配文件，或从原厂驱动包提取。完成后重新开始接收。", known, true, true);
+        if (code is "catalog_untrusted" or "invalid_firmware")
+            return new("固件校验未通过", "请重新安装完整的官方 BlueHead 包。不会加载未经验证的文件；也可恢复系统蓝牙。", false, false, false);
+        return new("蓝牙控制器尚未就绪", "先检查连接并重试。仍不能启动时，可让原厂驱动初始化，再验证专用接收；失败会恢复系统蓝牙。", false, true, true);
+    }
+    public static bool Interrupted(string stage) => stage is "preparing_winusb" or "binding_winusb" or "restoring" or
+        "initializing_before_restore" or "bootstrap_restoring_original" or "bootstrap_original_ready" or "bootstrap_binding_winusb" or "bootstrap_returning_to_windows" or "bootstrap_failed" or "recovery_required";
     public static bool Dedicated(DriverDevice? device) => string.Equals(device?.Service, "WinUSB", StringComparison.OrdinalIgnoreCase);
     public static ReceptionGuide Reception(bool shared, bool inspected, bool failed, bool transportPresent, DriverDevice? target, bool systemRadioReady, bool restorableDedicated)
     {

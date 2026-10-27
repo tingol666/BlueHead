@@ -134,7 +134,7 @@ def iso_packets(transfer):
     """Copy from the owned allocation, never from a native buffer pointer.
 
     python-libusb1's iterISO() dereferences transfer.buffer without allocation
-    bounds. A real AX211 trace crashed in that copy before Python could handle
+    bounds. A malformed ISO trace crashed in that copy before Python could handle
     the error. Validate every descriptor against the original Python buffer.
     """
     buffer = memoryview(transfer.getBuffer()).cast('B')

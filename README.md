@@ -4,11 +4,11 @@
 
 BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free endpoint for Windows. Listen to a mobile device on your computer and send the computer's microphone back over Bluetooth. No shared Wi-Fi or mobile companion app is required.
 
-**2.1.2**：保留高采样率原生 PCM，合并必要重采样与时钟匹配，减少语音重复转换；补齐 LDAC 的有限恢复窗口，并修复 Intel AX211 重启后的固件初始化与系统蓝牙恢复；重整系统共用／专用接收引导。
+**2.1.3**：采用通用控制器兼容架构，按物理设备选择和独占适配器；统一能力检测、已验证固件获取、原厂包提取及原厂驱动引导。首页直接提示下一步，保留既有原生音频、双向语音、热切换和多设备功能。
 
 [下载已发布稳定版](https://github.com/tingol666/BlueHead/releases/latest) · [使用指南](docs/UI_GUIDE.md) · [构建源码](docs/BUILDING.md) · [验证范围](docs/TESTING.md) · [报告问题](https://github.com/tingol666/BlueHead/issues)
 
-![BlueHead 2.1.2 界面；设备、曲目信息和连接均为演示数据](docs/images/home-demo.png)
+![BlueHead 2.1.3 界面；设备、曲目信息和连接均为演示数据](docs/images/home-demo.png)
 
 ## 可以做什么
 
@@ -33,7 +33,7 @@ BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free 
 
 专用接收会占用所选适配器。使用内置蓝牙时，该适配器原有的耳机、键鼠等连接会断开；也可使用单独的受支持 USB 蓝牙适配器。应用会备份恢复所需的信息，驱动更换和恢复需 Windows 管理员授权。停止接收后可恢复系统蓝牙。
 
-Intel AX211 在电脑重启或断电后需要重新加载运行固件。2.1.2 的完整包自带匹配固件，点击“开始接收”会自动检查并加载，无需每次来回更换驱动、联网下载或手动操作。恢复系统蓝牙时也会处理初始化并等待 Windows 无线电就绪；若原厂驱动已恢复但仍需系统重启，界面会提示 **“驱动恢复完成，请重启电脑”**。适配范围和固件来源见 [Intel 启动说明](docs/INTEL_FIRMWARE.md)。
+不同适配器的启动方式不同。点击“开始接收”后，程序检查控制器状态和实际能力：匹配的内置固件可离线初始化，额外固件可按提示在线获取或从原厂包提取，文件须通过签名目录与摘要校验。未适配的格式可使用一次原厂驱动引导，交接后重新确认专用接收；固件不能保留时恢复系统蓝牙。需要重启时明确提示 **“驱动恢复完成，请重启电脑”**，不会自动重启。见 [固件与启动说明](docs/FIRMWARE.md) 和 [控制器兼容范围](docs/COMPATIBILITY.md)。
 
 ## 第一次使用
 
@@ -76,13 +76,13 @@ AVRCP 的标准设备音量为 0%–100%，与本地 0%–200% 接收增益独�
 
 ## 技术栈与源码
 
-2.1.2 由独立 `BlueHead.Runtime.exe` 统一持有 USB/HCI、启动固件初始化、媒体解码、SCO 双向收发、PCM 桥接、混音、重采样和 WASAPI 音频流。已经建立的专用接收音频在 C/C++ 中持续运行，PCM 不经过 Python 或界面。Python 3.13 保留 Bumble 的配对、SDP、AVDTP/AVRCP、HFP 协商和应用控制；新连接、重新协商及部分控制操作仍需要它运行。
+2.1.3 由独立 `BlueHead.Runtime.exe` 统一持有 USB/HCI、启动固件初始化、媒体解码、SCO 双向收发、PCM 桥接、混音、重采样和 WASAPI 音频流。已经建立的专用接收音频在 C/C++ 中持续运行，PCM 不经过 Python 或界面。Python 3.13 保留 Bumble 的配对、SDP、AVDTP/AVRCP、HFP 协商和应用控制；新连接、重新协商及部分控制操作仍需要它运行。固件下载在独立进程中完成，不持有 USB/HCI，也不进入实时音频路径。
 
 运行时不再依赖 PyAV、NumPy 或 sounddevice。原生组件包括音频专用 FFmpeg、单次异步采样率转换、兼容 SpeexDSP、miniaudio、liblc3，以及可独立替换的 SpanDSP PLC 动态库。界面仍为 C#/WPF，不裁剪 WPF/COM。
 
 ```text
 bluehead/    蓝牙信令、会话；native_control/ 为控制接口
-native/      audio/、codecs/、runtime/、transport/、platform/、include/
+native/      audio/、codecs/、runtime/、transport/、controller/、firmware/、platform/、include/
 desktop/     WPF 界面、系统接口、独立驱动工具与离线兼容检查
 vendor/      固定版本上游源码、来源与校验信息
 tools/       构建、诊断、验证与打包工具

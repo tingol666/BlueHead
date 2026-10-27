@@ -59,6 +59,9 @@ firmware = json.loads((root / "vendor/intel-firmware/origin.json").read_text("ut
 records.append({"name": "intel-bluetooth-firmware", "version": firmware['firmware_version'],
                 "license": "Redistributable binary firmware; see LICENCE.ibt_firmware", "scope": "runtime",
                 "project_urls": [firmware['upstream']], "revision": firmware['revision']})
+records.append({"name": "realtek-bluetooth-firmware", "version": firmware['revision'],
+                "license": "Redistributable binary firmware; see LICENCE.rtlwifi_firmware.txt",
+                "scope": "optional-runtime", "project_urls": [firmware['upstream']], "revision": firmware['revision']})
 (root / "dependencies.json").write_text(json.dumps(records, ensure_ascii=False, indent=2), "utf-8")
 assets = root / "bluehead/assets"
 library_records = {}

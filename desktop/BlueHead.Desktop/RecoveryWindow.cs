@@ -19,7 +19,10 @@ internal sealed class RecoveryWindow : Window
         var panel = new StackPanel { Margin = new(28) };
         panel.Children.Add(new TextBlock { Text = "恢复系统蓝牙", FontSize = 24, FontWeight = FontWeights.SemiBold });
         panel.Children.Add(new TextBlock { Text = "此工具可独立运行。先停止接收或从托盘退出 BlueHead，再恢复所选适配器。", Margin = new(0, 12, 0, 18), TextWrapping = TextWrapping.Wrap });
-        panel.Children.Add(picker); panel.Children.Add(restore); panel.Children.Add(status); Content = panel;
+        var refresh = new Button { Content = "刷新状态", Padding = new(8, 4, 8, 4), Margin = new(8, 0, 0, 0) };
+        var selection = new DockPanel(); DockPanel.SetDock(refresh, Dock.Right); selection.Children.Add(refresh); selection.Children.Add(picker);
+        refresh.Click += async (_, _) => await Refresh();
+        panel.Children.Add(selection); panel.Children.Add(restore); panel.Children.Add(status); Content = panel;
         Loaded += async (_, _) => await Refresh(); restore.Click += Restore; picker.SelectionChanged += (_, _) => UpdateState();
     }
     private void UpdateState()
@@ -28,6 +31,8 @@ internal sealed class RecoveryWindow : Window
         restore.Content = guide.RestoreLabel;
         restore.IsEnabled = guide.CanRestore;
         status.Text = guide.State + "\n" + guide.Detail;
+        if (picker.SelectedItem is DriverDevice device && BluetoothSetup.Interrupted(device.RecoveryStage))
+            status.Text += "\n上次准备未完成；原厂备份保留，可以恢复系统蓝牙后继续。";
     }
     private async Task Refresh()
     {

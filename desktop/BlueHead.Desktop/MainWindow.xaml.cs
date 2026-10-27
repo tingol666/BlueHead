@@ -179,7 +179,7 @@ public partial class MainWindow
         {
             inventoryReceived = true;
             applying = true;
-            var adapters = message.GetProperty("adapters").EnumerateArray().Select(item => new AdapterChoice(item.Text("transport"), item.Text("name")) { Vid = (int)item.Number("vid"), Pid = (int)item.Number("pid"), VoiceTransport = item.Flag("voice_transport") }).ToList();
+            var adapters = message.GetProperty("adapters").EnumerateArray().Select(item => LabelAdapter(new AdapterChoice(item.Text("transport"), item.Text("name")) { Vid = (int)item.Number("vid"), Pid = (int)item.Number("pid"), VoiceTransport = item.Flag("voice_transport") })).ToList();
             AdapterPicker.ItemsSource = adapters;
             var prepared = driverInventory.FirstOrDefault(device => device.InstanceId == preparedDriverInstance);
             var preparedChoices = prepared == null ? Array.Empty<AdapterChoice>() : adapters.Where(item => Drivers.MatchTransport(item.Transport, new[] { prepared }).Count == 1).ToArray();
@@ -208,7 +208,7 @@ public partial class MainWindow
             ApplySettings();
             UpdateSetupState();
         }
-        else if (kind == "starting") { audioHealthNotices.Clear(); Notice.Visibility = Visibility.Collapsed; SetRunning(true); StatusTitle.Text = "正在准备接收"; StatusDetail.Text = "正在打开蓝牙与音频设备…"; }
+        else if (kind == "starting") { sessionMediaOnly = false; audioHealthNotices.Clear(); Notice.Visibility = Visibility.Collapsed; SetRunning(true); StatusTitle.Text = "正在准备接收"; StatusDetail.Text = "正在打开蓝牙与音频设备…"; }
         else if (kind == "stopped")
         {
             voiceInUse = mediaProtected = highMediaActive = false;
@@ -220,7 +220,12 @@ public partial class MainWindow
                 FooterStatus.Text = "媒体编码已应用 · 请重新连接移动设备";
             }
         }
-        else if (kind is "error" or "warning") ShowNotice(message.Text("message"));
+        else if (kind == "controller_capabilities")
+        {
+            sessionMediaOnly = !message.Flag("voice_transport"); ClearControllerFailure(); SetPickerStates();
+            if (sessionMediaOnly) ShowNotice("此适配器当前仅支持媒体接收；电脑麦克风与混音不可用。媒体编码和音量设置保留。");
+        }
+        else if (kind is "error" or "warning") { if (!ApplyControllerFailure(message)) ShowNotice(message.Text("message")); }
         else if (kind == "audio_health")
         {
             var direction = message.Text("direction");
@@ -370,9 +375,16 @@ public partial class MainWindow
             return matches.Count == 1 ? matches[0] : AdapterPicker.SelectedItem == null ? DriverPicker.SelectedItem as DriverDevice : null;
         }
     }
-    internal ReceptionGuide ReceptionGuide => BluetoothSetup.Reception(settings.mode == "native", driversInspected,
-        driverInventoryError != null, AdapterPicker.SelectedItem is AdapterChoice, ReceptionAdapter,
-        systemRadioReady, driverInventory.Any(device => BluetoothSetup.Dedicated(device) && device.HasBackup));
+    internal ReceptionGuide ReceptionGuide
+    {
+        get
+        {
+            var guide = BluetoothSetup.Reception(settings.mode == "native", driversInspected,
+                driverInventoryError != null, AdapterPicker.SelectedItem is AdapterChoice, ReceptionAdapter,
+                systemRadioReady, driverInventory.Any(device => BluetoothSetup.Dedicated(device) && device.HasBackup));
+            return guide.Ready && CurrentControllerGuide is { } preparation ? new(BluetoothSetupStage.InitializationRequired, preparation.Title, preparation.Detail, "检查蓝牙启动") : guide;
+        }
+    }
     internal bool AdapterNeedsRestart => ReceptionGuide.Stage == BluetoothSetupStage.RestartRequired;
     internal bool NeedsBluetoothSetup => !ReceptionGuide.Ready;
     private void UpdateModePresentation(ReceptionGuide guide)
@@ -450,6 +462,12 @@ public partial class MainWindow
             if (ReceptionGuide.Stage == BluetoothSetupStage.CheckFailed) { await RefreshDrivers(); await Send(new { command = "inventory" }); return; }
         }
         ShowPage("adapters"); await RefreshDrivers();
+        if (ReceptionGuide.Stage == BluetoothSetupStage.InitializationRequired)
+        {
+            DriverPicker.SelectedItem = driverInventory.FirstOrDefault(device => device.AdapterId == controllerFailureId);
+            ControllerPreparation.IsExpanded = true;
+            _ = Dispatcher.BeginInvoke(() => ControllerPreparation.BringIntoView());
+        }
     }
     private void OpenSettings(string uri)
     {
@@ -525,12 +543,14 @@ public partial class MainWindow
     {
         if (OutputPicker == null) return;
         OutputPicker.IsEnabled = settings.mode != "native" && !pending.ContainsKey("output") && !driverBusy && !refreshingAudio;
-        InputPicker.IsEnabled = settings.mode != "native" && !pending.ContainsKey("input") && !driverBusy && !refreshingAudio;
-        MuteToggle.IsEnabled = settings.mode != "native" && !driverBusy;
+        InputPicker.IsEnabled = settings.mode != "native" && (!running || !sessionMediaOnly) && !pending.ContainsKey("input") && !driverBusy && !refreshingAudio;
+        MuteToggle.IsEnabled = settings.mode != "native" && (!running || !sessionMediaOnly) && !driverBusy;
         PlaybackGain.IsEnabled = MicrophoneGain.IsEnabled = settings.mode != "native" && !driverBusy;
+        MicrophoneGain.IsEnabled &= !running || !sessionMediaOnly;
         SystemGain.IsEnabled = settings.mode != "native" && !driverBusy;
+        SystemGain.IsEnabled &= !running || !sessionMediaOnly;
         SystemGain.CanAdjust = settings.system_audio_enabled;
-        SystemAudioToggle.IsEnabled = settings.mode != "native" && settings.calls && !driverBusy && systemAudioRequest == null;
+        SystemAudioToggle.IsEnabled = settings.mode != "native" && (!running || !sessionMediaOnly) && settings.calls && !driverBusy && systemAudioRequest == null;
         foreach (Control control in new Control[] { NameEntry, CallsToggle, MediaBufferPicker, CallBufferPicker, MaximumPicker, LdacToggle })
             control.IsEnabled = !running && !driverBusy && settings.mode != "native";
         VoiceCodecHint.Text = settings.mode == "native" ? VoiceCodecStatus : VoiceCodecStatus + "；用于通话及支持蓝牙麦克风的录音、录像应用";
@@ -620,6 +640,8 @@ public partial class MainWindow
         MutedIndicator.Visibility = settings.mode != "native" && settings.microphone_muted ? Visibility.Visible : Visibility.Collapsed;
         if (settings.mode == "native")
         { TransmitHint.Text = "共用蓝牙模式：媒体播放、编码和码率由 Windows 管理"; SystemAudioStatus.Text = "此模式不提供蓝牙麦克风"; return; }
+        if (running && sessionMediaOnly)
+        { TransmitHint.Text = "此适配器当前仅接收媒体，电脑麦克风不可用"; SystemAudioStatus.Text = "此适配器当前不提供语音传输"; return; }
         TransmitHint.Text = settings.microphone_muted ? "发送已暂停：麦克风与电脑声音均不发送" : "开启后停止发送麦克风和电脑声音，仍可听到移动设备。";
         SystemAudioStatus.Text = settings.system_audio_enabled ? systemAudioActive ? "电脑声音：正在发送到设备" : "电脑声音：使用蓝牙麦克风时加入" : "电脑声音：未加入";
         SystemGain.Secondary = systemAudioActive ? "正在发送到设备" : "与麦克风合并发送";
@@ -756,6 +778,10 @@ public partial class MainWindow
         var previous = applying; applying = true;
         DriverPicker.ItemsSource = inventory;
         DriverPicker.SelectedItem = inventory.FirstOrDefault(item => item.InstanceId == selected) ?? inventory.FirstOrDefault();
+        string? transport = (AdapterPicker.SelectedItem as AdapterChoice)?.Transport;
+        var adapters = AdapterPicker.Items.OfType<AdapterChoice>().Select(LabelAdapter).ToArray();
+        AdapterPicker.ItemsSource = adapters;
+        AdapterPicker.SelectedItem = adapters.FirstOrDefault(item => item.Transport == transport);
         applying = previous;
         UpdateDriverActions(); UpdateSetupState();
     }
@@ -778,6 +804,7 @@ public partial class MainWindow
         DriverStepTitle.Text = shared ? "2  检查系统蓝牙" : "2  准备专用适配器";
         DriverStepDescription.Text = shared ? "适配器已专用时，先恢复给 Windows；系统蓝牙正常时可直接完成。" : "选择内置或外置蓝牙。启用会断开此适配器原有的连接，原厂驱动会自动备份。";
         DriverStopButton.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
+        UpdateControllerActions();
     }
     private void DriverSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -804,15 +831,15 @@ public partial class MainWindow
         if (DriverPicker.SelectedItem is not DriverDevice device || !string.Equals(device.InstanceId, requested, StringComparison.OrdinalIgnoreCase))
         { DriverResult.Text = "所选适配器的连接已变化，请重新选择并检查状态。"; return; }
         var guide = BluetoothSetup.Adapter(device);
-        if (operation == "install" ? settings.mode == "native" || !guide.CanInstall : !guide.CanRestore)
+        if (operation == "initialize-original" ? !OriginalBootstrapButton.IsEnabled : operation == "install" ? settings.mode == "native" || !guide.CanInstall : !guide.CanRestore)
         { return; }
         if (offline) { SelfTestDriverOperations.Add(operation); return; }
         driverResultInstance = device.InstanceId;
-        var description = operation == "install" ? "启用专用接收" : "恢复系统蓝牙";
-        var detail = operation == "install" ? "将先备份原驱动，再将这个适配器交给 BlueHead。该适配器上的现有蓝牙连接会断开。" : "将停止使用专用驱动，把这个适配器恢复给 Windows 蓝牙。";
+        var description = operation == "initialize-original" ? "原厂驱动引导" : operation == "install" ? "启用专用接收" : "恢复系统蓝牙";
+        var detail = operation == "initialize-original" ? "先让 Windows 原厂驱动初始化这个适配器，再切回专用接收并复核。若固件不能保留，会恢复系统蓝牙并说明下一步；不会自动重启电脑。" : operation == "install" ? "将先备份原驱动，再将这个适配器交给 BlueHead。该适配器上的现有蓝牙连接会断开。" : "将停止使用专用驱动，把这个适配器恢复给 Windows 蓝牙。";
         if (MessageBox.Show(this, $"{device.Name}\n\n{detail}\n\n继续后 Windows 会请求管理员授权。", description, MessageBoxButton.OKCancel, MessageBoxImage.Information) != MessageBoxResult.OK) return;
         driverBusy = true; SetRunning(false); DriverProgress.Visibility = Visibility.Visible;
-        DriverResult.Text = operation == "restore" ? "正在恢复驱动并初始化系统蓝牙，请保持适配器连接…" : "正在启用专用接收，请保持适配器连接…";
+        DriverResult.Text = operation == "initialize-original" ? "正在进行一次原厂引导与复核，请保持连接，可能需要约一分钟…" : operation == "restore" ? "正在恢复驱动并初始化系统蓝牙，请保持适配器连接…" : "正在启用专用接收，请保持适配器连接…";
         try
         {
             var path = Path.Combine(AppContext.BaseDirectory, "BlueHead.DriverHelper.exe");
@@ -822,10 +849,16 @@ public partial class MainWindow
             await helper.WaitForExitAsync();
             var record = Drivers.ReadRecord(device.InstanceId);
             var success = helper.ExitCode is 0 or 3010;
-            if (success) { ApplySuccessfulDriverOperation(operation, device); await Send(new { command = "configure", settings }); }
+            if (success)
+            {
+                ClearControllerFailure();
+                var effective = operation == "initialize-original" ? record?.Stage == "winusb_ready" ? "install" : "restore" : operation;
+                ApplySuccessfulDriverOperation(effective, device); await Send(new { command = "configure", settings });
+            }
             DriverResult.Text = success ? (record?.RebootRequired == true ?
                 operation == "restore" ? "驱动恢复完成，请重启电脑。" : "专用驱动已启用，请重启电脑。" :
                 operation == "restore" ? "系统蓝牙已恢复，初始化检查通过。" : "专用接收已启用，开始接收时将自动初始化固件。") : record?.Error ?? "操作未完成，恢复工具中显示了原因。";
+            if (success && operation == "initialize-original") DriverResult.Text = record?.Error ?? "原厂引导与专用接收复核通过，可以开始接收。";
         }
         catch (Win32Exception error) when (error.NativeErrorCode == 1223) { DriverResult.Text = "管理员授权已取消，未开始更换。"; }
         catch (Exception error) { DriverResult.Text = error.Message; }

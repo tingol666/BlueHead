@@ -1,6 +1,6 @@
 """Build the small versioned, shell-free Windows application entry point."""
+from native_build import compiler as find_compiler
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tomllib
@@ -10,7 +10,7 @@ version = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))["project"]
 numeric = ','.join(str(int(part)) for part in version.split('.')) + ',0'
 build = root / 'work/launcher-build'
 build.mkdir(parents=True, exist_ok=True)
-gcc = Path(shutil.which('gcc') or 'D:/Code/MSYS2/ucrt64/bin/gcc.exe')
+gcc = Path(find_compiler())
 windres = gcc.parent / 'windres.exe'
 icon = (root / 'bluehead/assets/bluehead.ico').as_posix()
 (build / 'launcher.rc').write_text(f'''1 ICON "{icon}"

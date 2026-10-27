@@ -69,21 +69,25 @@ public:
       version = ControllerVersion::parse(command(0x1001));
     }
     auto features = command(0x1003), buffers = command(0x1005), address = command(0x1009);
-    firmware::check(features.size() == 9 && buffers.size() == 8 && address.size() == 7,
-                    "malformed HCI capability response");
+    if (features.size() != 9 || buffers.size() != 8 || address.size() != 7)
+      throw firmware::Error("hci_protocol", "", "malformed HCI capability response");
     bool bredr = !(features[5] & 0x20);
     bool sco = (features[2] & 0x08) || (features[4] & 0x80);
-    firmware::check(bredr && le16(buffers.data() + 1) && le16(buffers.data() + 4),
-                    "controller does not offer an operational classic Bluetooth ACL transport");
+    if (!bredr)
+      throw firmware::Error("unsupported_capability", "",
+                            "classic Bluetooth BR/EDR is unavailable");
+    if (!le16(buffers.data() + 1) || !le16(buffers.data() + 4))
+      throw firmware::Error("hci_not_initialized", "",
+                            "controller ACL buffers are not initialized");
     bool nonzero = false, nonff = false;
     for (size_t i = 1; i < 7; ++i) {
       nonzero |= address[i] != 0;
       nonff |= address[i] != 0xff;
     }
     const std::array<uint8_t, 6> placeholder{0x00, 0x8b, 0x9e, 0x19, 0x03, 0x00};
-    firmware::check(nonzero && nonff &&
-                        !std::equal(placeholder.begin(), placeholder.end(), address.begin() + 1),
-                    "controller address is not initialized");
+    if (!nonzero || !nonff ||
+        std::equal(placeholder.begin(), placeholder.end(), address.begin() + 1))
+      throw firmware::Error("hci_not_initialized", "", "controller address is not initialized");
     evidence = {{"ready", true},
                 {"media_capable", true},
                 {"voice_capable", sco},

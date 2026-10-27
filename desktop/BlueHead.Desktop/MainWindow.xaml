@@ -277,6 +277,12 @@
        <WrapPanel Margin="0,10,0,0"><ui:Button x:Name="InstallDriverButton" Content="启用专用接收" Appearance="Primary" Click="InstallDriverClick" Padding="10,4" Margin="0,0,8,0"/><ui:Button x:Name="RestoreDriverButton" Content="恢复系统蓝牙" Click="RestoreDriverClick" Padding="10,4"/></WrapPanel>
        <ProgressBar x:Name="DriverProgress" Height="3" IsIndeterminate="True" Visibility="Collapsed" Margin="0,10,0,0"/>
        <TextBlock x:Name="DriverResult" Text="" Style="{StaticResource Caption}" Margin="0,8,0,0"/>
+       <Expander x:Name="ControllerPreparation" Header="启动检查与固件" Style="{StaticResource Details}" Margin="0,10,0,0"><StackPanel Margin="0,6,0,0">
+        <TextBlock x:Name="ControllerTitle" Text="自动检查蓝牙启动状态" FontWeight="SemiBold" FontSize="13"/>
+        <TextBlock x:Name="ControllerDetail" Text="开始接收时自动初始化。需要额外固件时，再按提示获取。" Style="{StaticResource Caption}" Margin="0,4,0,6"/>
+        <WrapPanel><ui:Button x:Name="AcquireFirmwareButton" Content="获取固件并重试" Click="AcquireFirmwareClick" Padding="8,3" Margin="0,0,6,4"/><ui:Button x:Name="ImportFirmwareButton" Content="从原厂包提取…" Click="ImportFirmwareClick" Padding="8,3" Margin="0,0,6,4"/><ui:Button x:Name="OriginalBootstrapButton" Content="原厂驱动引导" Click="OriginalBootstrapClick" Padding="8,3" Margin="0,0,6,4"/><ui:Button x:Name="RetryControllerButton" Content="重试接收" Click="RetryControllerClick" Padding="8,3" Margin="0,0,6,4"/><ui:Button x:Name="CancelFirmwareButton" Content="取消" Click="CancelFirmwareClick" Padding="8,3" Visibility="Collapsed" Margin="0,0,6,4"/></WrapPanel>
+        <TextBlock Text="在线文件按芯片匹配并校验签名和 SHA-256。提取包时不会运行安装程序。原厂引导需要管理员授权。" Style="{StaticResource Caption}" FontSize="11"/>
+       </StackPanel></Expander>
        <Expander Header="更多与恢复工具" Style="{StaticResource Details}" Margin="0,12,0,0"><StackPanel Margin="0,8,0,0">
         <TextBlock Text="接收入口（多个适配器时确认）" Style="{StaticResource Caption}" Margin="0,0,0,6"/>
         <ComboBox x:Name="AdapterPicker" DisplayMemberPath="Name" SelectionChanged="AdapterChoiceChanged" AutomationProperties.Name="BlueHead 专用接收入口"/>

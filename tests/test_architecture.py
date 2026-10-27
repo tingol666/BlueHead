@@ -1,7 +1,7 @@
 """Build boundaries and failure-unwind contracts, without USB/audio hardware."""
+from tools.native_build import compiler as find_compiler
 from pathlib import Path
 import re
-import shutil
 import subprocess
 
 import pytest
@@ -58,7 +58,7 @@ def test_native_host_missing_sidecar_exits_with_original_error(tmp_path):
 
 
 def test_native_owner_unwinds_partial_construction_before_library_release(tmp_path):
-    compiler = shutil.which('g++') or 'D:/Code/MSYS2/ucrt64/bin/g++.exe'
+    compiler = find_compiler(cxx=True)
     if not Path(compiler).is_file():
         pytest.skip('Native C++ toolchain is required for ownership contract')
     source = tmp_path / 'ownership.cpp'

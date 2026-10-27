@@ -4,6 +4,7 @@ The original source remains in vendor/libwdi. Patches are applied to a build
 copy. We do not embed/repackage Microsoft coinstallers or any kernel binaries.
 The exact-instance binding and rollback are implemented in BlueHead.Platform.
 """
+from native_build import compiler as find_compiler
 import ctypes
 import json
 from pathlib import Path
@@ -56,7 +57,7 @@ for index, (name, data) in enumerate(resources):
     embedded.append(f'{{"", "{name}", {len(data)}, 1704067200, file_{index}}},')
 embedded.extend(["};", "const int nb_resources = sizeof(resource)/sizeof(resource[0]);"])
 (build / "embedded.h").write_text("\n".join(embedded) + "\n", "utf-8")
-gcc = shutil.which("gcc") or "D:/Code/MSYS2/ucrt64/bin/gcc.exe"
+gcc = find_compiler()
 output = root / "bluehead/assets/libwdi.dll"
 subprocess.run([
     gcc, "-shared", "-std=gnu11", "-O2", "-static-libgcc", "-Wl,--no-insert-timestamp",

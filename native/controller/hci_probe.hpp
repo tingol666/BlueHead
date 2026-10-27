@@ -52,7 +52,8 @@ public:
 struct ControllerVersion {
   unsigned hci = 0, revision = 0, manufacturer = 0, rom = 0;
   static ControllerVersion parse(const std::vector<uint8_t> &bytes) {
-    firmware::check(bytes.size() == 9 && !bytes[0], "invalid standard HCI version response");
+    if (bytes.size() != 9 || bytes[0])
+      throw firmware::Error("hci_protocol", "", "invalid standard HCI version response");
     return {bytes[1], le16(bytes.data() + 2), le16(bytes.data() + 5), le16(bytes.data() + 7)};
   }
   json facts(uint16_t vid, uint16_t pid) const {

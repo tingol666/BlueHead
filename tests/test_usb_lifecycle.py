@@ -1,8 +1,8 @@
 """Faults in real C++ USB ownership, without loading a physical USB backend."""
+from tools.native_build import compiler as find_compiler
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 
 import pytest
@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture(scope='module')
 def usb_probe(tmp_path_factory):
     output = tmp_path_factory.mktemp('usb-faults')
-    compiler = shutil.which('g++') or 'D:/Code/MSYS2/ucrt64/bin/g++.exe'
+    compiler = find_compiler(cxx=True)
     if not Path(compiler).is_file():
         pytest.skip('MinGW native test compiler unavailable')
     include = ROOT / 'work/runtime-build'

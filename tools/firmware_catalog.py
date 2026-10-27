@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, utils
+from cryptography.exceptions import InvalidSignature
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -18,8 +19,11 @@ def verify(directory=None):
     signature = (directory / 'catalog.sig').read_bytes()
     if len(signature) != 64:
         raise ValueError('Invalid catalog signature')
-    public.verify(utils.encode_dss_signature(int.from_bytes(signature[:32], 'big'), int.from_bytes(signature[32:], 'big')),
-                  (directory / 'catalog.json').read_bytes(), ec.ECDSA(hashes.SHA256()))
+    try:
+        public.verify(utils.encode_dss_signature(int.from_bytes(signature[:32], 'big'), int.from_bytes(signature[32:], 'big')),
+                      (directory / 'catalog.json').read_bytes(), ec.ECDSA(hashes.SHA256()))
+    except InvalidSignature as error:
+        raise ValueError('Firmware catalog signature verification failed') from error
 
 
 def main():
@@ -28,6 +32,9 @@ def main():
     parser.add_argument('--sign-key', type=Path, help='Explicit external P-256 key; keep outside published sources')
     args = parser.parse_args()
     if args.sign_key:
+        # Byte-stable across Windows/Linux checkouts; catalog assets are -text.
+        catalog_file = args.directory / 'catalog.json'
+        catalog_file.write_bytes(catalog_file.read_bytes().replace(b'\r\n', b'\n'))
         key = serialization.load_pem_private_key(args.sign_key.read_bytes(), password=None)
         if not isinstance(key, ec.EllipticCurvePrivateKey) or not isinstance(key.curve, ec.SECP256R1):
             raise ValueError('P-256 private key required')

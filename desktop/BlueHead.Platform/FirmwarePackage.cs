@@ -127,7 +127,13 @@ public sealed class FirmwarePackage : IDisposable
                 }
                 return 0;
             }
-            catch (Exception error) { failure = error; return 0; }
+            catch (Exception error)
+            {
+                failure = error;
+                // FILEINCABINET uses FILEOP_ABORT=0. The other notifications
+                // use Win32 error codes; zero would incorrectly continue.
+                return notification == 0x11 ? 0u : 1223u;
+            }
         };
         bool success = SetupIterateCabinetW(path, 0, callback, IntPtr.Zero);
         GC.KeepAlive(callback);

@@ -1,6 +1,6 @@
 /* Intel USB RAM firmware bootstrap, before the host receives HCI ownership.
  * Apache-2.0. Protocol reference: Google Bumble's Apache-2.0 Intel driver;
- * see docs/INTEL_FIRMWARE.md. No firmware is modified or written to flash. */
+ * see docs/FIRMWARE.md. No firmware is modified or written to flash. */
 #pragma once
 #include "runtime_common.hpp"
 #include "bootstrap_contract.hpp"
@@ -133,6 +133,12 @@ struct IntelImage {
                                                 {"cnvi", IntelVersion::identity(v.cnvi)},
                                                 {"cnvr", IntelVersion::identity(v.cnvr)}});
     std::string id = profile.at("id");
+    if (profile.at("format") != "intel-dual-sfi")
+      throw firmware::Error("unsupported_firmware", id,
+                            "Intel image format requires original-driver initialization");
+    if (profile.at("format") != "intel-dual-sfi")
+      throw firmware::Error("unsupported_firmware", id,
+                            "Intel image format requires original-driver initialization");
     firmware::Store store(catalog, assets);
     store.load(profile.at("license"), id);
     IntelImage image;
@@ -204,7 +210,7 @@ public:
       event_error = "Intel firmware: command status rejected";
     } else if (p[0] == 0xff && n >= 3) {
       if (p[2] == 6) {
-        // Some AX211 bootloaders report opcode=0 on successful verification.
+        // Some secure bootloaders report opcode=0 on successful verification.
         // The result/status decide success; opcode only identifies a failure.
         if (n != 7 || p[3] || p[6])
           event_error = "Intel firmware: signed image validation response " + hex(p, n);

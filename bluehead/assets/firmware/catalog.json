@@ -64,7 +64,8 @@
           "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/LICENSES/LICENCE.rtlwifi_firmware.txt",
           "encoding": "raw"
         }
-      ]
+      ],
+      "bundled": "firmware/LICENCE.rtlwifi_firmware.txt"
     },
     "rtl8761bu-image": {
       "bytes": 44484,

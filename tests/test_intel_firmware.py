@@ -73,7 +73,7 @@ def test_bootstrap_owns_hci_until_firmware_ready_and_retires_every_transfer(inte
 
 
 def test_distribution_uses_one_pinned_firmware_pair_with_explicit_upstream_aliases():
-    assert len(verify()) == 5
+    assert len(verify()) == 6
     origin = json.loads((ROOT / 'vendor/intel-firmware/origin.json').read_text('utf-8'))
     header = (ROOT / 'bluehead/assets/firmware/catalog.json').read_text('utf-8')
     for name, file in origin['files'].items():

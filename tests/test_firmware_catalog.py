@@ -89,7 +89,7 @@ def test_acquisition_has_no_audio_usb_libraries_and_repairs_corrupt_cache(tmp_pa
 def test_wrong_import_digest_never_commits(tmp_path):
     folder = tmp_path / 'import'
     folder.mkdir()
-    (folder / 'LICENCE.rtlwifi_firmware.txt').write_bytes(b'wrong')
+    (folder / 'rtl8761bu_fw.bin').write_bytes(b'wrong')
     result = run('--firmware', 'ensure', '--firmware-profile', 'realtek-8761bu', '--firmware-cache', tmp_path / 'cache', '--firmware-import', folder)
     assert result.returncode == 3 and 'digest or length' in result.stderr
     assert not (tmp_path / 'cache').exists()

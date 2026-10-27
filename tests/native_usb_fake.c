@@ -83,7 +83,7 @@ static void intel_write(struct libusb_transfer *t) {
   int size = p[2]; p += 3;
   if (opcode == 0x0c03) complete_command(opcode, intel_boot == 1 ? 1 : 0, NULL, 0, 0);
   else if (opcode == 0xfc05) {
-    // Actual AX211 CNVI/CNVR/hardware fields from a read-only version query.
+    // Representative CNVI/CNVR/hardware fields for the secure bootstrap model.
     unsigned char fields[] = {0x10,4,1,4,8,0, 0x11,4,0x10,4,0x40,0, 0x12,4,0,0x37,0x19,0,
                               0x1c,1,(unsigned char)intel_boot, 0x2f,1,1};
     if (mode("intel-unsupported")) fields[2] = 2;
@@ -95,7 +95,7 @@ static void intel_write(struct libusb_transfer *t) {
     if (p[0] == 1) payload_bytes += (unsigned)(size - 1);
     complete_command(opcode, mode("intel-command-reject") ? 0x0c : 0, NULL, 0, 1);
     if (payload_bytes == 720088) {
-      // Actual successful AX211 response uses opcode=0, not necessarily fc09.
+      // Successful secure-boot response uses opcode=0, not necessarily fc09.
       unsigned char done[] = {0xff,5,6,0,0,0,0};
       if (mode("intel-signature-reject")) done[3] = 1;
       reply_event(0x82, done, sizeof(done));

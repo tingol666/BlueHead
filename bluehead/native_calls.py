@@ -261,7 +261,9 @@ class NativeCallManager(CallManager):
                 voice.get('epoch', epoch) != epoch):
             return {}
         now = time.monotonic()
-        previous, rx, tx = self.native_meters.get(key, (now, 0, 0))
+        # The first sample establishes a baseline. Lifetime bytes divided by a
+        # synthetic 1 ms interval would fabricate a huge bitrate at call start.
+        previous, rx, tx = self.native_meters.get(key, (now, voice["rx_bytes"], voice["tx_bytes"]))
         elapsed = max(.001, now - previous)
         ratio = {1: .5, 2: 57 / 60, 3: 58 / 60}[codec]
         self.native_meters[key] = (now, voice["rx_bytes"], voice["tx_bytes"])

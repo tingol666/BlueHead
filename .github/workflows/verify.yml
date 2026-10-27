@@ -73,7 +73,7 @@ jobs:
               New-Item -ItemType Directory -Path work/ui-stack -Force | Out-Null
               @'
             <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup><ItemGroup><PackageReference Include="Microsoft.Diagnostics.Runtime" Version="3.1.512801" /></ItemGroup></Project>
-            '@ | Set-Content work/ui-stack/UiStack.csproj
+          '@ | Set-Content work/ui-stack/UiStack.csproj
               @'
             using Microsoft.Diagnostics.Runtime;
             using var target = DataTarget.AttachToProcess(int.Parse(args[0]), suspend: true);
@@ -84,7 +84,7 @@ jobs:
                 foreach (var frame in thread.EnumerateStackTrace().Take(80)) Console.WriteLine(frame.ToString());
               }
             }
-            '@ | Set-Content work/ui-stack/Program.cs
+          '@ | Set-Content work/ui-stack/Program.cs
               dotnet publish work/ui-stack/UiStack.csproj -c Release -o work/ui-stack-bin
               $taskStack = Start-Process -FilePath work/ui-stack-bin/UiStack.exe -ArgumentList $taskUi.Id -WindowStyle Hidden -PassThru -RedirectStandardOutput ui-managed-stacks.txt -RedirectStandardError ui-stack-error.txt
               if (-not $taskStack.WaitForExit(45000)) { $taskStack.Kill($true) }

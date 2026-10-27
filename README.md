@@ -4,8 +4,6 @@
 
 BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free endpoint for Windows. Listen to a mobile device on your computer and send the computer's microphone back over Bluetooth. No shared Wi-Fi or mobile companion app is required.
 
-**2.1.4**：修复 LDAC 开始、暂停及静音段的微弱嗡声，并修正精细量化数据的还原精度。扩展各媒体／语音编码的静音、弱信号、重置及恢复检查，保留现有音质、缓冲、双向语音、热切换和多设备功能。
-
 安装版和绿色版不附带厂商固件镜像。需要时按提示获取匹配文件或从原厂驱动包导入；验证后持久缓存，之后可离线启动。
 
 [下载已发布稳定版](https://github.com/tingol666/BlueHead/releases/latest) · [使用指南](docs/UI_GUIDE.md) · [构建源码](docs/BUILDING.md) · [验证范围](docs/TESTING.md) · [报告问题](https://github.com/tingol666/BlueHead/issues)
@@ -38,7 +36,7 @@ BlueHead 为持续收发重构了 C/C++ 音频核心。设计重点是减少软�
 
 ## 运行环境与两种接收方式
 
-支持目标为 **Windows 11，x64**。发布包自带 Python 控制后台和原生音频库；桌面使用上述系统自带的 .NET Framework 4.8 或 4.8.1，无需另装 Python 或现代 .NET Desktop Runtime。请使用完整包，不要只复制 EXE。
+支持目标为 **Windows 11/10，x64**。发布包自带 Python 控制后台和原生音频库；桌面使用上述系统自带的 .NET Framework 4.8 或 4.8.1，无需另装 Python 或现代 .NET Desktop Runtime。请使用完整包，不要只复制 EXE。
 
 | 方式 | 用途 | 准备条件 |
 |---|---|---|
@@ -77,7 +75,7 @@ BlueHead 为持续收发重构了 C/C++ 音频核心。设计重点是减少软�
 | iPhone / iPad | 标准 AAC/SBC 媒体与 HFP 双向语音，配合 AVRCP 媒体信息和播放控制 |
 | Android / HarmonyOS | 取决于系统、设备和应用实际开放的 profile、编码与麦克风路由，不以系统名称保证全部功能 |
 | AVRCP | 曲目、播放状态、媒体控制与标准绝对音量；无有效媒体信息时显示“暂无曲目信息” |
-| 电脑声音混合 | 进程排除采集要求 Windows build 20348+；Windows 10 22H2 不提供此项系统能力 |
+| 电脑声音混合 | 进程排除采集要求 Windows build 20348+；Windows 10 22H2 不提供此项系统能力；windows 11 全系支持 |
 | 录音 / 录像 | 应用必须支持并选择蓝牙麦克风，电脑不能强制指定移动端应用的输入源 |
 
 **HFP LC3-SWB 不是完整 LE Audio。** 它要求双方支持相应 HFP 协商；蓝牙 5.3 或更高版本本身不能保证支持。当前不实现完整 LE Audio/BAP、Auracast、aptX Adaptive/Lossless 或同时多路语音桥接，也不声明获得 Apple 或 Bluetooth 产品认证。

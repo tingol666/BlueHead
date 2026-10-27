@@ -1,0 +1,364 @@
+{
+  "schema": 1,
+  "generation": 1,
+  "source_revision": "98b55c84e8da5c09dd9b8d21f5667c63db5993fa",
+  "artifacts": {
+    "intel-license": {
+      "bytes": 2040,
+      "sha256": "5181b0b51efc79d5acb2c9bb92042878fdbad97a92114d4ab5e32e2b5b52fce4",
+      "path": "LICENSES/LICENCE.ibt_firmware",
+      "sources": [
+        {
+          "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware/+/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/LICENSES/LICENCE.ibt_firmware?format=TEXT",
+          "encoding": "base64"
+        },
+        {
+          "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/LICENSES/LICENCE.ibt_firmware",
+          "encoding": "raw"
+        }
+      ],
+      "bundled": "firmware/LICENCE.ibt_firmware"
+    },
+    "intel-sfi": {
+      "bytes": 721052,
+      "sha256": "f14d059858623283f9e1bca3c9f5c5edc272cf538959d8f194327e3a9af5a75a",
+      "path": "intel/ibt-1040-0041.sfi",
+      "sources": [
+        {
+          "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware/+/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/intel/ibt-1040-0041.sfi?format=TEXT",
+          "encoding": "base64"
+        },
+        {
+          "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/intel/ibt-1040-0041.sfi",
+          "encoding": "raw"
+        }
+      ],
+      "bundled": "intel/ibt-1040-0041.sfi"
+    },
+    "intel-ddc": {
+      "bytes": 9,
+      "sha256": "fe272982577efdc289cfe3e8bedafca607c0b7d6c9df1aab1880e22ef930d077",
+      "path": "intel/ibt-1040-0041.ddc",
+      "sources": [
+        {
+          "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware/+/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/intel/ibt-1040-0041.ddc?format=TEXT",
+          "encoding": "base64"
+        },
+        {
+          "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/intel/ibt-1040-0041.ddc",
+          "encoding": "raw"
+        }
+      ],
+      "bundled": "intel/ibt-1040-0041.ddc"
+    },
+    "realtek-license": {
+      "bytes": 2115,
+      "sha256": "a61351665b4f264f6c631364f85b907d8f8f41f8b369533ef4021765f9f3b62e",
+      "path": "LICENSES/LICENCE.rtlwifi_firmware.txt",
+      "sources": [
+        {
+          "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware/+/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/LICENSES/LICENCE.rtlwifi_firmware.txt?format=TEXT",
+          "encoding": "base64"
+        },
+        {
+          "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/LICENSES/LICENCE.rtlwifi_firmware.txt",
+          "encoding": "raw"
+        }
+      ]
+    },
+    "rtl8761bu-image": {
+      "bytes": 44484,
+      "sha256": "1d7a9597349ad89344fa16c1913d3e39e9a12e966e417ca16871bc79bbe59edb",
+      "path": "rtl_bt/rtl8761bu_fw.bin",
+      "sources": [
+        {
+          "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware/+/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/rtl_bt/rtl8761bu_fw.bin?format=TEXT",
+          "encoding": "base64"
+        },
+        {
+          "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/rtl_bt/rtl8761bu_fw.bin",
+          "encoding": "raw"
+        }
+      ]
+    },
+    "rtl8761bu-config": {
+      "bytes": 6,
+      "sha256": "6c28a3f07c6a30ed208c4b64862a23f02b7d93543ea980edd24df16bab45095f",
+      "path": "rtl_bt/rtl8761bu_config.bin",
+      "sources": [
+        {
+          "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware/+/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/rtl_bt/rtl8761bu_config.bin?format=TEXT",
+          "encoding": "base64"
+        },
+        {
+          "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/rtl_bt/rtl8761bu_config.bin",
+          "encoding": "raw"
+        }
+      ]
+    },
+    "rtl8821c-image": {
+      "bytes": 54636,
+      "sha256": "dfe7ef772d078ec09490c02190a32fcd40b3eaf3b040049d8930eb80e6d5743c",
+      "path": "rtl_bt/rtl8821c_fw.bin",
+      "sources": [
+        {
+          "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware/+/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/rtl_bt/rtl8821c_fw.bin?format=TEXT",
+          "encoding": "base64"
+        },
+        {
+          "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/rtl_bt/rtl8821c_fw.bin",
+          "encoding": "raw"
+        }
+      ]
+    },
+    "rtl8821c-config": {
+      "bytes": 10,
+      "sha256": "292717b0610ce920f66b734c299d349ea59a4c4400044078d8fc65625f17e382",
+      "path": "rtl_bt/rtl8821c_config.bin",
+      "sources": [
+        {
+          "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware/+/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/rtl_bt/rtl8821c_config.bin?format=TEXT",
+          "encoding": "base64"
+        },
+        {
+          "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/rtl_bt/rtl8821c_config.bin",
+          "encoding": "raw"
+        }
+      ]
+    },
+    "rtl8822b-image": {
+      "bytes": 51176,
+      "sha256": "eecef2c3b2ff03c3a41292a93a25eca6f4ec38eb4a7491a3651b530be89a04fc",
+      "path": "rtl_bt/rtl8822b_fw.bin",
+      "sources": [
+        {
+          "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware/+/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/rtl_bt/rtl8822b_fw.bin?format=TEXT",
+          "encoding": "base64"
+        },
+        {
+          "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/rtl_bt/rtl8822b_fw.bin",
+          "encoding": "raw"
+        }
+      ]
+    },
+    "rtl8822b-config": {
+      "bytes": 14,
+      "sha256": "ea082136d5285655372e3805cd50d961bd7d42085c6fc1058a115a7e844df9c1",
+      "path": "rtl_bt/rtl8822b_config.bin",
+      "sources": [
+        {
+          "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware/+/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/rtl_bt/rtl8822b_config.bin?format=TEXT",
+          "encoding": "base64"
+        },
+        {
+          "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/rtl_bt/rtl8822b_config.bin",
+          "encoding": "raw"
+        }
+      ]
+    },
+    "rtl8723d-image": {
+      "bytes": 52080,
+      "sha256": "6b70723b2db9b658cd9535fe36f1494b4494699e1ad07920c9356f8bd90d9263",
+      "path": "rtl_bt/rtl8723d_fw.bin",
+      "sources": [
+        {
+          "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware/+/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/rtl_bt/rtl8723d_fw.bin?format=TEXT",
+          "encoding": "base64"
+        },
+        {
+          "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/rtl_bt/rtl8723d_fw.bin",
+          "encoding": "raw"
+        }
+      ]
+    },
+    "rtl8723d-config": {
+      "bytes": 10,
+      "sha256": "292717b0610ce920f66b734c299d349ea59a4c4400044078d8fc65625f17e382",
+      "path": "rtl_bt/rtl8821c_config.bin",
+      "sources": [
+        {
+          "url": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware/+/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/rtl_bt/rtl8821c_config.bin?format=TEXT",
+          "encoding": "base64"
+        },
+        {
+          "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/98b55c84e8da5c09dd9b8d21f5667c63db5993fa/rtl_bt/rtl8821c_config.bin",
+          "encoding": "raw"
+        }
+      ]
+    }
+  },
+  "profiles": [
+    {
+      "id": "intel-tlv-0041",
+      "backend": "intel-tlv",
+      "format": "intel-dual-sfi",
+      "match": {
+        "variant": [
+          23,
+          24,
+          25
+        ],
+        "cnvi": [
+          64,
+          4160
+        ],
+        "cnvr": [
+          65,
+          4176,
+          16720
+        ]
+      },
+      "image": "intel-sfi",
+      "config": "intel-ddc",
+      "license": "intel-license"
+    },
+    {
+      "id": "realtek-8761bu",
+      "backend": "realtek",
+      "format": "realtek-epatch-v1",
+      "match": {
+        "usb": [
+          [
+            3034,
+            34673
+          ],
+          [
+            3034,
+            34683
+          ],
+          [
+            2821,
+            6414
+          ],
+          [
+            9047,
+            1540
+          ],
+          [
+            29586,
+            50705
+          ]
+        ],
+        "rom": [
+          34657
+        ],
+        "revision": [
+          11
+        ],
+        "hci": [
+          10
+        ],
+        "manufacturer": [
+          93
+        ]
+      },
+      "project": 14,
+      "image": "rtl8761bu-image",
+      "config": "rtl8761bu-config",
+      "license": "realtek-license"
+    },
+    {
+      "id": "realtek-8821c",
+      "backend": "realtek",
+      "format": "realtek-epatch-v1",
+      "match": {
+        "usb": [
+          [
+            3034,
+            45068
+          ],
+          [
+            3034,
+            51234
+          ],
+          [
+            5075,
+            13609
+          ]
+        ],
+        "rom": [
+          34849
+        ],
+        "revision": [
+          12
+        ],
+        "hci": [
+          8
+        ],
+        "manufacturer": [
+          93
+        ]
+      },
+      "project": 10,
+      "image": "rtl8821c-image",
+      "config": "rtl8821c-config",
+      "license": "realtek-license"
+    },
+    {
+      "id": "realtek-8822b",
+      "backend": "realtek",
+      "format": "realtek-epatch-v1",
+      "match": {
+        "usb": [
+          [
+            2821,
+            6236
+          ],
+          [
+            5075,
+            13606
+          ]
+        ],
+        "rom": [
+          34850
+        ],
+        "revision": [
+          11
+        ],
+        "hci": [
+          7
+        ],
+        "manufacturer": [
+          93
+        ]
+      },
+      "project": 8,
+      "image": "rtl8822b-image",
+      "config": "rtl8822b-config",
+      "license": "realtek-license"
+    },
+    {
+      "id": "realtek-8723d",
+      "backend": "realtek",
+      "format": "realtek-epatch-v1",
+      "match": {
+        "usb": [
+          [
+            3034,
+            45065
+          ],
+          [
+            12280,
+            45073
+          ]
+        ],
+        "rom": [
+          34595
+        ],
+        "revision": [
+          13
+        ],
+        "hci": [
+          8
+        ],
+        "manufacturer": [
+          93
+        ]
+      },
+      "project": 9,
+      "image": "rtl8723d-image",
+      "config": "rtl8723d-config",
+      "license": "realtek-license"
+    }
+  ]
+}

@@ -45,7 +45,8 @@ command = [
 ]
 command.extend(["--add-data", str(assets / "selfcheck_vectors.json") + ";bluehead/assets"])
 for firmware in verify_firmware():
-    command.extend(["--add-data", str(firmware) + ";bluehead/assets/intel"])
+    destination = Path('bluehead/assets') / firmware.relative_to(assets).parent
+    command.extend(["--add-data", str(firmware) + ";" + destination.as_posix()])
 for name in ("bluehead_ldac.dll", "bluehead_ldac_media.dll", "bluehead_audio.dll", "bluehead_device.dll",
              "bluehead_voice.dll", "bluehead_plc.dll", "bluehead_loopback.dll", "bluehead_trace.dll",
              "avcodec-63.dll", "avutil-61.dll", "swresample-7.dll", "libwinpthread-1.dll", "libusb-1.0.dll"):

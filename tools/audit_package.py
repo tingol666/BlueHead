@@ -48,9 +48,9 @@ def audit(package):
     errors, checks, versions, native_hashes = [], {}, {}, {}
     try:
         from firmware_assets import verify
-        checks['intel_firmware_assets'] = len(verify(internal / 'bluehead/assets', package / 'licenses'))
+        checks['verified_firmware_resources'] = len(verify(internal / 'bluehead/assets', package / 'licenses'))
     except (OSError, ValueError) as error:
-        errors.append({'check': 'intel_firmware_assets', 'component': 'intel', 'reason': str(error)})
+        errors.append({'check': 'verified_firmware_resources', 'component': 'catalog', 'reason': str(error)})
 
     def fail(check, component, reason):
         errors.append({"check": check, "component": component, "reason": reason})

@@ -1,5 +1,6 @@
 /* BlueHead native application entry point. Apache-2.0. */
 #include "application_host.hpp"
+#include "acquire.hpp"
 #include <tlhelp32.h>
 namespace {
 bh::Handle driver_parent(DWORD wanted) {
@@ -45,6 +46,18 @@ int wmain(int count, wchar_t **values) {
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     AddDllDirectory(args.assets.c_str());
     AddDllDirectory(args.assets.parent_path().parent_path().c_str());
+    if (!args.firmware_operation.empty()) {
+      bh::require(!args.offline && !args.engine && !args.prepare_controller && !args.mapping && args.rpc.empty(),
+                  "Firmware acquisition cannot run as an audio/HCI host");
+      if (args.firmware_operation == "inspect") {
+        bh::firmware::Catalog catalog(args.assets);
+        std::cout << catalog.snapshot().dump() << '\n';
+      } else if (args.firmware_operation == "ensure") {
+        std::cout << bh::firmware::ensure(args.assets, args.firmware_cache, args.firmware_profile,
+                                         args.firmware_network, args.firmware_import).dump() << '\n';
+      } else throw std::runtime_error("Unknown firmware operation");
+      return 0;
+    }
     if (args.prepare_controller) {
       bh::require(!args.offline && !args.engine && args.rpc.empty() && !args.mapping,
                   "Driver firmware preparation is unavailable in offline/RPC/engine modes");
@@ -88,6 +101,9 @@ int wmain(int count, wchar_t **values) {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     return 0;
+  } catch (const bh::firmware::Error &e) {
+    std::cerr << bh::json({{"code", e.code}, {"profile", e.profile}, {"error", e.what()}}).dump() << '\n';
+    return 3;
   } catch (const std::exception &e) {
     std::cerr << "Native runtime: " << e.what() << '\n';
     return 2;

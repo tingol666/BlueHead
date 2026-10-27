@@ -46,6 +46,33 @@ actual backup file is not presented as a complete recovery backup.
 
 ## Verification stages
 
+## Firmware trust and acquisition
+
+The application verifies the shipped catalog's P-256 signature with Windows CNG
+before parsing or selecting resources. Profiles require chip facts and, for
+board configurations, an explicit USB board match. Each image/config/license
+has a fixed length and SHA-256. Equal-specificity matches fail closed. Firmware
+formats and protocols are compiled backends, never downloaded executable code.
+
+The content-addressed per-user cache is bounded and reverified on use. Minimal
+bundled resources work offline; optional profiles can acquire files from two
+signed HTTPS source entries pinned to an upstream revision. Redirect hosts,
+response size and time are restricted. Downloads run in a separate process
+that cannot also be an audio/HCI host. Atomic commits prevent partial files
+from becoming valid resources. License and immutable origin metadata accompany
+the resources; the current release is the catalog update boundary.
+
+Original packages can provide matching bytes through bounded static ZIP, CAB,
+MSI stream and embedded-CAB extraction. Directory and file links, traversal,
+duplicate payloads and oversized data are rejected. No installer, custom action
+or imported DLL executes. Package extraction does not authenticate arbitrary
+firmware: the native verifier still requires the signed catalog's exact digest.
+Unknown payload revisions or wrappers use the original Windows driver path.
+Private catalog signing keys are external maintainer material and are excluded
+from source archives and releases.
+
+## Verification stages
+
 1. Physical identity, native ownership, platform selection and backend contracts.
 2. Firmware catalog, verified acquisition, package extraction and caching.
 3. Vendor initialization, original-driver handoff and bounded recovery.

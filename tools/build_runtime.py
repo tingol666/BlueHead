@@ -61,5 +61,5 @@ subprocess.run([
     *includes(vendor, BUILD),
     str(ROOT / "native/runtime/runtime_main.cpp"), str(BUILD / "runtime.o"),
     "-o", str(ROOT / "bluehead/assets/BlueHead.Runtime.exe"),
-    "-ladvapi32", "-lavrt", "-lole32", "-lbcrypt",
+    "-ladvapi32", "-lavrt", "-lole32", "-lbcrypt", "-lwinhttp", "-lcrypt32",
 ], check=True)

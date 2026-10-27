@@ -12,10 +12,10 @@ inline std::wstring pipe_name() {
   return L"\\\\.\\pipe\\BlueHead-RT-" + wide(hex(nonce.data(), nonce.size()));
 }
 struct Arguments {
-  fs::path assets, data, source;
+  fs::path assets, data, source, firmware_cache, firmware_import;
   std::wstring rpc;
-  bool engine = false, offline = false, prepare_controller = false;
-  std::string adapter_id;
+  bool engine = false, offline = false, prepare_controller = false, firmware_network = false;
+  std::string adapter_id, firmware_operation, firmware_profile;
   DWORD parent = 0;
   HANDLE mapping = nullptr, request = nullptr, done = nullptr;
   explicit Arguments(int count, wchar_t **values) {
@@ -37,6 +37,16 @@ struct Arguments {
         prepare_controller = true;
       else if (key == L"--adapter-id")
         adapter_id = utf8(value());
+      else if (key == L"--firmware")
+        firmware_operation = utf8(value());
+      else if (key == L"--firmware-profile")
+        firmware_profile = utf8(value());
+      else if (key == L"--firmware-cache")
+        firmware_cache = value();
+      else if (key == L"--firmware-import")
+        firmware_import = value();
+      else if (key == L"--allow-network")
+        firmware_network = true;
       else if (key == L"--data-dir")
         data = value();
       else if (key == L"--source-root")

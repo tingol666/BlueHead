@@ -5,7 +5,7 @@ Copyright 2021-2026 Google LLC. Apache License 2.0. Changes: BlueHead contributo
 """
 import asyncio
 import contextlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import logging
 from pathlib import Path
 import queue
@@ -696,6 +696,31 @@ class Receiver:
                 task.cancel()
             await asyncio.gather(setup, stopped, terminated, return_exceptions=True)
 
+    async def prepare_native_transport(self, transport):
+        """Establish session capabilities before publishing services, honoring Stop."""
+        if not hasattr(transport, 'wait_ready'):
+            return True
+        setup = asyncio.create_task(transport.wait_ready(lambda message: self.emit('status', message=message)))
+        stopped = asyncio.create_task(self.stop_event.wait())
+        try:
+            await asyncio.wait([setup, stopped], return_when=asyncio.FIRST_COMPLETED)
+            if self.stop_event.is_set():
+                return False
+            await setup
+            current = getattr(transport.source, 'startup', {}).get('capabilities', {})
+            if current:
+                self.emit('controller_capabilities', **current)
+                if self.settings.calls and not current.get('voice_transport'):
+                    # Session-only degradation; the user's saved choice survives
+                    # switching to an adapter with synchronous USB endpoints.
+                    self.settings = replace(self.settings, calls=False)
+                    self.emit('warning', message='此适配器当前仅支持媒体接收，语音与电脑麦克风不可用。可更换支持同步音频的适配器。')
+            return True
+        finally:
+            setup.cancel()
+            stopped.cancel()
+            await asyncio.gather(setup, stopped, return_exceptions=True)
+
     async def run(self):
         if self.settings.mode == "native":
             from .native import NativeReceiver
@@ -718,6 +743,8 @@ class Receiver:
             if not getattr(self.mixer, "remote", False):
                 lease.acquire()
             async with await open_transport(transport_spec) as transport:
+                if not await self.prepare_native_transport(transport):
+                    return
                 config = DeviceConfiguration()
                 config.name = self.settings.name
                 config.class_of_device = 0x240404  # audio/video wearable headset
@@ -931,7 +958,8 @@ class Runner:
                     await self.receiver.run()
             except Exception as exc:
                 log.exception("receiver stopped")
-                self.emit("error", message=f"启动失败：{exc}")
+                self.emit("error", message=f"启动失败：{exc}",
+                          category=getattr(exc, 'category', ''), firmware_profile=getattr(exc, 'firmware_profile', ''))
             finally:
                 self.receiver = None
                 self.emit("stopped")

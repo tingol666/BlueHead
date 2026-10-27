@@ -44,8 +44,6 @@ rank and explicitly bad candidates are excluded. Exported packages select the
 original INF by content, never the first filename. Backup metadata without the
 actual backup file is not presented as a complete recovery backup.
 
-## Verification stages
-
 ## Firmware trust and acquisition
 
 The application verifies the shipped catalog's P-256 signature with Windows CNG
@@ -70,6 +68,36 @@ firmware: the native verifier still requires the signed catalog's exact digest.
 Unknown payload revisions or wrappers use the original Windows driver path.
 Private catalog signing keys are external maintainer material and are excluded
 from source archives and releases.
+
+## Vendor initialization and handoff
+
+| Controller state | Initialization path | Evidence |
+| --- | --- | --- |
+| Intel secure TLV variants 0x17–0x19 in the compiled USB bootstrap registry | Signed catalog image/config pair, secure RAM download, operational version, standard HCI probe | Production-owner synthetic cold/warm/failure tests |
+| Realtek v1 epatch profiles: 8761BU, 8821C, 8822B, 8723D; explicit catalog board IDs only | Chip/board/ROM/project matching, complete range validation, fragment acknowledgement, exact loaded version | Four immutable image/config parser vectors; native download model |
+| Already operational Intel, Realtek, Broadcom, Qualcomm, MediaTek and other classic USB HCI controllers | Standard reset/version/features/buffers/address probe, without guessed vendor writes | Standard HCI model; each physical revision still needs its own validation |
+| Missing resource | Independent verified acquisition/import, then explicit retry | CNG/content-store and static-package checks |
+| Unknown image format, board or native initialization failure | One original-driver initialization handoff, then native readiness recheck | Platform transaction port checks |
+| Handoff loses RAM firmware, needs reboot or remains unusable | Return to Windows; explain restart or Windows shared-media option | Bounded state-machine checks |
+
+The native vendor path only borrows its owner's command and event ports. It
+never opens another USB context, enables a second HCI ledger or changes audio
+processing. All capabilities require successful standard HCI replies; a driver
+name alone cannot mean ready. Voice also requires synchronous USB endpoints and
+controller SCO/eSCO features. A media-only session reports the limitation and
+does not advertise voice services; the saved voice and quality choices survive.
+
+Original-driver handoff waits for Windows radio readiness, releases that owner,
+binds dedicated reception and rechecks the same physical controller. A rebind
+may erase volatile firmware, so the recheck is mandatory. There is one handoff,
+not a retry loop. Each mutation phase is persisted in the protected recovery
+record; failure restores the original driver or reports recovery/restart needs.
+
+Protocol references: [Bumble Realtek](https://google.github.io/bumble/drivers/realtek.html),
+[Linux Bluetooth initialization](https://github.com/torvalds/linux/tree/v6.17/drivers/bluetooth).
+The native parser is Apache-2.0; vendor firmware keeps its own redistribution
+terms. The Linux implementation is used to cross-check wire protocol facts,
+including fragment wrap and the terminating fragment, not linked into BlueHead.
 
 ## Verification stages
 

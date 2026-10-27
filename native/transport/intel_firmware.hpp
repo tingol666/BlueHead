@@ -4,6 +4,7 @@
 #pragma once
 #include "runtime_common.hpp"
 #include "bootstrap_contract.hpp"
+#include "catalog.hpp"
 #include <bcrypt.h>
 #include <functional>
 
@@ -126,50 +127,17 @@ struct IntelImage {
     }
   }
 
-  static std::vector<uint8_t> read_verified(const fs::path &path, size_t size, const char *hash) {
-    Handle file(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
-    require(bool(file),
-            "Intel firmware: bundled image missing; reinstall the complete application");
-    BY_HANDLE_FILE_INFORMATION info{};
-    require(
-        GetFileInformationByHandle(file, &info) && !info.nFileSizeHigh &&
-            info.nFileSizeLow == size &&
-            !(info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)),
-        "Intel firmware: bundled image size or file type mismatch");
-    std::vector<uint8_t> bytes(size);
-    DWORD got = 0;
-    require(ReadFile(file, bytes.data(), DWORD(size), &got, nullptr) && got == size,
-            "Intel firmware: cannot read bundled image");
-    std::array<uint8_t, 32> digest{};
-    BCRYPT_ALG_HANDLE algorithm = nullptr;
-    BCRYPT_HASH_HANDLE state = nullptr;
-    auto status = BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
-    if (status >= 0)
-      status = BCryptCreateHash(algorithm, &state, nullptr, 0, nullptr, 0, 0);
-    if (status >= 0)
-      status = BCryptHashData(state, bytes.data(), ULONG(bytes.size()), 0);
-    if (status >= 0)
-      status = BCryptFinishHash(state, digest.data(), ULONG(digest.size()), 0);
-    if (state)
-      BCryptDestroyHash(state);
-    if (algorithm)
-      BCryptCloseAlgorithmProvider(algorithm, 0);
-    require(status >= 0 && hex(digest.data(), digest.size()) == hash,
-            "Intel firmware: bundled image SHA-256 mismatch; reinstall the complete application");
-    return bytes;
-  }
   static IntelImage load(const fs::path &assets, const IntelVersion &v) {
-    auto vi = IntelVersion::identity(v.cnvi), vr = IntelVersion::identity(v.cnvr);
-    // These aliases are explicit upstream WHENCE entries, not a VID/PID guess.
-    if ((vi != 0x0040 && vi != 0x1040) || (vr != 0x0041 && vr != 0x1050 && vr != 0x4150))
-      throw std::runtime_error("Intel firmware: no bundled image for " + v.name() +
-                               "; restore the manufacturer's Bluetooth driver");
+    firmware::Catalog catalog(assets);
+    auto profile = catalog.select("intel-tlv", {{"variant", v.variant},
+                                                {"cnvi", IntelVersion::identity(v.cnvi)},
+                                                {"cnvr", IntelVersion::identity(v.cnvr)}});
+    std::string id = profile.at("id");
+    firmware::Store store(catalog, assets);
+    store.load(profile.at("license"), id);
     IntelImage image;
-    image.sfi = read_verified(assets / L"intel/ibt-1040-0041.sfi", 721052,
-                              "f14d059858623283f9e1bca3c9f5c5edc272cf538959d8f194327e3a9af5a75a");
-    image.ddc = read_verified(assets / L"intel/ibt-1040-0041.ddc", 9,
-                              "fe272982577efdc289cfe3e8bedafca607c0b7d6c9df1aab1880e22ef930d077");
+    image.sfi = store.load(profile.at("image"), id);
+    image.ddc = store.load(profile.at("config"), id);
     image.validate(v.engine);
     return image;
   }

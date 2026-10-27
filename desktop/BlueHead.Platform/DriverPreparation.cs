@@ -8,10 +8,10 @@ namespace BlueHead.Platform;
 
 public static partial class Drivers
 {
-    private static void PrepareControllerRestore(DriverRecord record)
+    private static bool PrepareControllerRestore(DriverRecord record)
     {
         var device = Enumerate().Single(item => item.InstanceId.Equals(record.InstanceId, StringComparison.OrdinalIgnoreCase));
-        if (!device.Service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase)) return;
+        if (!device.Service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase)) return false;
         record.Stage = "initializing_before_restore"; Save(record);
         var executable = Path.Combine(AppContext.BaseDirectory, "engine", "BlueHead.Runtime.exe");
         try
@@ -43,7 +43,7 @@ public static partial class Drivers
             if (process.ExitCode != 0) throw new IOException("蓝牙启动固件初始化未完成：" + stderr.Result.Trim());
             using var result = JsonDocument.Parse(stdout.Result);
             var state = result.RootElement.GetProperty("firmware_state").GetString();
-            if (state is not ("loaded" or "already_loaded")) throw new IOException("蓝牙启动固件状态未确认");
+            if (!result.RootElement.GetProperty("capabilities").GetProperty("hci").GetProperty("ready").GetBoolean()) throw new IOException("蓝牙控制器就绪状态未确认");
             record.FirmwarePreparation = state;
         }
         catch (Exception error) when (error is IOException or Win32Exception or JsonException or InvalidOperationException or KeyNotFoundException)
@@ -53,6 +53,59 @@ public static partial class Drivers
             record.FirmwarePreparation = "incomplete: " + error.Message;
         }
         Save(record);
+        return record.FirmwarePreparation?.StartsWith("incomplete:", StringComparison.Ordinal) == false;
+    }
+
+    /// <summary>One bounded handoff. Each driver owner is released before the next is opened.</summary>
+    public static Task<DriverRecord> InitializeOriginalAsync(string instanceId) => Task.Run(() =>
+    {
+        RequireAdministrator(); RequireReceiverStopped(instanceId);
+        using var lease = new Mutex(false, @"Global\BlueHead.DriverOperation");
+        if (!lease.WaitOne(0)) throw new IOException("另一个驱动操作正在执行。");
+        try
+        {
+            RequireReceiverStopped(instanceId);
+            var record = ReadRecord(instanceId) ?? BackupAsync(instanceId).GetAwaiter().GetResult();
+            try
+            {
+                record.Error = null;
+                var result = DriverHandoff.Run(new WindowsDriverHandoff(record));
+                if (result == DriverHandoffOutcome.DedicatedReady)
+                {
+                    record.Stage = "winusb_ready"; record.Error = null; Save(record); return record;
+                }
+                // A rebind/reset can erase RAM. Never loop between drivers and
+                // never leave an unverified dedicated controller as 'ready'.
+                record.Error = record.RebootRequired ? "驱动恢复完成，请重启电脑。" : "已恢复系统蓝牙。此适配器未能在驱动交接后保留可用固件；可使用 Windows 共用接收，或换用其他适配器。";
+                Save(record); return record;
+            }
+            catch (Exception error)
+            {
+                record.Error = error.Message; record.Stage = "bootstrap_failed"; Save(record);
+                try { RestoreCore(record, false); record.Error = "原厂引导未完成，已恢复系统蓝牙。" + error.Message; Save(record); }
+                catch (Exception rollback) { record.Stage = "recovery_required"; record.Error = error.Message + "；请恢复系统蓝牙：" + rollback.Message; Save(record); throw; }
+                return record;
+            }
+        }
+        finally { lease.ReleaseMutex(); }
+    });
+
+    private sealed class WindowsDriverHandoff(DriverRecord record) : IDriverHandoff
+    {
+        public bool RestartRequired => record.RebootRequired;
+        public bool SystemReady => record.SystemRadioReady;
+        public void Stage(string name) { record.Stage = name; Save(record); }
+        public void RestoreOriginal() => RestoreCore(record, false);
+        public bool ProbeDedicated() => PrepareControllerRestore(record);
+        public void BindDedicated()
+        {
+            var package = Path.Combine(RecordDirectory(record.InstanceId), "winusb"); SecureDirectory(package);
+            LibWdi.Prepare(record.InstanceId, package);
+            Stage("bootstrap_binding_winusb");
+            record.RebootRequired = Bind(record.InstanceId, Path.Combine(package, "bluehead.inf"));
+            record.SystemRadioReady = false;
+            if (!record.RebootRequired) WaitForDriverReady(record, true);
+        }
     }
 
     private static bool RestartExactDevice(string instanceId)

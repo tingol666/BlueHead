@@ -75,11 +75,13 @@ inline std::string windows_instance(unsigned long node) {
 struct ControllerCapabilities {
   bool media_transport = false, voice_transport = false;
   std::string backend = "generic", firmware = "not_checked";
+  json hci = json::object();
   json snapshot() const {
     return {{"media_transport", media_transport},
             {"voice_transport", voice_transport},
             {"backend", backend},
             {"firmware", firmware},
+            {"hci", hci},
             {"voice_verified", false},
             {"scope", "descriptor_and_initialization"}};
   }

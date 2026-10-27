@@ -38,6 +38,7 @@ internal static class Program
     {
         checks["x64_process"] = Environment.Is64BitProcess && IntPtr.Size == 8;
         FirmwareChecks.Run(root, checks);
+        HandoffChecks.Run(checks);
         var restartAdapter = new DriverDevice(@"USB\VID_8087&PID_0033\offline", "offline", "WinUSB", "offline.inf", "", false, false) { RebootRequired = true };
         checks["restart_matches_selected_adapter"] = Drivers.RequiresRestart("usb:8087:0033#0", [restartAdapter]) && !Drivers.RequiresRestart("usb:1111:2222#0", [restartAdapter]);
         checks["duplicate_usb_models_do_not_guess_instance_order"] = !Drivers.RequiresRestart("usb:8087:0033#0", [restartAdapter, restartAdapter with { InstanceId = @"USB\VID_8087&PID_0033\another", RebootRequired = false }]);

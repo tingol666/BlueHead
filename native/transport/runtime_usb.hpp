@@ -166,6 +166,7 @@ class Usb {
   ControllerCapabilities capabilities;
   std::function<std::string(unsigned long)> resolve_instance = windows_instance;
   std::string init_error;
+  std::string init_code, init_profile;
   mutable std::mutex init_mutex;
   std::string firmware_state = "opening";
   unsigned firmware_progress = 0;
@@ -739,13 +740,18 @@ class Usb {
                                            firmware_progress = progress;
                                            capabilities.firmware = state;
                                          }});
-    if (!bootstrap)
-      return;
     {
       std::lock_guard<std::mutex> lock(init_mutex);
       capabilities.backend = bootstrap->name();
     }
     bootstrap->run(assets);
+    {
+      std::lock_guard<std::mutex> lock(init_mutex);
+      capabilities.hci = bootstrap->result();
+      capabilities.backend = bootstrap->name();
+      capabilities.voice_transport =
+          capabilities.voice_transport && capabilities.hci.value("voice_capable", false);
+    }
     auto deadline = seconds() + 2.5;
     while (control_out->submitted) {
       require(seconds() < deadline, "Intel firmware: final USB write completion timeout");
@@ -793,6 +799,10 @@ class Usb {
       {
         std::lock_guard<std::mutex> lock(init_mutex);
         init_error = e.what();
+        if (auto firmware_error = dynamic_cast<const firmware::Error *>(&e)) {
+          init_code = firmware_error->code;
+          init_profile = firmware_error->profile;
+        }
         firmware_state = "failed";
       }
       stopping = true;
@@ -909,6 +919,8 @@ public:
             {"firmware_state", firmware_state},
             {"firmware_progress", firmware_progress},
             {"capabilities", capabilities.snapshot()},
+            {"firmware_error", init_code},
+            {"firmware_profile", init_profile},
             {"error", init_error}};
   }
   const char *terminal_reason() const {

@@ -19,10 +19,14 @@ int wmain(int count, wchar_t **values) {
   auto start = bh::seconds();
   wchar_t mode[100]{};
   GetEnvironmentVariableW(L"BLUEHEAD_USB_FAULT", mode, 100);
+  bool realtek = std::wstring(mode).rfind(L"realtek-", 0) == 0;
+  bool standard = std::wstring(mode).rfind(L"standard-", 0) == 0;
+  uint16_t vid = realtek ? 0x0bda : standard ? 0x1234 : 0x8087;
+  uint16_t pid = realtek ? (std::wstring(mode) == L"realtek-unknown-board" ? 1 : 0x8771) : standard ? 0xabcd : 0x0033;
   try {
     bh::Usb usb(values[1], target, std::wstring(mode) == L"intel-ambiguous");
     auto before = bh::seconds();
-    usb.start(0x8087, 0x0033, 0);
+    usb.start(vid, pid, 0);
     report["start_milliseconds"] = (bh::seconds() - before) * 1000;
     while (usb.startup()["starting"] == true && bh::seconds() - start < 10) {
       if (std::wstring(mode) == L"intel-cancel" &&
@@ -36,7 +40,7 @@ int wmain(int count, wchar_t **values) {
     report["closed"] = !usb.active();
     if (report["active"] == true) {
       bh::Usb next(values[1], target);
-      next.open(0x8087, 0x0033, 0);
+      next.open(vid, pid, 0);
       report["reopened"] = next.startup();
       next.close();
     }

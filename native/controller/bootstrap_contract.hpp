@@ -16,5 +16,6 @@ public:
   virtual const char *name() const = 0;
   virtual void event(const uint8_t *, uint32_t) = 0;
   virtual void run(const fs::path &) = 0;
+  virtual json result() const { return json::object(); }
 };
 } // namespace bh

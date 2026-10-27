@@ -3,6 +3,13 @@ import asyncio
 import contextlib
 from ..controller import transport_target
 
+
+class ControllerStartupError(OSError):
+    def __init__(self, batch):
+        self.category = batch.get('firmware_error') or 'controller_startup'
+        self.firmware_profile = batch.get('firmware_profile', '')
+        super().__init__(startup_error(batch.get('error', 'Controller initialization failed')))
+
 class _Source:
     def __init__(self, client):
         self.client, self.sink = client, None
@@ -25,9 +32,9 @@ class _Source:
                     await asyncio.sleep(.04)
                     continue
                 if batch.get('error'):
-                    self.failure_category = ('firmware_initialization' if batch['error'].startswith('Intel firmware:')
+                    self.failure_category = ('firmware_initialization' if batch['error'].startswith(('Intel firmware:', 'Firmware:'))
                                              else 'usb_startup')
-                    self.failure = OSError(startup_error(batch['error']))
+                    self.failure = ControllerStartupError(batch)
                     break
                 if batch['active']:
                     self.ready.set()
@@ -60,6 +67,8 @@ def startup_error(detail):
         return '正在更换或恢复蓝牙驱动，请等待操作完成后再开始接收'
     if 'already has an HCI owner' in detail:
         return '这个蓝牙适配器正在被另一个接收进程使用，请先停止其它接收器'
+    if detail.startswith('Firmware:'):
+        return '蓝牙控制器尚未就绪。请在“蓝牙与驱动”检查固件，或使用原厂驱动引导。详情：' + detail
     if not detail.startswith('Intel firmware:'):
         return detail
     if 'bundled image' in detail or 'device configuration' in detail or 'signed image header' in detail:

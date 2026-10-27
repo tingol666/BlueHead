@@ -78,7 +78,7 @@ int wmain(int count, wchar_t **values) {
       auto status = usb.startup();
       if (!usb.active())
         throw std::runtime_error(status.value("error", "Controller initialization failed"));
-      bh::require(status["firmware_state"] == "loaded" || status["firmware_state"] == "already_loaded",
+      bh::require(status["capabilities"]["hci"].value("ready", false),
                   "Controller native preparation is unavailable; use original-driver initialization");
       usb.close();
       std::cout << status.dump() << '\n';

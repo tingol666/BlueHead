@@ -281,9 +281,9 @@ public static partial class Drivers
         }
         finally { lease.ReleaseMutex(); }
     });
-    private static DriverRecord RestoreCore(DriverRecord record)
+    private static DriverRecord RestoreCore(DriverRecord record, bool prepareFirmware = true)
     {
-        PrepareControllerRestore(record);
+        if (prepareFirmware) PrepareControllerRestore(record);
         record.Stage = "restoring"; record.Error = null; Save(record);
         var inf = Path.Combine(RecordDirectory(record.InstanceId), record.BackupInf);
         if (Path.GetExtension(inf) != ".inf") inf = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "INF", record.OriginalInf);

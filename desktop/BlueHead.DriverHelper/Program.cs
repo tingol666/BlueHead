@@ -35,22 +35,22 @@ internal static class Program
                 var devices = Drivers.Enumerate();
                 Console.WriteLine(JsonSerializer.Serialize(new { passed = true, device_count = devices.Count, readonly_inventory = true, device_struct_size = System.Runtime.InteropServices.Marshal.SizeOf<DeviceNativeProbe>() })); return 0;
             }
-            if (args.Length == 2 && args[0] is "--install" or "--restore" or "--backup")
+            if (args.Length == 2 && args[0] is "--install" or "--restore" or "--backup" or "--initialize-original")
             {
                 var operation = args[0]; var instance = args[1];
                 // Wait without pumping a second arbitrary IPC command: this process performs one exact operation.
-                var task = operation == "--install" ? Drivers.InstallAsync(instance) : operation == "--restore" ? Drivers.RestoreAsync(instance) : Drivers.BackupAsync(instance);
+                var task = operation == "--install" ? Drivers.InstallAsync(instance) : operation == "--restore" ? Drivers.RestoreAsync(instance) : operation == "--initialize-original" ? Drivers.InitializeOriginalAsync(instance) : Drivers.BackupAsync(instance);
                 var record = task.GetAwaiter().GetResult(); Console.WriteLine(JsonSerializer.Serialize(record));
-                if (operation == "--restore" && record.RebootRequired)
+                if (operation is "--restore" or "--initialize-original" && record.RebootRequired)
                     System.Windows.Forms.MessageBox.Show("驱动恢复完成，请重启电脑。", "BlueHead · 系统蓝牙", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return 0;
             }
-            Console.Error.WriteLine("Usage: --list | --compatible INSTANCE | --backup INSTANCE | --install INSTANCE | --restore INSTANCE | --self-test"); return 2;
+            Console.Error.WriteLine("Usage: --list | --compatible INSTANCE | --backup INSTANCE | --install INSTANCE | --restore INSTANCE | --initialize-original INSTANCE | --self-test"); return 2;
         }
         catch (Exception error)
         {
             Console.Error.WriteLine(error.Message);
-            if (args.Any(arg => arg is "--install" or "--restore" or "--restore-all" or "--restore-all-elevate")) System.Windows.Forms.MessageBox.Show(error.Message, "BlueHead · 驱动操作未完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (args.Any(arg => arg is "--install" or "--restore" or "--initialize-original" or "--restore-all" or "--restore-all-elevate")) System.Windows.Forms.MessageBox.Show(error.Message, "BlueHead · 驱动操作未完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return 1;
         }
     }

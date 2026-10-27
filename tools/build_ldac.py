@@ -48,6 +48,18 @@ patch("libldacdec.c", 'calculatePrecisionMask( channel );', '''for (int q = 0; q
             calculatePrecisionMask( channel );''')
 patch("spectrum.c", 'int value = decode4DSpectrum[ReadInt( br, LDAC_4DIMSPECBITS )];', '''int value = decode4DSpectrum[ReadInt( br, LDAC_4DIMSPECBITS )];
                     LDAC_REQUIRE(value >= 0);''')
+patch("spectrum.c", 'const float stepSizeFine = QuantizerFineStepSize[this->precisions[band]];', '''/* Residual word length is independent of the saturated coarse precision.
+     * AOSP quant_residual_ldac quantizes with a_idwl2, not a_idwl1. */
+    const float stepSizeFine = QuantizerFineStepSize[this->precisionsFine[band]];''')
+patch("spectrum.c", 'if( this->scaleFactors[i] > 0 )', '''/* AOSP norm_spectrum_ldac writes a -0.75 placeholder for ID zero.
+         * It denotes an uncoded/zero spectral unit, not unity-scale audio.
+         * Clear this unit before IMDCT while retaining its valid overlap. */
+        if( this->scaleFactors[i] == 0 )
+        {
+            memset(spectra + startSubBand, 0,
+                   (endSubBand - startSubBand) * sizeof(*spectra));
+        }
+        else''')
 patch("huffCodes.c", 'br->Position += bits;', '''LDAC_REQUIRE(bits > 0);
     br->Position += bits;
     LDAC_REQUIRE(br->Position <= ldac_input_length * 8);''')

@@ -4,7 +4,7 @@
 
 BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free endpoint for Windows. Listen to a mobile device on your computer and send the computer's microphone back over Bluetooth. No shared Wi-Fi or mobile companion app is required.
 
-**2.1.3**：采用通用控制器兼容架构，按物理设备选择和独占适配器；统一能力检测、已验证固件获取、原厂包提取及原厂驱动引导。首页直接提示下一步，保留既有原生音频、双向语音、热切换和多设备功能。
+**2.1.4**：修复 LDAC 开始、暂停及静音段的微弱嗡声，并修正精细量化数据的还原精度。扩展各媒体／语音编码的静音、弱信号、重置及恢复检查，保留现有音质、缓冲、双向语音、热切换和多设备功能。
 
 安装版和绿色版不附带厂商固件镜像。需要时按提示获取匹配文件或从原厂驱动包导入；验证后持久缓存，之后可离线启动。
 
@@ -23,6 +23,18 @@ BlueHead is a free, open-source Bluetooth Classic audio receiver and hands-free 
 - 适配 iPhone/iPad 标准 AAC/SBC 媒体与 HFP 双向语音。
 - 通过 AVRCP 显示媒体信息、控制上一曲/播放/暂停/下一曲，以及同步标准设备音量。
 - 支持 HFP LC3-SWB 协商和 32 kHz 超宽带语音，保留 mSBC/CVSD 回退。
+
+## 音频实现的特点
+
+BlueHead 为持续收发重构了 C/C++ 音频核心。设计重点是减少软件造成的停顿、杂音和信号变化，同时保持桌面控制与协议层易于维护。
+
+- **实时音频在原生后台运行**：USB/HCI、媒体解包解码、SCO 双向收发、PCM 桥接、混音与 WASAPI I/O 都由 C/C++ 负责。已经建立的专用音频流不依赖 Python GIL 或界面刷新。
+- **一个适配器，一个 USB/HCI 所有者**：控制器初始化、传输与音频路由共用明确的物理所有权；解码工作线程、端点操作与控制消息分开，音频回调不做内存分配、设备打开或波形周期搜索。
+- **保留解码后的细节**：媒体保留协商采样率，96 kHz LDAC 到 96 kHz 输出无需中间降为 48 kHz。内部保留浮点 PCM，必要重采样与微小时钟匹配合并处理，减少重复转换和量化。
+- **连续性与音质一起验证**：每路使用独立时间线、自适应缓冲和有界缺口补偿，恢复窗口外保持解码样本；同率、正常增益的无缺口路径以逐样本相等检查。另用原生线程阻塞、抖动丢包、弱信号及频率参考验证边界。
+- **隔离故障，保留可用路由**：实验 LDAC 在子进程内解码；端点切换采用准备与提交，过期操作不能覆盖新设备。异常按类型恢复，输入输出可热切换，挂断后继续媒体。
+
+界面使用 C#/WPF；Python/Bumble 保留配对、服务发现、协议协商和应用控制。运行包不依赖 PyAV、NumPy 或 sounddevice。设计与可复现检查见 [音频核心](docs/AUDIO_CORE.md)、[保真契约](docs/AUDIO_FIDELITY.md) 和 [测试说明](docs/TESTING.md)。
 
 ## 运行环境与两种接收方式
 
@@ -78,7 +90,7 @@ AVRCP 的标准设备音量为 0%–100%，与本地 0%–200% 接收增益独�
 
 ## 技术栈与源码
 
-2.1.3 由独立 `BlueHead.Runtime.exe` 统一持有 USB/HCI、启动固件初始化、媒体解码、SCO 双向收发、PCM 桥接、混音、重采样和 WASAPI 音频流。已经建立的专用接收音频在 C/C++ 中持续运行，PCM 不经过 Python 或界面。Python 3.13 保留 Bumble 的配对、SDP、AVDTP/AVRCP、HFP 协商和应用控制；新连接、重新协商及部分控制操作仍需要它运行。固件下载在独立进程中完成，不持有 USB/HCI，也不进入实时音频路径。
+独立 `BlueHead.Runtime.exe` 统一持有 USB/HCI、固件初始化和音频图；WPF 与 Python 控制层通过私有接口发出会话和路由请求。新连接、重新协商及部分控制操作仍需要 Python/Bumble 运行。固件下载在独立进程中完成，不持有 USB/HCI，也不进入实时音频路径。
 
 运行时不再依赖 PyAV、NumPy 或 sounddevice。原生组件包括音频专用 FFmpeg、单次异步采样率转换、兼容 SpeexDSP、miniaudio、liblc3，以及可独立替换的 SpanDSP PLC 动态库。界面仍为 C#/WPF，不裁剪 WPF/COM。
 
@@ -108,6 +120,6 @@ licenses/    第三方许可证
 
 GitHub 源码只保留实现、测试、构建工具、使用说明、必要资源和固定依赖／许可证。
 BlueHead 自有 EXE/DLL、FFmpeg 编译产物、测试编码器、完整安装包及本机日志／设置不进入源码树；
-从干净检出运行 `tools/build_all_native.py` 可构建原生组件。保留的外部二进制为固定版本 libusb 和未修改的 Intel 启动固件，均有来源、许可证与 SHA-256 记录。
+从干净检出运行 `tools/build_all_native.py` 可构建原生组件。保留的外部二进制为固定版本 libusb，附来源、许可证与 SHA-256 记录；厂商固件按需验证获取，源码与基础包均不附带镜像。
 安装包、绿色版、源码归档和校验值单独通过 Releases 提供。开发与发布步骤见 [构建说明](docs/BUILDING.md)，
 组件边界见 [架构说明](docs/ARCHITECTURE.md)，音频恢复规则见 [恢复设计](docs/RECOVERY.md)。

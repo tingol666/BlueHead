@@ -15,7 +15,10 @@ for codec in ("sbc", "aac", "aptx", "aptx_hd", "ldac"):
     if codec == "ldac":
         encoder = LdacEncoder(48000, 1)
         try:
-            packets = [rtp(packet, sequence) for sequence, packet in enumerate(encoder.encode(pcm))]
+            packets, position = [], 0
+            for sequence, packet in enumerate(encoder.encode(pcm)):
+                packets.append(rtp(packet, sequence, position))
+                position += (packet[0] & 31) * 128
         finally:
             encoder.close()
     else:
@@ -27,4 +30,4 @@ for codec in ("sbc", "aac", "aptx", "aptx_hd", "ldac"):
     "scope": "Deterministic generated sine tones; no recorded or copyrighted audio",
     "generator": "tools/generate_audio_vectors.py with tests/vectors.py",
     "vectors": records,
-}, separators=(",", ":")) + "\n", "utf-8")
+}, separators=(",", ":")) + "\n", "utf-8", newline="\n")

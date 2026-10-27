@@ -159,7 +159,9 @@ static void dequantizeQuantUnit( channel_t* this, int band )
     const int subBandIndex = ga_isp_ldac[band];
     const int subBandCount = ga_nsps_ldac[band];
     const float stepSize = QuantizerStepSize[this->precisions[band]];
-    const float stepSizeFine = QuantizerFineStepSize[this->precisions[band]];
+    /* Residual word length is independent of the saturated coarse precision.
+     * AOSP quant_residual_ldac quantizes with a_idwl2, not a_idwl1. */
+    const float stepSizeFine = QuantizerFineStepSize[this->precisionsFine[band]];
 
     for( int sb=0; sb<subBandCount; ++sb )
     {
@@ -205,7 +207,15 @@ void scaleSpectrum(channel_t* this)
 	{
         const int startSubBand = ga_isp_ldac[i];
         const int endSubBand   = ga_isp_ldac[i+1];
-        if( this->scaleFactors[i] > 0 )
+        /* AOSP norm_spectrum_ldac writes a -0.75 placeholder for ID zero.
+         * It denotes an uncoded/zero spectral unit, not unity-scale audio.
+         * Clear this unit before IMDCT while retaining its valid overlap. */
+        if( this->scaleFactors[i] == 0 )
+        {
+            memset(spectra + startSubBand, 0,
+                   (endSubBand - startSubBand) * sizeof(*spectra));
+        }
+        else
         {
 	       for (int sb = startSubBand; sb < endSubBand; sb++)
 		   {

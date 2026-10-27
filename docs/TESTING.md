@@ -16,11 +16,14 @@
     .venv/Scripts/python.exe tools/build_all_native.py
     .venv/Scripts/python.exe -m pytest tests -q --tb=short --basetemp=work/test-run
     .venv/Scripts/python.exe -m ruff check bluehead tools tests launch.py engine_launch.py
+    .venv/Scripts/python.exe tools/codec_signal_audit.py --report work/codec-signals.json
     dotnet build desktop/BlueHead.FrameworkChecks/BlueHead.FrameworkChecks.csproj -c Release
     desktop/BlueHead.FrameworkChecks/bin/Release/net48/BlueHead.FrameworkChecks.exe work/framework-checks
     desktop/BlueHead.Desktop/bin/Release/net48/BlueHead.exe --self-test work/ui-checks
 
 为并行测试选择不同的 basetemp，避免复用被其他进程占用的临时目录。提交前运行 tools/audit_sources.py，核对 Git 索引与源码白名单。发布包另运行 tools/audit_package.py；不能用源码精简来省略运行依赖。
+
+编码边界检查使用固定 AOSP LDAC 编码器、独立 FFmpeg 解码参考和实际原生媒体／语音 DLL，覆盖数字静音、音乐尾部、空声道、弱信号、精细量化、重置及丢包恢复。`codec_signal_audit.py` 只保存数值与 DLL 摘要；静音 RMS 为零时 `rms_dbfs` 用 JSON null 表示负无穷。可通过 `--baseline-ldac` 显式指定旧开发 DLL 做对照，无需将旧二进制加入源码或运行包。模拟 CVSD 仅覆盖控制器交出的 PCM 边界，不能代替无线控制器内的 CVSD 实现检查。
 
 | 范围 | 主要验证 |
 | --- | --- |

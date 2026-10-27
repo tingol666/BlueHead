@@ -67,8 +67,8 @@ $env:DOTNET_CLI_HOME = Join-Path $PWD 'work/dotnet-home'
 $env:NUGET_PACKAGES = Join-Path $PWD 'work/nuget'
 dotnet restore desktop/BlueHead.Desktop/BlueHead.Desktop.csproj --locked-mode
 dotnet restore desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj --locked-mode
-dotnet publish desktop/BlueHead.Desktop/BlueHead.Desktop.csproj -c Release --no-restore -o work/publish-desktop-213
-dotnet publish desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj -c Release --no-restore -o work/publish-helper-213
+dotnet publish desktop/BlueHead.Desktop/BlueHead.Desktop.csproj -c Release --no-restore -o work/publish-desktop
+dotnet publish desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj -c Release --no-restore -o work/publish-helper
 ```
 
 不能传`--self-contained`、现代.NET运行时RID或trimming参数。所有项目固定x64/Prefer32Bit=false；保留生成的exe.config、所需NuGet依赖及native DLL。官方net48 reference assemblies仅用于编译，不进入运行包。WPF/WinForms/COM使用目标Windows自带的Framework，不通过手工删DLL瘦身。
@@ -80,14 +80,14 @@ dotnet publish desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj -c Rel
 ```powershell
 .venv\Scripts\python.exe -m pytest tests -q --tb=short
 .venv\Scripts\python.exe -m ruff check bluehead tools tests launch.py engine_launch.py
-.venv\Scripts\python.exe tools/build_release.py --output ..\releases\2.1.3
+.venv\Scripts\python.exe tools/build_release.py --output ..\releases\2.1.4
 ```
 
 构建输出需使用新目录，不能覆盖运行中的日常程序。原生时钟长测、频率/幅度门槛和逐用例JSON的复现命令见[AUDIO_CORE.md](AUDIO_CORE.md)；它们使用虚拟时间及真实DLL，不打开声卡或蓝牙。依赖清点、离线后台自检、微基准与需使用者安排的硬件探针，其运行范围见[DIAGNOSTICS.md](DIAGNOSTICS.md)。完整验收矩阵见[TESTING.md](TESTING.md)。
 
 ### 必须先写同版本VALIDATION
 
-`build_release.py`生成程序目录后、运行`finalize_release.py`前，必须在同版本发布目录创建`VALIDATION.md`，本例为`..\releases\2.1.3\VALIDATION.md`。它必须记录此次实际执行的结果，不能复制历史通过数量，也不能把待做的实机检查写成通过：
+`build_release.py`生成程序目录后、运行`finalize_release.py`前，必须在同版本发布目录创建`VALIDATION.md`，本例为`..\releases\2.1.4\VALIDATION.md`。它必须记录此次实际执行的结果，不能复制历史通过数量，也不能把待做的实机检查写成通过：
 
 - 发布版本、源码修订/工作区状态、构建时间、目标系统和实际工具链版本。
 - 完整回归、Ruff、Framework兼容层、纯UI、独立helper只读检查，以及冻结后台离线检查的命令、结果和报告位置；未运行项明确标注。
@@ -97,7 +97,7 @@ dotnet publish desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj -c Rel
 对完整包运行适用的离线检查，确认验证记录与该包一致，再执行最终归档：
 
 ```powershell
-.venv\Scripts\python.exe tools/finalize_release.py ..\releases\2.1.3 --nsis 'C:\Program Files (x86)\NSIS\makensis.exe'
+.venv\Scripts\python.exe tools/finalize_release.py ..\releases\2.1.4 --nsis 'C:\Program Files (x86)\NSIS\makensis.exe'
 ```
 
 最终打包生成安装EXE、Portable ZIP、Source ZIP、`SHA256SUMS.txt`与验证说明；`finalize_release.py`检查`VALIDATION.md`存在，并把它放进绿色版。更改程序或验证记录后须重新归档，保持内外记录及摘要一致。存在记录本身不表示其中所有场景都已实测，最终大小、校验和和检查数量以对应产物和报告为准。

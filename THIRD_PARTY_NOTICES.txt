@@ -46,7 +46,8 @@ vendor/pipewire-rate-control.
 
 libldacdec: MIT. https://github.com/hegdi/libldacdec
 Pinned commit 7f3bd6cc1586b764b02f2e4f20b16c7ff18758b9. Modified bounded,
-stereo-only float bridge and original license are in vendor/libldacdec. Decoder
+stereo-only float bridge, zero-scale sentinel and residual-precision corrections,
+and original license are in vendor/libldacdec. Decoder
 is experimental, opt-in, isolated in a child process, and not Sony certified.
 
 AOSP libldac encoder: Apache-2.0; development fixture generation only.

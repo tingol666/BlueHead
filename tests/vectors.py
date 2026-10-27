@@ -50,13 +50,19 @@ def wire_packets(codec, packets, rate=48000):
     timestamp = 0
     for sequence, p in enumerate(packets):
         if codec == "aac":
+            duration = 1024
             p = bytes(AacAudioRtpPacket.for_simple_aac(rate, 2, p))
         elif codec == "sbc":
+            duration = 128
             p = b"\x01" + p
         elif codec == "ldac":
             raise ValueError("use LDAC packet groups directly")
+        else:
+            # One aptX codeword covers four samples, but one RTP packet can
+            # contain many codewords. Advance by the whole packet duration.
+            duration = len(p) // (6 if codec == "aptx_hd" else 4) * 4
         yield p if codec == "aptx" else rtp(p, sequence, timestamp)
-        timestamp += 1024 if codec == "aac" else 128 if codec == "sbc" else 4
+        timestamp += duration
 
 
 def quality(reference, decoded):

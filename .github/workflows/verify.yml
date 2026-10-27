@@ -51,6 +51,10 @@ jobs:
       - name: Built-in desktop diagnostics
         shell: pwsh
         run: |
+          # Hosted runners have virtual displays. Use WPF's documented software
+          # rasterizer for deterministic snapshots; this affects only this VM.
+          New-Item -Path 'HKCU:\SOFTWARE\Microsoft\Avalon.Graphics' -Force | Out-Null
+          New-ItemProperty -Path 'HKCU:\SOFTWARE\Microsoft\Avalon.Graphics' -Name DisableHWAcceleration -Value 1 -PropertyType DWord -Force | Out-Null
           $taskUi = Start-Process -FilePath desktop/BlueHead.Desktop/bin/Release/net48/BlueHead.exe -ArgumentList '--self-test', ui-checks -WindowStyle Hidden -PassThru -RedirectStandardOutput ui-stdout.txt -RedirectStandardError ui-stderr.txt
           if (-not $taskUi.WaitForExit(120000)) {
             $taskUi.Kill($true)

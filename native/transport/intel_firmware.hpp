@@ -3,6 +3,7 @@
  * see docs/INTEL_FIRMWARE.md. No firmware is modified or written to flash. */
 #pragma once
 #include "runtime_common.hpp"
+#include "bootstrap_contract.hpp"
 #include <bcrypt.h>
 #include <functional>
 
@@ -176,7 +177,7 @@ struct IntelImage {
 
 // All methods run on the existing USB event owner. Commands/credits here are
 // private to bootstrap; they are never mixed with Bumble's operational ledger.
-class IntelFirmware {
+class IntelFirmware final : public ControllerBootstrap {
   std::function<void(uint16_t, const std::vector<uint8_t> &, bool)> write;
   std::function<void()> pump;
   std::function<void(const char *, unsigned)> progress;
@@ -212,13 +213,14 @@ class IntelFirmware {
   }
 
 public:
-  bool bulk_events = true;
   static bool supported(uint16_t vid, uint16_t pid) {
     return vid == 0x8087 && (pid == 0x0032 || pid == 0x0033 || pid == 0x0036);
   }
   IntelFirmware(decltype(write) w, decltype(pump) p, decltype(progress) report)
-      : write(std::move(w)), pump(std::move(p)), progress(std::move(report)) {}
-  void event(const uint8_t *p, uint32_t n) {
+      : ControllerBootstrap(true), write(std::move(w)), pump(std::move(p)),
+        progress(std::move(report)) {}
+  const char *name() const override { return "intel"; }
+  void event(const uint8_t *p, uint32_t n) override {
     if (n < 2 || p[1] != n - 2) {
       event_error = "Intel firmware: malformed HCI event";
       return;
@@ -251,7 +253,7 @@ public:
     } else if (p[0] == 0x10)
       event_error = "Intel firmware: controller hardware error";
   }
-  void run(const fs::path &assets) {
+  void run(const fs::path &assets) override {
     deadline = seconds() + 60;
     progress("probing", 0);
     auto reset = command(0x0c03);

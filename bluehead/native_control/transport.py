@@ -1,7 +1,7 @@
 """Bumble signalling adapter. Physical USB remains in the native runtime."""
 import asyncio
 import contextlib
-import re
+from ..controller import transport_target
 
 class _Source:
     def __init__(self, client):
@@ -79,11 +79,8 @@ class _Sink:
 
 class NativeTransport:
     def __init__(self, client, spec):
-        match = re.fullmatch(r"usb:([0-9a-fA-F]{4}):([0-9a-fA-F]{4})#(\d{1,2})(?:\+sco=0)?", spec)
-        if not match:
-            raise ValueError("原生接收需要有效的 USB 适配器")
         self.client = client
-        self.client.request("usb_open", vid=int(match[1], 16), pid=int(match[2], 16), index=int(match[3]))
+        self.client.request("usb_open", **transport_target(spec))
         self.source, self.sink = _Source(client), _Sink(client)
 
     async def __aenter__(self):
@@ -94,11 +91,11 @@ class NativeTransport:
         previous = None
         messages = {
             'opening': '正在打开蓝牙适配器…',
-            'probing': '正在检查 Intel 蓝牙固件…',
-            'validating': '正在校验 Intel 蓝牙启动固件…',
-            'downloading': '正在加载 Intel 蓝牙启动固件…',
-            'booting': '正在启动 Intel 蓝牙固件…',
-            'configuring': '正在应用 Intel 蓝牙配置…',
+            'probing': '正在检查蓝牙控制器…',
+            'validating': '正在校验蓝牙启动固件…',
+            'downloading': '正在加载蓝牙启动固件…',
+            'booting': '正在启动蓝牙控制器…',
+            'configuring': '正在应用蓝牙配置…',
         }
         while not self.source.ready.is_set():
             state = self.source.startup.get('firmware_state', 'opening')

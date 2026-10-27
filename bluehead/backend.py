@@ -702,7 +702,7 @@ class Receiver:
             self.native = NativeReceiver(self.emit)
             await self.native.run(self.stop_event)
             return
-        if not self.settings.transport.startswith("usb:"):
+        if not self.settings.transport.startswith(("usb:", "usb-id:")):
             raise ValueError("请选择一个 USB 蓝牙适配器；程序不会自动更改驱动")
         transport_spec = self.settings.transport
         if self.settings.calls and "+sco=" not in transport_spec:
@@ -877,6 +877,9 @@ class Receiver:
 
 def usb_adapters():
     """Enumerate HCI descriptors. No driver replacement, reset, or interface claim."""
+    from .native_control import current
+    if (client := current()) is not None:
+        return client.request('usb_inventory')
     import usb1
     load_libusb()
     result, counts = [], {}
@@ -894,7 +897,7 @@ def usb_adapters():
                 identity = f"{device.getVendorID():04X}:{device.getProductID():04X}"
                 index = counts.get(identity, 0)
                 counts[identity] = index + 1
-                product_name = {"8087:0033": "Intel AX211"}.get(identity, "USB 蓝牙")
+                product_name = "USB 蓝牙"
                 result.append({"transport": f"usb:{identity}#{index}", "name": f"{product_name} {identity} · 设备 {index + 1}"})
             except usb1.USBError:
                 continue

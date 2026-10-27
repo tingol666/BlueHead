@@ -14,7 +14,8 @@ inline std::wstring pipe_name() {
 struct Arguments {
   fs::path assets, data, source;
   std::wstring rpc;
-  bool engine = false, offline = false, prepare_intel = false;
+  bool engine = false, offline = false, prepare_controller = false;
+  std::string adapter_id;
   DWORD parent = 0;
   HANDLE mapping = nullptr, request = nullptr, done = nullptr;
   explicit Arguments(int count, wchar_t **values) {
@@ -32,8 +33,10 @@ struct Arguments {
         engine = true;
       else if (key == L"--offline-test")
         offline = true;
-      else if (key == L"--prepare-intel")
-        prepare_intel = true;
+      else if (key == L"--prepare-controller")
+        prepare_controller = true;
+      else if (key == L"--adapter-id")
+        adapter_id = utf8(value());
       else if (key == L"--data-dir")
         data = value();
       else if (key == L"--source-root")

@@ -5,7 +5,7 @@ import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ROOT / 'native'
-INCLUDE_DIRS = tuple(NATIVE / part for part in ('include', 'audio', 'runtime', 'transport'))
+INCLUDE_DIRS = tuple(NATIVE / part for part in ('include', 'audio', 'runtime', 'transport', 'controller', 'firmware'))
 
 
 def includes(*extra):
@@ -15,7 +15,7 @@ def includes(*extra):
 def compiler(cxx=False):
     name = 'g++' if cxx else 'gcc'
     configured = os.environ.get('CXX' if cxx else 'CC')
-    candidates = (configured, shutil.which(name), f'D:/Code/MSYS2/ucrt64/bin/{name}.exe')
+    candidates = (configured, shutil.which(name))
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
             return str(Path(candidate).resolve())

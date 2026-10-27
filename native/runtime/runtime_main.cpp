@@ -45,7 +45,7 @@ int wmain(int count, wchar_t **values) {
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     AddDllDirectory(args.assets.c_str());
     AddDllDirectory(args.assets.parent_path().parent_path().c_str());
-    if (args.prepare_intel) {
+    if (args.prepare_controller) {
       bh::require(!args.offline && !args.engine && args.rpc.empty() && !args.mapping,
                   "Driver firmware preparation is unavailable in offline/RPC/engine modes");
       auto parent = driver_parent(args.parent);
@@ -53,7 +53,8 @@ int wmain(int count, wchar_t **values) {
       // This recovery-only command refuses ambiguous physical devices. It
       // releases every transfer and HCI lease BEFORE a driver can be rebound.
       bh::Usb usb(args.assets, target, true);
-      usb.start(0x8087, 0x0033, 0);
+      bh::require(bh::valid_adapter_id(args.adapter_id), "Driver firmware preparation requires a physical adapter identity");
+      usb.start_id(args.adapter_id);
       auto deadline = bh::seconds() + 65;
       while (usb.startup()["starting"] == true) {
         bh::require(WaitForSingleObject(parent, 0) != WAIT_OBJECT_0,
@@ -63,7 +64,9 @@ int wmain(int count, wchar_t **values) {
       }
       auto status = usb.startup();
       if (!usb.active())
-        throw std::runtime_error(status.value("error", "Intel firmware initialization failed"));
+        throw std::runtime_error(status.value("error", "Controller initialization failed"));
+      bh::require(status["firmware_state"] == "loaded" || status["firmware_state"] == "already_loaded",
+                  "Controller native preparation is unavailable; use original-driver initialization");
       usb.close();
       std::cout << status.dump() << '\n';
       return 0;

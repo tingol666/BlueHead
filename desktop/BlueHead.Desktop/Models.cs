@@ -127,7 +127,13 @@ public sealed class DeviceCard : INotifyPropertyChanged
     private void Changed([CallerMemberName] string? property = null) => PropertyChanged?.Invoke(this, new(property));
 }
 public record AudioChoice(int? Index, string Name, string? EndpointId = null) { public override string ToString() => Name; }
-public record AdapterChoice(string Transport, string Name) { public override string ToString() => Name; }
+public record AdapterChoice(string Transport, string Name)
+{
+    public int Vid { get; init; }
+    public int Pid { get; init; }
+    public bool VoiceTransport { get; init; }
+    public override string ToString() => Name;
+}
 public sealed class DesktopState
 {
     public ObservableCollection<DeviceCard> Devices { get; } = [];

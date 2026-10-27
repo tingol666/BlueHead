@@ -8,16 +8,10 @@ namespace BlueHead.Platform;
 
 public static partial class Drivers
 {
-    private static readonly string IntelAx211 = @"USB\VID_8087&PID_0033\";
-    private static bool IsIntelAx211(DriverDevice device) => device.InstanceId.StartsWith(IntelAx211, StringComparison.OrdinalIgnoreCase);
-
-    private static void PrepareIntelRestore(DriverRecord record)
+    private static void PrepareControllerRestore(DriverRecord record)
     {
         var device = Enumerate().Single(item => item.InstanceId.Equals(record.InstanceId, StringComparison.OrdinalIgnoreCase));
-        if (!device.Service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase) || !IsIntelAx211(device)) return;
-        // SetupAPI and libusb index orders are not interchangeable. Prepare
-        // only a unique AX211; its native owner independently verifies this.
-        if (Enumerate().Count(IsIntelAx211) != 1) return;
+        if (!device.Service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase)) return;
         record.Stage = "initializing_before_restore"; Save(record);
         var executable = Path.Combine(AppContext.BaseDirectory, "engine", "BlueHead.Runtime.exe");
         try
@@ -25,7 +19,8 @@ public static partial class Drivers
             if (!File.Exists(executable)) throw new IOException("启动固件工具缺失");
             var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
-            start.AddArgument("--prepare-intel");
+            start.AddArgument("--prepare-controller");
+            start.AddArgument("--adapter-id"); start.AddArgument(device.AdapterId);
             start.AddArgument("--parent-pid"); start.AddArgument(Process.GetCurrentProcess().Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
             using var process = Process.Start(start) ?? throw new IOException("无法启动固件初始化工具");
             ProcessTree owned;

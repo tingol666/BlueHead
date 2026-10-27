@@ -29,6 +29,11 @@ internal static class DeviceNative
     }
     [StructLayout(LayoutKind.Sequential)] internal struct PropertyChange
     { public uint HeaderSize, Function, State, Scope, HardwareProfile; }
+    [StructLayout(LayoutKind.Sequential)] internal struct DriverInstallParameters
+    { public uint Size, Rank, Flags; public UIntPtr PrivateData; public uint Reserved; }
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetupDiGetDriverInstallParams(IntPtr set, ref DeviceInfo device, ref DriverInfo driver, ref DriverInstallParameters parameters);
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetupDiGetINFClass(string path, out Guid guid, StringBuilder name, int length, out int required);
+    internal static bool IsBluetoothInf(string path) => SetupDiGetINFClass(path, out var guid, new StringBuilder(256), 256, out _) && guid == new Guid("e0cbf06c-cd8b-4647-bb8a-263b43f0f974");
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] internal struct InstallParameters
     {
         public uint Size, Flags, FlagsEx;
@@ -48,6 +53,21 @@ internal static class DeviceNative
     [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern bool SetupCopyOEMInf(string source, string? sourcePath, uint media, uint style, StringBuilder destination, int length, out int required, IntPtr component);
     [DllImport("newdev.dll", SetLastError = true)] internal static extern bool DiInstallDevice(IntPtr window, IntPtr set, ref DeviceInfo device, ref DriverInfo driver, uint flags, out bool reboot);
     [DllImport("cfgmgr32.dll")] internal static extern uint CM_Get_DevNode_Status(out uint status, out uint problem, uint instance, uint flags);
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)] private static extern uint CM_Get_Device_ID(uint instance, StringBuilder id, int length, uint flags);
+    [DllImport("cfgmgr32.dll")] private static extern uint CM_Get_Parent(out uint parent, uint instance, uint flags);
+    internal static string PhysicalInstance(uint node)
+    {
+        for (var depth = 0; depth < 8; depth++)
+        {
+            var id = new StringBuilder(1024);
+            if (CM_Get_Device_ID(node, id, id.Capacity, 0) != 0) break;
+            var value = id.ToString().ToUpperInvariant();
+            if (value.StartsWith(@"USB\VID_", StringComparison.Ordinal) && !value.Contains("&MI_")) return value;
+            if (CM_Get_Parent(out var parent, node, 0) != 0) break;
+            node = parent;
+        }
+        return "";
+    }
     [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetupDiSetClassInstallParams(IntPtr set, ref DeviceInfo device, ref PropertyChange parameters, int size);
     [DllImport("setupapi.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetupDiCallClassInstaller(uint function, IntPtr set, ref DeviceInfo device);
     [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetupDiGetDeviceInstallParams(IntPtr set, ref DeviceInfo device, ref InstallParameters parameters);

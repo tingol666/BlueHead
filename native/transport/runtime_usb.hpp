@@ -4,7 +4,8 @@
 #include "runtime_common.hpp"
 #include "runtime_hci_events.hpp"
 #include "hci_dispatch.hpp"
-#include "intel_firmware.hpp"
+#include "bootstrap_registry.hpp"
+#include "controller_identity.hpp"
 #include <bcrypt.h>
 #include <functional>
 #include <libusb.h>
@@ -17,6 +18,7 @@ namespace bh {
   X(libusb_get_device_list) \
   X(libusb_free_device_list) \
   X(libusb_get_device_descriptor) \
+  X(libusb_get_session_data) \
   X(libusb_open) \
   X(libusb_close) \
   X(libusb_get_active_config_descriptor) \
@@ -47,6 +49,71 @@ struct UsbApi {
     require(v->major == 1 && v->minor == 0 && v->micro == 30, "Verified libusb 1.0.30 is required");
   }
 };
+struct UsbDevices {
+  UsbApi &api;
+  libusb_device **items = nullptr;
+  ssize_t count;
+  UsbDevices(UsbApi &a, libusb_context *context)
+      : api(a), count(a.libusb_get_device_list(context, &items)) {
+    require(count >= 0, "USB enumeration failed");
+  }
+  ~UsbDevices() {
+    if (items)
+      api.libusb_free_device_list(items, 1);
+  }
+};
+inline json controller_inventory(const fs::path &assets) {
+  UsbApi api(assets);
+  libusb_context *context = nullptr;
+  require(api.libusb_init(&context) == 0, "USB inventory unavailable");
+  json result = json::array();
+  try {
+    UsbDevices devices(api, context);
+    for (ssize_t i = 0; i < devices.count; ++i) {
+      libusb_device_descriptor d{};
+      if (api.libusb_get_device_descriptor(devices.items[i], &d) != 0)
+        continue;
+      libusb_config_descriptor *config = nullptr;
+      if (api.libusb_get_config_descriptor(devices.items[i], 0, &config) != 0 || !config)
+        continue;
+      bool hci = false, voice = false;
+      for (int n = 0; n < config->bNumInterfaces; ++n)
+        for (int a = 0; a < config->interface[n].num_altsetting; ++a) {
+          const auto &s = config->interface[n].altsetting[a];
+          hci |=
+              s.bInterfaceClass == 0xe0 && s.bInterfaceSubClass == 1 && s.bInterfaceProtocol == 1;
+          bool in = false, out = false;
+          for (int e = 0; e < s.bNumEndpoints; ++e)
+            if ((s.endpoint[e].bmAttributes & 3) == LIBUSB_TRANSFER_TYPE_ISOCHRONOUS) {
+              in |= (s.endpoint[e].bEndpointAddress & 0x80) != 0;
+              out |= (s.endpoint[e].bEndpointAddress & 0x80) == 0;
+            }
+          voice |= in && out;
+        }
+      api.libusb_free_config_descriptor(config);
+      if (!hci)
+        continue;
+      auto instance = windows_instance(api.libusb_get_session_data(devices.items[i]));
+      if (instance.empty())
+        continue;
+      auto id = physical_id(instance);
+      char label[64];
+      std::snprintf(label, sizeof(label), "USB Bluetooth %04X:%04X", d.idVendor, d.idProduct);
+      result.push_back({{"transport", "usb-id:" + id},
+                        {"adapter_id", id},
+                        {"name", label},
+                        {"vid", d.idVendor},
+                        {"pid", d.idProduct},
+                        {"revision", d.bcdDevice},
+                        {"voice_transport", voice}});
+    }
+  } catch (...) {
+    api.libusb_exit(context);
+    throw;
+  }
+  api.libusb_exit(context);
+  return result;
+}
 class Usb {
   struct Setting {
     int interface = -1, alt = 0;
@@ -94,12 +161,15 @@ class Usb {
   std::atomic<bool> stopping{false}, alive{false};
   Handle ready{CreateEventW(nullptr, TRUE, FALSE, nullptr)},
       done{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
-  Handle local_lease, global_lease;
+  Handle local_lease, global_lease, legacy_local_lease, legacy_global_lease;
+  std::string requested_id, selected_instance, selected_id;
+  ControllerCapabilities capabilities;
+  std::function<std::string(unsigned long)> resolve_instance = windows_instance;
   std::string init_error;
   mutable std::mutex init_mutex;
   std::string firmware_state = "opening";
   unsigned firmware_progress = 0;
-  std::unique_ptr<IntelFirmware> bootstrap;
+  std::unique_ptr<ControllerBootstrap> bootstrap;
   std::atomic<bool> initializing{false};
   uint64_t sco_completed = 0;
   uint64_t tx_next = 0;
@@ -146,10 +216,23 @@ class Usb {
               "A Bluetooth driver operation is in progress; wait for it to complete");
     };
     check_driver_operation();
-    auto suffix = lease_suffix(vid, pid, index);
+    auto suffix = selected_id.empty() ? lease_suffix(vid, pid, index) : wide(selected_id);
     for (auto *item : {&local_lease, &global_lease}) {
+      auto name = (item == &local_lease ? L"Local\\BlueHead-Controller-"
+                                        : L"Global\\BlueHead-Controller-") +
+                  suffix;
+      SetLastError(0);
+      item->reset(CreateMutexW(nullptr, FALSE, name.c_str()));
+      DWORD error = GetLastError();
+      require(static_cast<bool>(*item) && error != ERROR_ALREADY_EXISTS,
+              "Bluetooth adapter already has an HCI owner");
+    }
+    // During migration, also exclude a previous release using an ordinal lease.
+    auto legacy = lease_suffix(vid, pid, index);
+    for (auto *item : {&legacy_local_lease, &legacy_global_lease}) {
       auto name =
-          (item == &local_lease ? L"Local\\BlueHead-HCI-" : L"Global\\BlueHead-HCI-") + suffix;
+          (item == &legacy_local_lease ? L"Local\\BlueHead-HCI-" : L"Global\\BlueHead-HCI-") +
+          legacy;
       SetLastError(0);
       item->reset(CreateMutexW(nullptr, FALSE, name.c_str()));
       DWORD error = GetLastError();
@@ -159,40 +242,47 @@ class Usb {
     check_driver_operation();
   }
   void inspect() {
-    libusb_device **list = nullptr;
-    auto count = api.libusb_get_device_list(context, &list);
-    check(static_cast<int>(std::min<ssize_t>(count, 0)), "USB enumeration failed");
-    unsigned selected = 0;
+    UsbDevices devices(api, context);
+    auto list = devices.items;
+    auto count = devices.count;
+    unsigned selected = 0, matches = 0;
     libusb_device *chosen = nullptr;
     libusb_device_descriptor descriptor{};
     for (ssize_t i = 0; i < count; i++) {
       libusb_device_descriptor d{};
-      if (api.libusb_get_device_descriptor(list[i], &d) == 0 && d.idVendor == vid &&
-          d.idProduct == pid) {
-        if (selected++ == index) {
+      if (api.libusb_get_device_descriptor(list[i], &d) == 0) {
+        auto instance = resolve_instance(api.libusb_get_session_data(list[i]));
+        bool same = requested_id.empty()
+                        ? d.idVendor == vid && d.idProduct == pid
+                        : !instance.empty() && physical_id(instance) == requested_id;
+        if (!same)
+          continue;
+        ++matches;
+        if (!chosen && (requested_id.empty() ? selected++ == index : true)) {
           chosen = list[i];
           descriptor = d;
-          break;
+          selected_instance = instance;
         }
       }
     }
     if (!chosen) {
-      api.libusb_free_device_list(list, 1);
       throw std::runtime_error("Selected USB Bluetooth adapter is unavailable");
     }
-    if (driver_prepare) {
-      unsigned matches = 0;
-      for (ssize_t i = 0; i < count; i++) {
-        libusb_device_descriptor d{};
-        if (api.libusb_get_device_descriptor(list[i], &d) == 0 && d.idVendor == vid &&
-            d.idProduct == pid)
-          matches++;
-      }
-      if (matches != 1) {
-        api.libusb_free_device_list(list, 1);
-        throw std::runtime_error("Intel firmware: ambiguous physical adapter; refusing to guess");
-      }
+    if (matches != 1) {
+      throw std::runtime_error(
+          "Controller identity: ambiguous physical adapter; select the device again");
     }
+    vid = descriptor.idVendor;
+    pid = descriptor.idProduct;
+    selected_id = selected_instance.empty() ? "" : physical_id(selected_instance);
+    index = 0;
+    for (ssize_t i = 0; i < count && list[i] != chosen; ++i) {
+      libusb_device_descriptor d{};
+      if (api.libusb_get_device_descriptor(list[i], &d) == 0 && d.idVendor == vid &&
+          d.idProduct == pid)
+        ++index;
+    }
+    acquire_lease();
     int result = api.libusb_open(chosen, &device);
     libusb_config_descriptor *config = nullptr;
     if (result == 0) {
@@ -200,7 +290,6 @@ class Usb {
       if (result < 0)
         result = api.libusb_get_config_descriptor(chosen, 0, &config);
     }
-    api.libusb_free_device_list(list, 1);
     check(result, device ? "USB configuration unavailable" : "Cannot open WinUSB adapter");
     require(config, "USB configuration unavailable");
     for (int i = 0; i < config->bNumInterfaces; i++)
@@ -247,6 +336,11 @@ class Usb {
       }
     api.libusb_free_config_descriptor(config);
     require(acl.interface >= 0, "No Bluetooth HCI USB interface");
+    {
+      std::lock_guard<std::mutex> lock(init_mutex);
+      capabilities.media_transport = true;
+      capabilities.voice_transport = sco_interface >= 0;
+    }
     check(api.libusb_claim_interface(device, acl.interface), "Cannot claim HCI USB interface");
     acl_claimed = true;
     if (sco_interface >= 0) {
@@ -634,17 +728,23 @@ class Usb {
     check(last_submit_error, "Cannot submit Intel firmware command");
   }
   void initialize_firmware() {
-    if (!IntelFirmware::supported(vid, pid))
-      return;
     bootstrap =
-        std::make_unique<IntelFirmware>([this](uint16_t op, const std::vector<uint8_t> &data,
-                                               bool bulk) { bootstrap_write(op, data, bulk); },
-                                        [this] { bootstrap_pump(); },
-                                        [this](const char *state, unsigned progress) {
-                                          std::lock_guard<std::mutex> lock(init_mutex);
-                                          firmware_state = state;
-                                          firmware_progress = progress;
-                                        });
+        controller_bootstrap(vid, pid,
+                             BootstrapIO{[this](uint16_t op, const std::vector<uint8_t> &data,
+                                                bool bulk) { bootstrap_write(op, data, bulk); },
+                                         [this] { bootstrap_pump(); },
+                                         [this](const char *state, unsigned progress) {
+                                           std::lock_guard<std::mutex> lock(init_mutex);
+                                           firmware_state = state;
+                                           firmware_progress = progress;
+                                           capabilities.firmware = state;
+                                         }});
+    if (!bootstrap)
+      return;
+    {
+      std::lock_guard<std::mutex> lock(init_mutex);
+      capabilities.backend = bootstrap->name();
+    }
     bootstrap->run(assets);
     auto deadline = seconds() + 2.5;
     while (control_out->submitted) {
@@ -658,7 +758,6 @@ class Usb {
   void run() {
     Priority priority;
     try {
-      acquire_lease();
       require(api.libusb_init(&context) == 0, "libusb initialization failed");
       inspect();
       pacer = std::thread([this] {
@@ -735,12 +834,16 @@ class Usb {
     }
     local_lease.reset();
     global_lease.reset();
+    legacy_local_lease.reset();
+    legacy_global_lease.reset();
     SetEvent(done);
   }
 
 public:
-  Usb(const fs::path &p, HciTarget &t, bool preparing_driver = false)
-      : api(p), assets(p), driver_prepare(preparing_driver), target(t), dispatch(t) {}
+  Usb(const fs::path &p, HciTarget &t, bool preparing_driver = false,
+      std::function<std::string(unsigned long)> resolver = windows_instance)
+      : api(p), assets(p), driver_prepare(preparing_driver), target(t), dispatch(t),
+        resolve_instance(std::move(resolver)) {}
   ~Usb() { close(); }
   void start(uint16_t v, uint16_t p, unsigned i) {
     require(!worker.joinable(), "USB owner already started");
@@ -749,6 +852,11 @@ public:
     index = i;
     initializing = true;
     worker = std::thread([this] { run(); });
+  }
+  void start_id(const std::string &id) {
+    require(valid_adapter_id(id), "Controller identity: invalid adapter identifier");
+    requested_id = id;
+    start(0, 0, 0);
   }
   void open(uint16_t v, uint16_t p, unsigned i) {
     start(v, p, i);
@@ -800,6 +908,7 @@ public:
     return {{"starting", initializing.load()},
             {"firmware_state", firmware_state},
             {"firmware_progress", firmware_progress},
+            {"capabilities", capabilities.snapshot()},
             {"error", init_error}};
   }
   const char *terminal_reason() const {

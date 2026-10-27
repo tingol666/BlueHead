@@ -14,13 +14,18 @@ public:
   void quiesce_now() { audio.quiesce_now(); }
   json command(const json &request, const fs::path &assets) {
     auto op = request.at("op").get<std::string>();
+    if (op == "usb_inventory") {
+      require(!offline, "Hardware enumeration is disabled in offline-test mode");
+      return controller_inventory(assets);
+    }
     if (op == "usb_open") {
       require(!offline, "Hardware opening is disabled in offline-test mode");
       require(!usb, "USB owner already running");
       auto candidate = std::make_unique<Usb>(assets, audio);
       // Firmware upload can take seconds. Keep RPC/Stop responsive while the
       // same USB owner performs bounded bootstrap on its own event thread.
-      candidate->start(request.at("vid"), request.at("pid"), request.value("index", 0u));
+      if (request.contains("adapter_id")) candidate->start_id(request.at("adapter_id"));
+      else candidate->start(request.at("vid"), request.at("pid"), request.value("index", 0u));
       usb = std::move(candidate);
       audio.transport_opened();
       return true;

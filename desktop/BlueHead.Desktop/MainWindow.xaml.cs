@@ -179,11 +179,13 @@ public partial class MainWindow
         {
             inventoryReceived = true;
             applying = true;
-            var adapters = message.GetProperty("adapters").EnumerateArray().Select(item => new AdapterChoice(item.Text("transport"), item.Text("name"))).ToList();
+            var adapters = message.GetProperty("adapters").EnumerateArray().Select(item => new AdapterChoice(item.Text("transport"), item.Text("name")) { Vid = (int)item.Number("vid"), Pid = (int)item.Number("pid"), VoiceTransport = item.Flag("voice_transport") }).ToList();
             AdapterPicker.ItemsSource = adapters;
             var prepared = driverInventory.FirstOrDefault(device => device.InstanceId == preparedDriverInstance);
             var preparedChoices = prepared == null ? Array.Empty<AdapterChoice>() : adapters.Where(item => Drivers.MatchTransport(item.Transport, new[] { prepared }).Count == 1).ToArray();
-            AdapterPicker.SelectedItem = preparedChoices.Length == 1 && settings.mode != "native" ? preparedChoices[0] : adapters.FirstOrDefault(item => item.Transport == settings.transport) ?? adapters.FirstOrDefault();
+            var selectedTransport = Drivers.SelectTransport(settings.transport, adapters.Select(item => (item.Transport, item.Vid, item.Pid)));
+            AdapterPicker.SelectedItem = preparedChoices.Length == 1 && settings.mode != "native" ? preparedChoices[0] : adapters.FirstOrDefault(item => item.Transport == selectedTransport);
+            if (AdapterPicker.SelectedItem is AdapterChoice actual) settings.transport = actual.Transport;
             if (preparedChoices.Length == 1 && settings.mode != "native") { settings.transport = preparedChoices[0].Transport; preparedDriverInstance = null; }
             State.Outputs.Clear(); State.Inputs.Clear();
             State.Outputs.Add(new(null, "默认播放设备（自动跟随）")); State.Inputs.Add(new(null, "默认麦克风（自动跟随）"));
@@ -751,8 +753,10 @@ public partial class MainWindow
         var selected = preparedDriverInstance ?? (DriverPicker.SelectedItem as DriverDevice)?.InstanceId;
         driverInventory = inventory; driversInspected = true; driverInventoryError = null;
         systemRadioReady = windowsRadioReady ?? inventory.Any(device => !BluetoothSetup.Dedicated(device) && !device.RebootRequired && (device.SystemRadioReady ?? device.Healthy));
+        var previous = applying; applying = true;
         DriverPicker.ItemsSource = inventory;
         DriverPicker.SelectedItem = inventory.FirstOrDefault(item => item.InstanceId == selected) ?? inventory.FirstOrDefault();
+        applying = previous;
         UpdateDriverActions(); UpdateSetupState();
     }
     private void UpdateDriverActions()

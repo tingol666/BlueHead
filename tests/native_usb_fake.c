@@ -7,7 +7,7 @@
 
 static struct libusb_transfer *pending[8];
 static ULONGLONG submitted_at[8];
-static int cancelled[8], bad_release, claimed;
+static int cancelled[8], bad_release, claimed, opened_device;
 static struct libusb_version version = {1, 0, 30, 0, "", ""};
 static struct libusb_endpoint_descriptor endpoints[3] = {
     {.bEndpointAddress = 0x81, .bmAttributes = 3, .wMaxPacketSize = 16},
@@ -80,6 +80,7 @@ __declspec(dllexport) int fake_upload_commands(void) { return upload_commands; }
 __declspec(dllexport) int fake_bulk_violations(void) { return bulk_violations; }
 __declspec(dllexport) int fake_firmware_loads(void) { return firmware_loads; }
 __declspec(dllexport) int fake_bad_release(void) { return bad_release; }
+__declspec(dllexport) int fake_opened_device(void) { return opened_device; }
 __declspec(dllexport) int fake_pending(void) {
   int n = 0;
   for (int i = 0; i < 8; i++)
@@ -93,6 +94,10 @@ int LIBUSB_CALL libusb_init(libusb_context **context) {
 }
 void LIBUSB_CALL libusb_exit(libusb_context *context) { (void)context; }
 const struct libusb_version *LIBUSB_CALL libusb_get_version(void) { return &version; }
+unsigned long LIBUSB_CALL libusb_get_session_data(libusb_device *device) {
+  const char *value = getenv("BLUEHEAD_USB_FAULT");
+  return value && !strncmp(value, "identity-", 9) ? (unsigned long)(uintptr_t)device : 0;
+}
 const char *LIBUSB_CALL libusb_error_name(int code) {
   return code == LIBUSB_ERROR_ACCESS ? "LIBUSB_ERROR_ACCESS" : "LIBUSB_ERROR_IO";
 }
@@ -100,6 +105,8 @@ ssize_t LIBUSB_CALL libusb_get_device_list(libusb_context *context, libusb_devic
   (void)context;
   *list = calloc(3, sizeof(**list));
   (*list)[0] = (libusb_device *)1;
+  if (mode("identity-reorder")) { (*list)[0] = (libusb_device *)2; (*list)[1] = (libusb_device *)1; return 2; }
+  if (mode("identity-normal") || mode("identity-legacy")) { (*list)[1] = (libusb_device *)2; return 2; }
   if (mode("intel-ambiguous")) { (*list)[1] = (libusb_device *)2; return 2; }
   return 1;
 }
@@ -118,7 +125,7 @@ int LIBUSB_CALL libusb_get_device_descriptor(libusb_device *device,
   return 0;
 }
 int LIBUSB_CALL libusb_open(libusb_device *device, libusb_device_handle **handle) {
-  (void)device;
+  opened_device = (int)(uintptr_t)device;
   *handle = mode("open-denied") ? NULL : (libusb_device_handle *)1;
   return *handle ? 0 : LIBUSB_ERROR_ACCESS;
 }

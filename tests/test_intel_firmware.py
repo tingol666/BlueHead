@@ -60,7 +60,8 @@ def test_bootstrap_owns_hci_until_firmware_ready_and_retires_every_transfer(inte
         assert report['startup']['starting'] and not report['active'], report
         assert report['seconds'] < 1, report
     else:
-        assert not report['active'] and report['startup']['error'].startswith('Intel firmware:'), report
+        assert not report['active'] and report['startup']['error'].startswith(
+            'Controller identity:' if fault == 'ambiguous' else 'Intel firmware:'), report
         if fault in ('missing-image', 'corrupt-image', 'unsupported', 'ambiguous'):
             assert report['fake_upload_commands'] == 0, report
 
@@ -76,7 +77,7 @@ def test_distribution_uses_one_pinned_firmware_pair_with_explicit_upstream_alias
 
 @pytest.mark.parametrize('extra,reason', [(['--offline-test'], 'offline'), ([], 'helper parent')])
 def test_driver_firmware_tool_rejects_unsafe_invocation_before_opening_usb(extra, reason):
-    process = subprocess.run([str(ROOT / 'bluehead/assets/BlueHead.Runtime.exe'), '--prepare-intel', *extra],
+    process = subprocess.run([str(ROOT / 'bluehead/assets/BlueHead.Runtime.exe'), '--prepare-controller', *extra],
                              capture_output=True, text=True, encoding='utf-8', timeout=5,
                              creationflags=subprocess.CREATE_NO_WINDOW)
     assert process.returncode == 2 and reason in process.stderr

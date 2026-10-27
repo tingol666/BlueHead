@@ -5,7 +5,6 @@ import logging
 import math
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-import re
 import sys
 import threading
 
@@ -15,6 +14,7 @@ from .diagnostics import MetadataOnly
 from .audio_runtime import on_audio_thread
 from .quality_log import AudioCounters
 from .errors import AudioHealth
+from .controller import transport_target
 
 PROTOCOL_VERSION = 1
 MAX_COMMAND = 65536
@@ -39,8 +39,8 @@ def validate_settings(values):
     settings = Settings(**values)
     if settings.mode not in ("advanced", "native"):
         raise ValueError("未知接收方式")
-    if settings.mode == "advanced" and not re.fullmatch(r"usb:[0-9a-fA-F]{4}:[0-9a-fA-F]{4}#\d{1,2}(?:\+sco=0)?", settings.transport):
-        raise ValueError("请选择有效蓝牙适配器")
+    if settings.mode == "advanced":
+        transport_target(settings.transport)
     if settings.codec not in ("auto", "sbc", "aac", "aac_192", "aptx", "aptx_hd", "ldac"):
         raise ValueError("未知媒体编码")
     if settings.media_mode not in ("single", "mix"):

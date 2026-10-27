@@ -43,6 +43,29 @@ internal static class Program
         checks["driver_restart_state_roundtrips"] = JsonSerializer.Deserialize<DriverDevice>(JsonSerializer.Serialize(restartAdapter))?.RebootRequired == true && restartAdapter.DisplayName.Contains("需要重启 Windows");
         var dedicated = restartAdapter with { RebootRequired = false, Healthy = true, HasBackup = true };
         var system = dedicated with { Service = "ibtusb", SystemRadioReady = true };
+        var other = dedicated with { InstanceId = @"USB\VID_8087&PID_0033\other" };
+        checks["physical_identity_disambiguates_identical_usb_models"] = Drivers.MatchTransport("usb-id:" + dedicated.AdapterId, new[] { other, dedicated }).Single().InstanceId == dedicated.InstanceId;
+        checks["physical_identity_survives_driver_binding_and_case"] = dedicated.AdapterId == (system with { InstanceId = system.InstanceId.ToLowerInvariant() }).AdapterId;
+        checks["composite_function_uses_physical_parent_identity"] = (dedicated with { InstanceId = @"USB\VID_8087&PID_0033&MI_00\function", PhysicalInstanceId = dedicated.InstanceId }).AdapterId == dedicated.AdapterId;
+        checks["missing_physical_identity_never_selects_other_device"] = Drivers.MatchTransport("usb-id:" + new string('0', 24), new[] { other, dedicated }).Count == 0;
+        var oneChoice = new[] { ("usb-id:" + dedicated.AdapterId, 0x8087, 0x0033) };
+        var twoChoices = oneChoice.Concat(new[] { ("usb-id:" + other.AdapterId, 0x8087, 0x0033) }).ToArray();
+        checks["legacy_unique_choice_migrates_to_physical_identity"] = Drivers.SelectTransport("usb:8087:0033#0", oneChoice) == oneChoice[0].Item1;
+        checks["legacy_identical_models_require_explicit_selection"] = Drivers.SelectTransport("usb:8087:0033#1", twoChoices) == null;
+        checks["missing_saved_identity_never_falls_back_to_first_model"] = Drivers.SelectTransport("usb-id:" + other.AdapterId, oneChoice) == null;
+        checks["explicit_identity_survives_inventory_reordering"] = Drivers.SelectTransport(oneChoice[0].Item1, Enumerable.Reverse(twoChoices)) == oneChoice[0].Item1;
+        var driverA = new DriverCandidate("a.inf", "设备驱动", "Vendor A", 10, 2, 20, true, 0);
+        var driverB = driverA with { Inf = "b.inf", Provider = "Vendor B", Rank = 50, Version = 999 };
+        checks["original_driver_selection_uses_windows_rank_without_brand_preference"] = DriverSelection.Original(new[] { driverB, driverA }, "current.inf") == driverA;
+        checks["original_driver_selection_rejects_bad_or_non_bluetooth_candidates"] = DriverSelection.Original(new[] { driverA with { Flags = 0x800 }, driverB with { BluetoothClass = false } }, "current.inf") == null;
+        checks["original_driver_selection_does_not_reselect_current_driver"] = DriverSelection.Original(new[] { driverA }, "a.inf") == null;
+        checks["driver_rank_native_struct_has_x64_layout"] = Marshal.SizeOf(typeof(Drivers).Assembly.GetType("BlueHead.Platform.DeviceNative+DriverInstallParameters")!) == 32;
+        var infFolder = Path.Combine(root, "driver-fixtures"); Directory.CreateDirectory(infFolder);
+        var installed = Path.Combine(infFolder, "installed.inf"); var exact = Path.Combine(infFolder, "original.inf"); var unrelated = Path.Combine(infFolder, "component.inf");
+        File.WriteAllText(installed, "original driver fixture"); File.Copy(installed, exact, true); File.WriteAllText(unrelated, "another component fixture");
+        checks["driver_export_selects_exact_original_inf_not_first_filename"] = DriverSelection.ExportedInf(installed, new[] { unrelated, exact }) == exact;
+        try { DriverSelection.ExportedInf(installed, new[] { exact, installed }); checks["ambiguous_export_is_rejected_before_driver_binding"] = false; }
+        catch (IOException) { checks["ambiguous_export_is_rejected_before_driver_binding"] = true; }
         checks["system_driver_with_backup_cannot_be_restored_again"] = !BluetoothSetup.Adapter(system).CanRestore && BluetoothSetup.Adapter(system).CanInstall;
         checks["dedicated_driver_is_not_reinstalled_to_initialize_firmware"] = !BluetoothSetup.Adapter(dedicated).CanInstall && BluetoothSetup.Adapter(dedicated).CanRestore;
         checks["missing_backup_does_not_offer_driver_restore"] = !BluetoothSetup.Adapter(dedicated with { HasBackup = false }).CanRestore;

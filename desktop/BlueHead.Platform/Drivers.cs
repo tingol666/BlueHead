@@ -14,6 +14,9 @@ public record DriverDevice(string InstanceId, string Name, string Service, strin
 {
     public bool RebootRequired { get; init; }
     public bool? SystemRadioReady { get; init; }
+    public string PhysicalInstanceId { get; init; } = "";
+    public string LocationPaths { get; init; } = "";
+    public string AdapterId => FrameworkCompat.HashPrefix((PhysicalInstanceId.Length > 0 ? PhysicalInstanceId : InstanceId).ToUpperInvariant()).ToLowerInvariant();
     public override string ToString() => DisplayName;
     public string DisplayName => $"{Name} · {(RebootRequired ? "需要重启 Windows" : string.Equals(Service, "WinUSB", StringComparison.OrdinalIgnoreCase) ? "专用接收" : "系统蓝牙")}";
 }
@@ -36,6 +39,8 @@ public static partial class Drivers
 {
     public static IReadOnlyList<DriverDevice> MatchTransport(string transport, IEnumerable<DriverDevice> devices)
     {
+        var identity = Regex.Match(transport, @"^usb-id:([0-9a-f]{24})(?:\+sco=0)?$", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+        if (identity.Success) return devices.Where(device => device.AdapterId == identity.Groups[1].Value).ToArray();
         var match = Regex.Match(transport, @"^usb:([0-9a-f]{4}):([0-9a-f]{4})#\d+(?:\+sco=0)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
         if (!match.Success) return Array.Empty<DriverDevice>();
         var prefix = $@"USB\VID_{match.Groups[1].Value}&PID_{match.Groups[2].Value}";
@@ -48,6 +53,21 @@ public static partial class Drivers
         return matching.Count == 1 && matching[0].RebootRequired;
     }
     public static bool SystemRadioAvailable() => BluetoothRadio.AnyReady();
+    public static bool LegacyMatches(string transport, int vid, int pid)
+    {
+        var prefix = $"usb:{vid:x4}:{pid:x4}#";
+        return transport.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && Regex.IsMatch(transport, @"^usb:[0-9a-fA-F]{4}:[0-9a-fA-F]{4}#\d{1,2}(?:\+sco=0)?$", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+    }
+    public static string? SelectTransport(string saved, IEnumerable<(string Transport, int Vid, int Pid)> choices)
+    {
+        var values = choices.ToArray();
+        var exact = values.Where(item => item.Transport == saved).ToArray();
+        if (exact.Length == 1) return exact[0].Transport;
+        if (saved.StartsWith("usb-id:", StringComparison.Ordinal)) return null;
+        var legacy = values.Where(item => LegacyMatches(saved, item.Vid, item.Pid)).ToArray();
+        if (legacy.Length == 1) return legacy[0].Transport;
+        return string.IsNullOrEmpty(saved) && values.Length == 1 ? values[0].Transport : null;
+    }
     public static string Store => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "BlueHead", "Drivers");
     private static readonly Regex instancePattern = new(@"^USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}(?:&MI_[0-9A-F]{2})?\\[^\r\n]{1,200}$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     private static Regex InstancePattern() => instancePattern;
@@ -97,7 +117,8 @@ public static partial class Drivers
                     restart = !BluetoothRadio.IsReady(instance);
                 var healthy = queried && problem == 0 && (status & 8) != 0 && !restart;
                 bool? radioReady = service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase) ? null : healthy && BluetoothRadio.IsReady(instance);
-                result.Add(new(instance, name, service, DeviceNative.DriverInf(set, ref device), hardware.Replace('\0', ';'), healthy, record != null) { RebootRequired = restart, SystemRadioReady = radioReady });
+                var backupAvailable = record != null && File.Exists(Path.Combine(RecordDirectory(instance), record.BackupInf));
+                result.Add(new(instance, name, service, DeviceNative.DriverInf(set, ref device), hardware.Replace('\0', ';'), healthy, backupAvailable) { RebootRequired = restart, SystemRadioReady = radioReady, PhysicalInstanceId = DeviceNative.PhysicalInstance(device.Instance), LocationPaths = DeviceNative.Property(set, ref device, 35) });
             }
             return result;
         }
@@ -142,10 +163,10 @@ public static partial class Drivers
         DeviceNative.SetupDiDestroyDeviceInfoList(set);
         throw new IOException("所选适配器已断开。");
     }
-    public static List<(string Inf, string Description, string Provider)> CompatibleDrivers(string instanceId)
+    public static List<DriverCandidate> CompatibleDrivers(string instanceId)
     {
         var (set, device) = Open(instanceId);
-        var result = new List<(string, string, string)>();
+        var result = new List<DriverCandidate>();
         try
         {
             if (!DeviceNative.SetupDiBuildDriverInfoList(set, ref device, DeviceNative.CompatibleDriver)) throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -153,7 +174,11 @@ public static partial class Drivers
             {
                 var driver = DeviceNative.NewDriver();
                 if (!DeviceNative.SetupDiEnumDriverInfo(set, ref device, DeviceNative.CompatibleDriver, i, ref driver)) break;
-                result.Add((DeviceNative.DetailInf(set, ref device, ref driver), driver.Description, driver.Provider));
+                var inf = DeviceNative.DetailInf(set, ref device, ref driver);
+                var parameters = new DeviceNative.DriverInstallParameters { Size = (uint)Marshal.SizeOf<DeviceNative.DriverInstallParameters>() };
+                var ranked = DeviceNative.SetupDiGetDriverInstallParams(set, ref device, ref driver, ref parameters);
+                var date = ((long)driver.Date.dwHighDateTime << 32) | (uint)driver.Date.dwLowDateTime;
+                result.Add(new(inf, driver.Description, driver.Provider, ranked ? parameters.Rank : uint.MaxValue, driver.Version, date, DeviceNative.IsBluetoothInf(inf), ranked ? parameters.Flags : 0));
             }
             return result;
         }
@@ -182,11 +207,8 @@ public static partial class Drivers
         if (device.Service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase))
         {
             // Adopt an adapter previously prepared with Zadig. Find its actual installed OEM Bluetooth driver.
-            var candidate = CompatibleDrivers(instanceId)
-                .Where(item => !item.Inf.Equals(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "INF", device.Inf), StringComparison.OrdinalIgnoreCase))
-                .Where(item => item.Description.Contains("Bluetooth", StringComparison.OrdinalIgnoreCase))
-                .OrderByDescending(item => item.Provider.Contains("Intel", StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
-            if (candidate.Inf == null) throw new IOException("未找到可备份的原蓝牙驱动。请先恢复原厂驱动，再启用专用接收。");
+            var candidate = DriverSelection.Original(CompatibleDrivers(instanceId), device.Inf);
+            if (candidate == null) throw new IOException("未找到可确认的兼容原厂蓝牙驱动，请导入原厂驱动包或先恢复系统驱动。");
             original = Path.GetFileName(candidate.Inf); description = candidate.Description; provider = candidate.Provider;
         }
         var backup = Path.Combine(folder, "original"); SecureDirectory(backup);
@@ -198,8 +220,8 @@ public static partial class Drivers
             if (!File.Exists(reference)) throw new IOException("无法定位 Windows 原始驱动。");
             File.WriteAllText(Path.Combine(backup, "inbox-reference.txt"), original);
         }
-        var inf = Directory.GetFiles(backup, "*.inf", SearchOption.AllDirectories).FirstOrDefault();
-        if (original.StartsWith("oem", StringComparison.OrdinalIgnoreCase) && inf == null) throw new IOException("原驱动备份不完整，未更换驱动。");
+        var inf = original.StartsWith("oem", StringComparison.OrdinalIgnoreCase) ? DriverSelection.ExportedInf(
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "INF", original), Directory.EnumerateFiles(backup, "*.inf", SearchOption.AllDirectories)) : null;
         var record = new DriverRecord { InstanceId = instanceId, OriginalInf = original, OriginalDescription = description, OriginalProvider = provider,
             BackupInf = inf == null ? "original/inbox-reference.txt" : FrameworkCompat.RelativePath(folder, inf) };
         Save(record); return record;
@@ -261,7 +283,7 @@ public static partial class Drivers
     });
     private static DriverRecord RestoreCore(DriverRecord record)
     {
-        PrepareIntelRestore(record);
+        PrepareControllerRestore(record);
         record.Stage = "restoring"; record.Error = null; Save(record);
         var inf = Path.Combine(RecordDirectory(record.InstanceId), record.BackupInf);
         if (Path.GetExtension(inf) != ".inf") inf = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "INF", record.OriginalInf);
@@ -298,6 +320,15 @@ public static partial class Drivers
     }
     private static void RequireReceiverStopped(string instanceId)
     {
+        var adapter = Enumerate().SingleOrDefault(device => device.InstanceId.Equals(instanceId, StringComparison.OrdinalIgnoreCase));
+        if (adapter != null)
+            foreach (var scope in new[] { "Local", "Global" })
+                try
+                {
+                    if (Mutex.TryOpenExisting(scope + "\\BlueHead-Controller-" + adapter.AdapterId, out var controller))
+                    { controller?.Dispose(); throw new IOException("这个蓝牙适配器仍在接收，请先停止接收。"); }
+                }
+                catch (UnauthorizedAccessException) { throw new IOException("这个蓝牙适配器可能正在被另一个接收器使用。"); }
         var match = Regex.Match(instanceId, @"VID_([0-9A-F]{4})&PID_([0-9A-F]{4})", RegexOptions.IgnoreCase);
         if (!match.Success) throw new IOException("无效适配器身份。");
         for (var i = 0; i < 16; i++)

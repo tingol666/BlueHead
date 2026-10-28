@@ -105,7 +105,8 @@ class Engine:
                 logging.exception("Settings could not be loaded")
 
     def emit(self, event, **values):
-        message = {"event": event, "protocol": PROTOCOL_VERSION, **values}
+        # Transport metadata must never replace the IPC envelope/version.
+        message = {**values, "event": event, "protocol": PROTOCOL_VERSION}
         with self.write_lock:
             try:
                 self.output.write(json.dumps(message, ensure_ascii=False, allow_nan=False) + "\n")

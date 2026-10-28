@@ -482,7 +482,7 @@ class Receiver:
             self.update_media_gates()
             fmt = desired.format
             self.emit('format', key=key, codec=fmt.codec, rate=fmt.rate,
-                      channels=fmt.channels, protocol='LE Audio' if desired is lowenergy else '经典蓝牙')
+                      channels=fmt.channels, audio_transport='le' if desired is lowenergy else 'classic')
             self.emit('codec_state', key=key, phase='streaming',
                       actual=dict(codec=fmt.codec, rate=fmt.rate), reason='' if desired is lowenergy else
                       'LE Audio 暂未传来音频，当前继续播放经典蓝牙媒体。')

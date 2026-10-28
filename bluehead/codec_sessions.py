@@ -157,7 +157,7 @@ class CodecPeer:
         return dict(codecs=rows, selection=self.selection.wire(), session_id=self.session_id,
                     actual={'codec': self.session.format.codec, 'rate': self.session.format.rate,
                             'depth': self.session.format.depth} if self.session.format else {},
-                    temporary=True, reason=unknown, protocol='classic')
+                    temporary=True, reason=unknown, audio_transport='classic')
 
     def progress(self, phase, message, request_id):
         self.receiver.emit('codec_switch', key=self.key, phase=phase, message=message,
@@ -340,7 +340,7 @@ async def execute(receiver, operation, values):
                 raise ValueError('当前使用 LE Audio / LC3，音频参数由发送设备协商。切换经典编码需先更改连接与编码设置。')
             session = receiver.le_audio.media[key]
             receiver.emit('codec_options', key=key, request_id=request_id, success=True,
-                          protocol='le', codecs=[], temporary=True,
+                          audio_transport='le', codecs=[], temporary=True,
                           actual={'codec': 'lc3', 'rate': session.format.rate},
                           reason='当前使用 LE Audio / LC3；采样率、帧配置与发送质量由发送设备协商。')
             return

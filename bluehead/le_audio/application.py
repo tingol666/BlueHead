@@ -432,7 +432,7 @@ class LeAudioApplication:
                     codec="lc3",
                     rate=session.format.rate,
                     channels=session.format.channels,
-                    protocol="LE Audio",
+                    audio_transport="le",
                 )
                 self.emit('le_audio_discovery', key=key, phase='channel_ready',
                           reason='LE Audio 音频通道已建立，等待发送设备传来 LC3 音频。')

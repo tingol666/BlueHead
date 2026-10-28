@@ -26,7 +26,18 @@ internal static partial class Program
             return Enumerable.Range(0, width * height).Count(index => pixels[index * 4 + 3] != 0);
         }
         void Click(System.Windows.Controls.Primitives.ButtonBase button) { button.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent)); Pump(); }
-        void Message(object message) => receive(JsonSerializer.Serialize(message));
+        void Message(object message)
+        {
+            var encoded = JsonSerializer.SerializeToElement(message);
+            EngineClient.ValidateEnvelope(encoded);
+            receive(encoded.GetRawText());
+        }
+        foreach (var malformed in new[] { "null", "[]", "{}", "{\"protocol\":\"classic\"}", "{\"protocol\":null}", "{\"protocol\":[]}", "{\"protocol\":1e99}", "{\"protocol\":1.5}" })
+        {
+            using var document = JsonDocument.Parse(malformed);
+            try { EngineClient.ValidateEnvelope(document.RootElement); checks["codec_wire_rejects_invalid_envelope_" + malformed] = false; }
+            catch (IOException) { checks["codec_wire_rejects_invalid_envelope_" + malformed] = true; }
+        }
         receive("""{"event":"stopped"}""");
         window.ShowPage("home");
         var gear = (Viewbox)window.CodecSettingsButton.Content;
@@ -69,7 +80,12 @@ internal static partial class Program
         window.OpenDeviceCodec(window.State.Devices.Single(card => card.Key == "codec-target")); Pump();
         var device = window.DeviceCodecFor("codec-target")!;
         var optionsRequest = window.SelfTestCommands.Last(item => item.Text("command") == "codec_options").Number("request_id");
-        Message(new { @event = "codec_options", key = "codec-target", request_id = optionsRequest, success = true, protocol = "classic", session_id = "0123456789abcdef01234567",
+        Message(new { protocol = 1, @event = "codec_options", key = "codec-target", request_id = optionsRequest, success = true, audio_transport = "classic", session_id = "0123456789abcdef01234567",
+            selection = new { codec = "lhdc5" }, actual = (object?)null,
+            codecs = new object?[] { null, "invalid row", new { codec = "lhdc5", name = "LHDC 5.0", supported = true,
+                rates = new object?[] { 48000, "96000", null, long.MaxValue, 1.5, 96000 }, depths = new object?[] { 16, "24", null, -1, 24 } } } });
+        checks["codec_capability_numbers_ignore_wrong_types_without_losing_valid_options"] = device.Rate.Items.Count == 3 && device.Depth.Items.Count == 3 && device.ApplyButton.IsEnabled;
+        Message(new { protocol = 1, @event = "codec_options", key = "codec-target", request_id = optionsRequest, success = true, audio_transport = "classic", session_id = "0123456789abcdef01234567",
             actual = new { codec = "aac", rate = 48000 }, selection = new { codec = "auto", rate = 0, depth = 0, bitrate = 0, quality = "auto" },
             codecs = new object[] { new { codec = "aac", name = "AAC", supported = true, rates = new[] { 44100, 48000 }, depths = Array.Empty<int>(), quality_writable = true, bitrate_writable = true },
                 new { codec = "lhdc5", name = "LHDC 5.0", supported = true, rates = new[] { 48000, 96000 }, depths = new[] { 16, 24 }, quality_writable = false, bitrate_writable = false, quality_reason = "质量档位与实际发送码率由发送设备决定。" } } });
@@ -81,11 +97,11 @@ internal static partial class Program
         var request = window.SelfTestCommands.Last(item => item.Text("command") == "codec_switch");
         checks["codec_switch_is_scoped_to_peer_and_connection_token"] = request.Text("key") == "codec-target" && request.Text("session_id") == "0123456789abcdef01234567" && request.GetProperty("selection").Number("rate") == 96000 && request.GetProperty("selection").Number("depth") == 24;
         checks["codec_switch_progress_disables_duplicate_apply_without_touching_other_cards"] = !device.ApplyButton.IsEnabled && window.State.Devices.Count == 2 && Stops() == stops;
-        Message(new { @event = "codec_switch", key = "codec-target", request_id = request.Number("request_id") - 1, success = true, done = true, actual = new { codec = "lhdc5", rate = 192000 }, message = "obsolete" });
+        Message(new { protocol = 1, @event = "codec_switch", key = "codec-target", request_id = request.Number("request_id") - 1, success = true, done = true, actual = new { codec = "lhdc5", rate = 192000 }, message = "obsolete" });
         checks["late_codec_response_cannot_complete_a_new_request"] = !device.ApplyButton.IsEnabled && !device.ActualFormat.Text.Contains("192");
-        Message(new { @event = "codec_switch", key = "codec-target", request_id = request.Number("request_id"), success = true, done = true, actual = new { codec = "lhdc5", rate = 96000 }, message = "本次连接的编码已调整。" });
+        Message(new { protocol = 1, @event = "codec_switch", key = "codec-target", request_id = request.Number("request_id"), success = true, done = true, actual = new { codec = "lhdc5", rate = 96000 }, message = "本次连接的编码已调整。" });
         checks["completed_switch_displays_actual_format"] = device.ApplyButton.IsEnabled && device.ActualFormat.Text.Contains("LHDC 5.0 · 96 kHz");
-        Message(new { @event = "codec_state", key = "codec-target", actual = new { codec = "aac", rate = 48000 }, reason = "发送设备选择了 AAC，没有采用首选 LDAC。" });
+        Message(new { protocol = 1, @event = "codec_state", key = "codec-target", actual = new { codec = "aac", rate = 48000 }, reason = "发送设备选择了 AAC，没有采用首选 LDAC。" });
         checks["fallback_reason_is_kept_with_device_details"] = window.State.Devices.Single(card => card.Key == "codec-target").CodecNote.Contains("发送设备选择") && device.ActualFormat.Text.Contains("AAC");
         receive("""{"event":"device","key":"codec-target","state":"已断开"}""");
         checks["disconnect_invalidates_open_codec_dialog"] = !device.ApplyButton.IsEnabled && !device.Refresh.IsEnabled && device.Status.Text.Contains("连接已结束");
@@ -95,7 +111,7 @@ internal static partial class Program
         window.OpenDeviceCodec(window.State.Devices.Single()); Pump();
         device = window.DeviceCodecFor("codec-other")!;
         optionsRequest = window.SelfTestCommands.Last(item => item.Text("command") == "codec_options").Number("request_id");
-        Message(new { @event = "codec_options", key = "codec-other", request_id = optionsRequest, success = true, protocol = "le", codecs = Array.Empty<object>(), actual = new { codec = "lc3", rate = 48000 }, reason = "LE Audio / LC3 参数由发送设备协商。" });
+        Message(new { protocol = 1, @event = "codec_options", key = "codec-other", request_id = optionsRequest, success = true, audio_transport = "le", codecs = Array.Empty<object>(), actual = new { codec = "lc3", rate = 48000 }, reason = "LE Audio / LC3 参数由发送设备协商。" });
         checks["le_options_are_truthfully_readonly_without_classic_controls"] = device.Choices.Visibility == Visibility.Collapsed && !device.ApplyButton.IsEnabled && device.ActualFormat.Text.Contains("LE Audio / LC3");
         Capture(device, Path.Combine(folder, "device-lc3-readonly.png")); device.Close();
         receive("""{"event":"stopped"}""");

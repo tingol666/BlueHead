@@ -45,6 +45,7 @@ public partial class DeviceCodecWindow : Window
     }
     internal void UpdateActual(JsonElement actual)
     {
+        if (actual.ValueKind != JsonValueKind.Object) return;
         if (actual.Text("codec").Length == 0) return;
         var codec = actual.Text("codec");
         var name = CodecPolicyWindow.Codecs.FirstOrDefault(item => item.Code == codec).Name ?? codec.ToUpperInvariant();
@@ -64,12 +65,15 @@ public partial class DeviceCodecWindow : Window
             if (!message.Flag("success")) { Status.Text = message.Text("message"); SetBusy(false); return; }
             if (message.TryGetProperty("actual", out var actual)) UpdateActual(actual);
             session = message.Text("session_id");
-            Choices.Visibility = message.Text("protocol") == "le" ? Visibility.Collapsed : Visibility.Visible;
+            Choices.Visibility = message.Text("audio_transport") == "le" ? Visibility.Collapsed : Visibility.Visible;
             applying = true; Codec.Items.Clear();
             Add(Codec, "跟随全局首选", "auto");
-            if (message.TryGetProperty("codecs", out var rows)) foreach (var row in rows.EnumerateArray())
+            if (message.TryGetProperty("codecs", out var rows) && rows.ValueKind == JsonValueKind.Array) foreach (var row in rows.EnumerateArray())
             {
-                var code = row.Text("codec"); capabilities[code] = row.Clone();
+                if (row.ValueKind != JsonValueKind.Object) continue;
+                var code = row.Text("codec");
+                if (!CodecPolicyWindow.Codecs.Any(item => item.Code == code)) continue;
+                capabilities[code] = row.Clone();
                 Add(Codec, row.Text("name") + (row.Flag("supported") ? "" : " · 对端未提供"), code, row.Flag("supported"));
             }
             var selection = message.TryGetProperty("selection", out var chosen) ? chosen : default;
@@ -80,7 +84,7 @@ public partial class DeviceCodecWindow : Window
                 Select(Rate, selection.Number("rate").ToString("0")); Select(Depth, selection.Number("depth").ToString("0"));
                 Select(Bitrate, selection.Number("bitrate").ToString("0")); Select(Quality, selection.Text("quality", "auto"));
             }
-            canAdjust = message.Text("protocol") == "classic" && session.Length == 24 && capabilities.Values.Any(row => row.Flag("supported"));
+            canAdjust = message.Text("audio_transport") == "classic" && session.Length == 24 && capabilities.Values.Any(row => row.Flag("supported"));
             applying = false; SetBusy(false);
             Status.Text = message.Text("reason") is { Length: > 0 } reason ? reason : "仅修改这一台设备；选择后点击“应用到此设备”。";
         }
@@ -101,8 +105,14 @@ public partial class DeviceCodecWindow : Window
         Quality.Items.Clear(); Add(Quality, "自动 · 保留完整范围", "auto");
         if (exists)
         {
-            if (row.TryGetProperty("rates", out var rates)) foreach (var rate in rates.EnumerateArray()) Add(Rate, $"{rate.GetInt32() / 1000d:0.###} kHz", rate.GetInt32());
-            if (row.TryGetProperty("depths", out var depths)) foreach (var depth in depths.EnumerateArray()) Add(Depth, $"{depth.GetInt32()} bit", depth.GetInt32());
+            if (row.TryGetProperty("rates", out var rates) && rates.ValueKind == JsonValueKind.Array)
+                foreach (var rate in rates.EnumerateArray())
+                    if (rate.ValueKind == JsonValueKind.Number && rate.TryGetInt32(out var number) && number is 44100 or 48000 or 88200 or 96000 or 192000)
+                        Add(Rate, $"{number / 1000d:0.###} kHz", number);
+            if (row.TryGetProperty("depths", out var depths) && depths.ValueKind == JsonValueKind.Array)
+                foreach (var depth in depths.EnumerateArray())
+                    if (depth.ValueKind == JsonValueKind.Number && depth.TryGetInt32(out var number) && number is 16 or 24)
+                        Add(Depth, $"{number} bit", number);
         }
         foreach (int bitrate in new[] { 128000, 192000, 256000, 320000 }) Add(Bitrate, $"{bitrate / 1000} kb/s", bitrate);
         Add(Quality, "较高上限", "high"); Add(Quality, "均衡上限", "balanced"); Add(Quality, "减少带宽占用", "bandwidth");

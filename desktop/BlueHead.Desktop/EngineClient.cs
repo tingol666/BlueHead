@@ -117,8 +117,7 @@ public sealed class EngineClient : IDisposable
                 if (line.Length > 262144) throw new IOException("后台响应过长。");
                 using var document = JsonDocument.Parse(line);
                 var value = document.RootElement;
-                if (!value.TryGetProperty("protocol", out var protocol) || protocol.GetInt32() != 1)
-                    throw new IOException("界面与后台版本不匹配。");
+                ValidateEnvelope(value);
                 if (session != current || session.Failed) continue;
                 var kind = value.Text("event");
                 if (kind == "hello")
@@ -220,6 +219,12 @@ public sealed class EngineClient : IDisposable
                     reason = session.Failure, exit_code = code, stderr_tail = session.ErrorTail }) + Environment.NewLine, Encoding.UTF8);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+    }
+    internal static void ValidateEnvelope(JsonElement message)
+    {
+        if (message.ValueKind != JsonValueKind.Object || !message.TryGetProperty("protocol", out var protocol) ||
+            protocol.ValueKind != JsonValueKind.Number || !protocol.TryGetInt32(out var version) || version != 1)
+            throw new IOException("界面与后台版本不匹配。");
     }
     internal static void ValidateVersion(JsonElement hello)
     {

@@ -99,18 +99,18 @@
 
           <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,6,0"><TextBlock x:Name="MediaCodecLabel" Text="媒体编码" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/><ui:Button x:Name="CodecHelpButton" Content="ⓘ" Tag="codec" Click="AudioOptionHelpClick" Padding="2,0" MinHeight="20" FontSize="15" Background="Transparent" BorderThickness="0" Foreground="{StaticResource AudioAccent}" Margin="3,0,0,0" ToolTip="点击了解媒体编码用途和选择建议" AutomationProperties.Name="媒体编码说明，点击查看"/></StackPanel>
 
-          <ComboBox x:Name="CodecPicker" Grid.Column="4" SelectedIndex="0" SelectionChanged="CodecChanged" AutomationProperties.Name="媒体编码与码率" ToolTipService.ShowOnDisabled="True"><ComboBox.ToolTip><ToolTip><TextBlock x:Name="CodecHint" Text="优先协商可用高清媒体编码；多设备断续时可切换 AAC。仅影响媒体播放，语音编码自动协商。" MaxWidth="320"/></ToolTip></ComboBox.ToolTip><ComboBoxItem Content="自动 · 优先高清" Tag="auto"/><ComboBoxItem Content="aptX HD · 高清" Tag="aptx_hd"/><ComboBoxItem Content="aptX" Tag="aptx"/><ComboBoxItem Content="AAC · 最高 320 kb/s" Tag="aac"/><ComboBoxItem Content="AAC · 最高 192 kb/s" Tag="aac_192"/><ComboBoxItem Content="SBC · 兼容优先" Tag="sbc"/><ComboBoxItem Content="LDAC · 实验" Tag="ldac"/><ComboBoxItem Content="LHDC 5.0 · 高清" Tag="lhdc5"/></ComboBox>
+          <ComboBox x:Name="CodecPicker" Grid.Column="4" SelectedIndex="0" SelectionChanged="CodecChanged" AutomationProperties.Name="媒体编码与码率" ToolTipService.ShowOnDisabled="True"><ComboBox.ToolTip><ToolTip><TextBlock x:Name="CodecHint" Text="优先协商可用高清媒体编码；多设备断续时可切换 AAC。仅影响媒体播放，语音编码自动协商。" MaxWidth="320"/></ToolTip></ComboBox.ToolTip><ComboBoxItem Content="自动 · 优先高清" Tag="auto"/><ComboBoxItem Content="aptX HD · 高清" Tag="aptx_hd"/><ComboBoxItem Content="aptX" Tag="aptx"/><ComboBoxItem Content="AAC · 最高 320 kb/s" Tag="aac"/><ComboBoxItem Content="AAC · 最高 192 kb/s" Tag="aac_192"/><ComboBoxItem Content="SBC · 兼容优先" Tag="sbc"/><ComboBoxItem Content="LDAC · 高清" Tag="ldac"/><ComboBoxItem Content="LHDC 5.0 · 高清" Tag="lhdc5"/></ComboBox>
 
           <TextBlock x:Name="SharedCodecValue" Grid.Column="4" Text="Windows 自动选择" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Visibility="Collapsed"/>
 
-          <StackPanel x:Name="CodecApplyRow" Grid.Column="5" Visibility="Collapsed" Margin="8,0,0,0" VerticalAlignment="Center"><ui:Button x:Name="ApplyCodecButton" Content="应用" Click="ApplyCodecClick" Appearance="Primary" Padding="10,4" AutomationProperties.Name="应用媒体编码设置"/></StackPanel>
+          <ui:Button x:Name="CodecSettingsButton" Grid.Column="5" Content="&#xE713;" FontFamily="Segoe Fluent Icons" Click="CodecSettingsClick" Padding="6,4" MinHeight="26" Margin="5,0,0,0" Background="Transparent" BorderThickness="0" Foreground="{StaticResource Accent}" ToolTip="连接与编码：LE Audio 偏好、允许的编码与首选编码" AutomationProperties.Name="连接与编码设置"/>
 
          </Grid>
 
 
 
 
-         <TextBlock x:Name="CodecApplyHint" Text="媒体编码在下一次连接时生效。" Style="{StaticResource Caption}" Margin="0,6,0,0" Visibility="{Binding Visibility, ElementName=CodecApplyRow}"/>
+
 
          <Border x:Name="MultipointNotice" Visibility="Collapsed" Background="#FFF7EB" CornerRadius="6" Padding="8,6" Margin="0,7,0,0"><DockPanel><ui:Button x:Name="LowerBitrateButton" DockPanel.Dock="Right" Content="切换 AAC 并重连" Click="LowerBitrateClick" Margin="8,0,0,0" Padding="8,4" VerticalAlignment="Center"/><TextBlock x:Name="MultipointText" Style="{StaticResource Caption}" Foreground="#946032" VerticalAlignment="Center"/></DockPanel></Border>
 
@@ -147,7 +147,7 @@
 
              <local:AudioLevel Label="发送到此设备" CompactLabel="麦克风发送" Hint="调节发给这个设备的音量。来源是电脑麦克风，以及已开启的电脑声音；不影响你在电脑听到的声音。" Icon="&#xE720;" Compact="True" Value="{Binding UplinkVolume, Mode=TwoWay}" ValueChanged="UplinkGainChanged" IsEnabled="{Binding CanMix}"/>
 
-             <ui:Button ToolTip="设备操作" AutomationProperties.Name="设备操作" Padding="6,4" MinHeight="26" BorderThickness="0" Background="Transparent" Margin="5,0,0,0"><ui:Button.Content><TextBlock Text="&#xE712;" FontFamily="Segoe Fluent Icons" FontSize="14"/></ui:Button.Content><ui:Button.ContextMenu><ContextMenu><MenuItem Header="断开连接" Click="DisconnectClick"/></ContextMenu></ui:Button.ContextMenu><ui:Button.Style><Style TargetType="ui:Button" BasedOn="{StaticResource {x:Type ui:Button}}"><EventSetter Event="Click" Handler="DeviceMenuClick"/></Style></ui:Button.Style></ui:Button>
+             <ui:Button ToolTip="设备操作" AutomationProperties.Name="设备操作" Padding="6,4" MinHeight="26" BorderThickness="0" Background="Transparent" Margin="5,0,0,0"><ui:Button.Content><TextBlock Text="&#xE712;" FontFamily="Segoe Fluent Icons" FontSize="14"/></ui:Button.Content><ui:Button.ContextMenu><ContextMenu><MenuItem Header="编码与音质…" Click="DeviceCodecClick" IsEnabled="{Binding CanMix}"/><Separator/><MenuItem Header="断开连接" Click="DisconnectClick"/></ContextMenu></ui:Button.ContextMenu><ui:Button.Style><Style TargetType="ui:Button" BasedOn="{StaticResource {x:Type ui:Button}}"><EventSetter Event="Click" Handler="DeviceMenuClick"/></Style></ui:Button.Style></ui:Button>
 
             </StackPanel>
 
@@ -157,7 +157,7 @@
              <TextBlock Grid.Column="2" Text="&#xEA39;" FontFamily="Segoe Fluent Icons" Foreground="#AA713C" FontSize="12" Margin="7,0,0,0" VerticalAlignment="Center" ToolTip="{Binding PlaybackNotice}" Visibility="{Binding HasPlaybackNotice, Converter={StaticResource Visible}}"/>
              <Popup x:Name="DeviceDetailsPopup" PlacementTarget="{Binding ElementName=DetailsAnchor}" Placement="Bottom" VerticalOffset="5" AllowsTransparency="True" StaysOpen="False" IsOpen="{Binding DetailsOpen, Mode=TwoWay}" Tag="{Binding}" Opened="DeviceDetailsOpened">
 
-              <Border Background="White" BorderBrush="#DDE3ED" BorderThickness="1" CornerRadius="8" Padding="13,10" MaxWidth="410"><StackPanel><TextBlock Text="实时音频详情" FontSize="12" FontWeight="SemiBold"/><TextBlock Text="{Binding LiveDetails}" Style="{StaticResource Caption}" Margin="0,6,0,0"/><TextBlock Text="{Binding RemoteDetails}" Style="{StaticResource Caption}" Margin="0,6,0,0" Visibility="{Binding HasRemoteMedia, Converter={StaticResource Visible}}"/></StackPanel></Border>
+              <Border Background="White" BorderBrush="#DDE3ED" BorderThickness="1" CornerRadius="8" Padding="13,10" MaxWidth="410"><StackPanel><TextBlock Text="实时音频详情" FontSize="12" FontWeight="SemiBold"/><TextBlock Text="{Binding LiveDetails}" Style="{StaticResource Caption}" Margin="0,6,0,0"/><TextBlock Text="{Binding CodecNote}" Foreground="{StaticResource Accent}" FontSize="12" Margin="0,6,0,0" Visibility="{Binding HasCodecNote, Converter={StaticResource Visible}}"/><TextBlock Text="{Binding RemoteDetails}" Style="{StaticResource Caption}" Margin="0,6,0,0" Visibility="{Binding HasRemoteMedia, Converter={StaticResource Visible}}"/></StackPanel></Border>
 
              </Popup>
 
@@ -225,7 +225,7 @@
 
      <ScrollViewer x:Name="SettingsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel>
 
-      <TextBlock Text="设置" Style="{StaticResource Heading}"/><TextBlock Text="连接设置在停止接收后修改，并点击本页底部的“保存设置”。音量和声音设备可在音频中心随时调整。" Foreground="{StaticResource Muted}" Margin="0,7,0,22"/>
+      <TextBlock Text="设置" Style="{StaticResource Heading}"/><TextBlock Text="修改自动保存。连接设置在下次开始接收时生效；音量和声音设备可在音频中心随时调整。" Foreground="{StaticResource Muted}" Margin="0,7,0,22"/>
 
       <Border x:Name="SharedSettingsNotice" Background="#EEF8F7" CornerRadius="8" Padding="10,8" Margin="0,0,0,12" Visibility="Collapsed"><DockPanel><ui:Button Content="了解进阶模式 ↗" DockPanel.Dock="Right" Click="DedicatedSetupClick" Padding="6,3" Background="Transparent" BorderThickness="0" Foreground="{StaticResource Accent}"/><TextBlock Text="当前是基础模式：收听媒体即可。需要电脑麦克风、多设备同时连接或媒体编码选择，请改用专用蓝牙。" FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap" VerticalAlignment="Center"/></DockPanel></Border>
 
@@ -236,7 +236,7 @@
 
        <Grid x:Name="VoiceSettingsRow" Margin="0,22,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="蓝牙语音与麦克风"/><TextBlock x:Name="VoiceCodecHint" Text="语音编码：自动协商；用于通话及支持蓝牙麦克风的录音、录像应用" Style="{StaticResource Caption}" Margin="0,5,12,0"/></StackPanel><CheckBox x:Name="CallsToggle" Grid.Column="1" IsChecked="True" Style="{StaticResource Switch}" VerticalAlignment="Center" AutomationProperties.Name="启用蓝牙语音与麦克风"/></Grid>
 
-       <Grid x:Name="VoiceProtectionRow" Margin="0,18,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="通话／语音保护"/><TextBlock Text="开启后，设备使用电脑麦克风进行通话、录音或录像时，会暂时断开其它设备并阻止新连接，避免蓝牙中断。使用结束后可重新连接。默认开启；先在音频中心点“停止接收”，修改后点本页底部的“保存设置”。" Style="{StaticResource Caption}" Margin="0,5,14,0"/></StackPanel><CheckBox x:Name="VoiceProtectionToggle" Grid.Column="1" IsChecked="True" Style="{StaticResource Switch}" VerticalAlignment="Center" AutomationProperties.Name="通话／语音保护"/></Grid>
+       <Grid x:Name="VoiceProtectionRow" Margin="0,18,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="通话／语音保护"/><TextBlock Text="开启后，设备使用电脑麦克风进行通话、录音或录像时，会暂时断开其它设备并阻止新连接，避免蓝牙中断。使用结束后可重新连接。默认开启；先在音频中心点“停止接收”，修改后自动保存。" Style="{StaticResource Caption}" Margin="0,5,14,0"/></StackPanel><CheckBox x:Name="VoiceProtectionToggle" Grid.Column="1" IsChecked="True" Style="{StaticResource Switch}" VerticalAlignment="Center" AutomationProperties.Name="通话／语音保护"/></Grid>
       </StackPanel></Border>
 
       <Border Style="{StaticResource Card}" Margin="0,16,0,0"><StackPanel>
@@ -267,17 +267,17 @@
 
        <TextBlock Text="最多同时连接几台设备"/><TextBlock Text="连接不等于同时播放；多设备的播放方式在音频中心选择。通话／语音保护启用时，使用电脑麦克风会暂时只保留一个设备。" Style="{StaticResource Caption}" Margin="0,5,0,0"/><ComboBox x:Name="MaximumPicker" SelectedIndex="2" Margin="0,8,0,16"><ComboBoxItem Content="1 台" Tag="1"/><ComboBoxItem Content="2 台" Tag="2"/><ComboBoxItem Content="3 台" Tag="3"/><ComboBoxItem Content="4 台" Tag="4"/></ComboBox>
 
-       <CheckBox x:Name="LdacToggle" Content="启用实验性 LDAC 解码" Style="{StaticResource Switch}"/><TextBlock Text="仍需移动设备实际支持并协商成功；多设备并发能力取决于蓝牙适配器。" Style="{StaticResource Caption}" Margin="24,6,0,0"/>
+       <CheckBox x:Name="LdacToggle" Content="允许 LDAC 媒体编码" Style="{StaticResource Switch}"/><TextBlock Text="仍需移动设备实际支持并协商成功；多设备并发能力取决于蓝牙适配器。" Style="{StaticResource Caption}" Margin="24,6,0,0"/>
 
-       <CheckBox x:Name="Lhdc5Toggle" Content="启用 LHDC 5.0 媒体解码" Style="{StaticResource Switch}" Margin="0,14,0,0"/><TextBlock Text="开启后，“自动”也会协商 LHDC 5.0。需要对端支持；选择首页的 LHDC 5.0 会自动开启此项。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="24,6,0,0"/>
-       <CheckBox x:Name="LeAudioToggle" Content="启用 LE Audio（LC3）" Style="{StaticResource Switch}" Margin="0,14,0,0"/><TextBlock Text="用于 LE Audio 媒体、双向语音和音频广播；需要蓝牙适配器及发送设备支持。保存后点击“开始接收”，软件会检查适配器能力。普通蓝牙版本号不能保证支持。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="24,6,0,0"/>
+       <CheckBox x:Name="Lhdc5Toggle" Content="允许 LHDC 5.0 媒体编码" Style="{StaticResource Switch}" Margin="0,14,0,0"/><TextBlock Text="与“连接与编码”中的允许列表同步。双方支持时可协商；首选不会隐藏其它允许的编码。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="24,6,0,0"/>
+       <Grid Margin="0,14,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="210"/></Grid.ColumnDefinitions><CheckBox x:Name="LeAudioToggle" Content="启用 LE Audio（LC3）" Style="{StaticResource Switch}"/><ComboBox x:Name="ConnectionPolicyPicker" Grid.Column="1" AutomationProperties.Name="LE Audio 连接偏好"><ComboBoxItem Content="优先 LE Audio / LC3" Tag="prefer_le"/><ComboBoxItem Content="仅经典蓝牙" Tag="classic"/></ComboBox></Grid><TextBlock Text="与首页媒体编码右侧的设置按钮同步。优先 LE Audio 时，双方支持且设备已开启此功能才使用 LC3；未建立 LE 音频时继续经典蓝牙。选择“仅经典蓝牙”会关闭 LE Audio 与广播功能。修改自动保存，下次开始接收生效。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="24,6,0,0"/>
        <TextBlock x:Name="LeAudioState" Text="开始接收后，这里显示适配器的 LE Audio 能力。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="24,6,0,0"/>
        <TextBlock Text="LE Audio 自动协商 LC3 编码与播放时延，首页“媒体编码”和上方起始缓冲用于经典蓝牙音频。对端可同时提供两种连接，实际协议显示在设备卡片中。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="24,6,0,0"/>
        </StackPanel></Border></Expander>
 
-      <ui:Button x:Name="SaveButton" Content="保存设置" Appearance="Primary" HorizontalAlignment="Left" Padding="12,5" Margin="0,20,0,18" Click="SaveSettingsClick"/>
 
-      <TextBlock x:Name="SettingsHint" Style="{StaticResource Caption}"/>
+
+      <TextBlock x:Name="SettingsHint" Style="{StaticResource Caption}" Margin="0,16,0,12" AutomationProperties.LiveSetting="Polite"/>
 
      </StackPanel></ScrollViewer>
 

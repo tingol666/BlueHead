@@ -32,6 +32,9 @@ public sealed class DeviceCard : INotifyPropertyChanged
     private double volume = 100, uplink = 100;
     private bool answer, hangup, mixing = true;
     private string playbackNotice = "", mediaAction = "在电脑播放";
+    private string codecNote = "";
+    public string CodecNote { get => codecNote; set { codecNote = value; Changed(); Changed(nameof(HasCodecNote)); } }
+    public bool HasCodecNote => codecNote.Length > 0;
     private bool selectMedia, selectedMedia, detailsOpen;
     public bool IsMediaSelected { get => selectedMedia; set { selectedMedia = value; Changed(); } }
     public bool DetailsOpen { get => detailsOpen; set { detailsOpen = value; Changed(); } }
@@ -146,6 +149,8 @@ public sealed class EngineSettings
     public string mode { get; set; } = "advanced";
     public string transport { get; set; } = "";
     public string codec { get; set; } = "auto";
+    public List<string>? allowed_codecs { get; set; }
+    public string connection_policy { get; set; } = "";
     public string media_mode { get; set; } = "mix";
     public string name { get; set; } = "BlueHead PC";
     public int buffer_ms { get; set; } = 60;

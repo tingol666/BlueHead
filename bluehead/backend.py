@@ -23,7 +23,6 @@ from .usb_transport import open_transport, load_libusb
 from .audio import Decoder, Mixer, AudioOutput
 from .adapter import AdapterLease
 from .diagnostics import LoopWatchdog
-from .protocol import capabilities, negotiated
 from .metrics import TrafficMeter
 from .continuity import ContinuityGuard
 from .errors import Retirement
@@ -52,12 +51,20 @@ class Settings:
     ldac_enabled: bool = False
     lhdc5_enabled: bool = False
     le_audio_enabled: bool = False
+    connection_policy: str = ""
+    allowed_codecs: list[str] | None = None
     microphone_muted: bool = False
     playback_gain: float = 1.0
     microphone_gain: float = 1.0
     system_gain: float = 1.0
     system_audio_enabled: bool = False
     device_volumes: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        if self.connection_policy == "":
+            self.connection_policy = 'prefer_le' if self.le_audio_enabled else 'classic'
+        elif type(self.le_audio_enabled) is bool and self.connection_policy in ('prefer_le', 'classic'):
+            self.le_audio_enabled = self.connection_policy == 'prefer_le'
 
 
 class MediaSession:
@@ -281,6 +288,9 @@ class Receiver:
         self.voice_protection = None
         self.avrcp = None
         self.standard_volumes = {}
+        self.codec_availability = None
+        self.codec_peers = {}
+        self.codec_switching = set()
         self.native = None
         self.audio_lock = asyncio.Lock()
         self.control_tasks = set()
@@ -403,16 +413,17 @@ class Receiver:
             self.spawn_control(self.le_audio.controls.local_microphone_changed())
 
     def media_codecs(self):
-        # Offer usable high-quality endpoints first. The source chooses its
-        # supported codec; lower-bandwidth profiles remain explicit choices.
-        codec = self.settings.codec
-        if codec == "auto":
-            return (["lhdc5"] if self.settings.lhdc5_enabled else []) + (["ldac"] if self.settings.ldac_enabled else []) + ["aptx_hd", "aptx", "aac", "sbc"]
-        if codec == "lhdc5" and not self.settings.lhdc5_enabled:
-            raise ValueError("LHDC 5.0 尚未启用，请使用已验证的媒体编码")
-        if codec == "ldac" and not self.settings.ldac_enabled:
-            raise ValueError("请先启用 LDAC 实验解码器")
-        return [codec] + ([] if codec == "sbc" else ["sbc"])
+        from .codec_policy import ordered
+        return ordered(self.settings, self.codec_availability)
+
+    async def prepare_codecs(self):
+        from .codec_policy import metadata, CODECS
+        if getattr(self.mixer, 'remote', False):
+            self.codec_availability = await asyncio.to_thread(self.mixer.client.request, 'codec_probe')
+        values = self.codec_availability or {name: {'available': True} for name in CODECS}
+        self.emit('codec_capabilities', codecs=[metadata(name, **values[name]) for name in CODECS])
+        if 'sbc' not in self.media_codecs():
+            raise OSError('缺少必需的 SBC 兼容解码器，请完整更新程序后重试。')
 
     def connection_keys(self):
         return set(self.connections) | (self.le_audio.keys if self.le_audio else set())
@@ -423,12 +434,58 @@ class Receiver:
     def media_sessions(self):
         sessions = dict(self.sessions)
         if self.le_audio:
-            sessions.update(self.le_audio.media)
+            for key, session in self.le_audio.media.items():
+                sessions.setdefault(key, session)
         for key, preferred in self.media_fronts.items():
             if not preferred.closed and (self.sessions.get(key) is preferred or
                     self.le_audio and self.le_audio.media.get(key) is preferred):
                 sessions[key] = preferred
         return sessions
+
+    def reconcile_media_protocols(self):
+        # Prefer actual decoded LC3 traffic, not a GATT/ASE connection or a
+        # codec label. Control-plane polling never handles PCM or USB packets.
+        if not self.le_audio:
+            return
+        now = time.monotonic()
+        for key, lowenergy in tuple(self.le_audio.media.items()):
+            classic = self.sessions.get(key)
+            if lowenergy.closed:
+                continue
+            current = self.media_sessions().get(key)
+            states = lowenergy._states()
+            flowing = not lowenergy.paused and any(value.get('frames', 0) > 0
+                and value.get('packets', 0) > 0 and value.get('last_packet_age_ms', 1e12) < 500
+                for value in states)
+            first_flow = flowing and not getattr(lowenergy, 'flow_reported', False)
+            if first_flow:
+                lowenergy.flow_reported = True
+                self.emit('le_audio_discovery', key=key, phase='streaming',
+                          reason='正在接收并解码 LE Audio / LC3 音频。')
+            if classic is None or classic.closed:
+                if first_flow and current is lowenergy:
+                    self.emit('codec_state', key=key, phase='streaming',
+                              actual=dict(codec='lc3', rate=lowenergy.format.rate), reason='')
+                continue
+            if self.settings.connection_policy == 'prefer_le' and flowing:
+                desired = lowenergy
+            elif (not classic.paused and now - classic.last_packet < .5
+                  and (lowenergy.paused or not states or all(
+                      value.get('last_packet_age_ms', 1e12) > 1500 for value in states))):
+                desired = classic
+            else:
+                continue
+            if current is desired:
+                continue
+            self.media_fronts[key] = desired
+            self.media_sinks[key] = desired._policy_sink
+            self.update_media_gates()
+            fmt = desired.format
+            self.emit('format', key=key, codec=fmt.codec, rate=fmt.rate,
+                      channels=fmt.channels, protocol='LE Audio' if desired is lowenergy else '经典蓝牙')
+            self.emit('codec_state', key=key, phase='streaming',
+                      actual=dict(codec=fmt.codec, rate=fmt.rate), reason='' if desired is lowenergy else
+                      'LE Audio 暂未传来音频，当前继续播放经典蓝牙媒体。')
 
     def competing_with(self, key):
         now = time.monotonic()
@@ -447,6 +504,8 @@ class Receiver:
 
     def media_owner_idle(self, now=None):
         now = time.monotonic() if now is None else now
+        if self.media_owner in self.codec_switching:
+            return False
         session = self.media_sessions().get(self.media_owner)
         if session is None or session.closed:
             return True
@@ -467,6 +526,7 @@ class Receiver:
         try:
             while not self.stop_event.is_set() and self.connection_keys():
                 await asyncio.sleep(.1)
+                self.reconcile_media_protocols()
                 await self.advance_media()
         except asyncio.CancelledError:
             raise
@@ -477,8 +537,13 @@ class Receiver:
         registered = self.sessions.get(key) is session or bool(self.le_audio and self.le_audio.media.get(key) is session)
         if not registered or session.closed:
             return
-        self.media_fronts[key] = session
-        self.media_sinks[key] = sink
+        session._policy_sink = sink
+        previous = self.media_sessions().get(key)
+        prefer_current = (previous is not None and previous is not session and not previous.closed
+                          and not previous.paused and time.monotonic() - previous.last_packet < .5)
+        if not prefer_current:
+            self.media_fronts[key] = session
+            self.media_sinks[key] = sink
         if self.settings.media_mode == "single":
             if self.media_owner is None and not self.media_policy_lock.locked():
                 self.media_owner = key
@@ -492,9 +557,12 @@ class Receiver:
             self.spawn_control(self.suspend_other_media())
 
     def media_paused(self, key, session, terminal=False):
-        if self.media_sessions().get(key) is not session or session.closed:
+        registered = self.sessions.get(key) is session or bool(self.le_audio and self.le_audio.media.get(key) is session)
+        if not registered or session.closed:
             return
         session.pause()
+        if self.media_sessions().get(key) is not session:
+            return
         # A remote pause/close is user intent. Only app-suspended media stays queued.
         self.media_waiting.pop(key, None)
         self.policy_suspended.discard(key)
@@ -509,7 +577,8 @@ class Receiver:
 
     async def _suspend_other_media(self):
         for key, sink in list(self.media_sinks.items()):
-            if self.stop_event.is_set() or self.settings.media_mode != "single" or key == self.media_owner:
+            if (self.stop_event.is_set() or self.settings.media_mode != "single"
+                    or key == self.media_owner or key in self.codec_switching):
                 continue
             stream = sink.stream
             session = self.media_sessions().get(key)
@@ -546,7 +615,7 @@ class Receiver:
         self.ensure_media_watch()
 
     async def start_media(self, key):
-        if self.stop_event.is_set():
+        if self.stop_event.is_set() or key in self.codec_switching:
             return False
         sink = self.media_sinks.get(key)
         session = self.media_sessions().get(key)
@@ -579,6 +648,8 @@ class Receiver:
         async with self.media_policy_lock:
             if key not in self.connection_keys() or self.stop_event.is_set():
                 raise ValueError("设备已断开")
+            if key in self.codec_switching:
+                raise ValueError('这台设备正在调整编码，请完成后再切换播放')
             await self._select_media(key)
         self.ensure_media_watch()
 
@@ -593,7 +664,7 @@ class Receiver:
             if (self.settings.media_mode != "single" or self.stop_event.is_set() or
                     now - self.last_voice_at < .7 or not self.media_owner_idle(now)):
                 return
-            candidates = [key for key in self.media_waiting if key != self.media_owner and key in self.connection_keys()
+            candidates = [key for key in self.media_waiting if key != self.media_owner and key not in self.codec_switching and key in self.connection_keys()
                           and key in self.media_sessions() and not self.media_sessions()[key].closed and key in self.media_sinks]
             if candidates:
                 await self._select_media(max(candidates, key=self.media_waiting.get))
@@ -666,6 +737,9 @@ class Receiver:
         if connection is not None and self.connections.get(key) is not connection:
             return
         self.connections.pop(key, None)
+        peer = self.codec_peers.pop(key, None)
+        if peer:
+            peer.close()
         if self.le_audio and key in self.le_audio.keys:
             session = self.sessions.pop(key, None)
             if session:
@@ -709,6 +783,8 @@ class Receiver:
         self.spawn_control(self.advertise())
 
     def on_protocol(self, protocol):
+        from .codec_policy import offered
+        from .codec_sessions import CodecPeer
         connection = protocol.l2cap_channel.connection
         key = str(connection.peer_address)
         if self.retiring or self.connections.get(key) is not connection:
@@ -722,15 +798,22 @@ class Receiver:
             factory = RemoteMediaSession
         session = factory(key, self.mixer, self.emit, lambda: self.competing_with(key))
         self.sessions[key] = session
+        previous = self.codec_peers.pop(key, None)
+        if previous:
+            previous.close()
+        peer = self.codec_peers[key] = CodecPeer(self, protocol, session)
         self.update_media_gates()
         codecs = self.media_codecs()
         for codec in codecs:
-            sink = protocol.add_sink(capabilities(codec))
+            limit = offered(codec, legacy_aac_limit=self.settings.codec == 'aac_192')
+            sink = protocol.add_sink(limit)
+            peer.endpoints[codec] = sink
             original = sink.on_set_configuration_command
 
-            async def configure(config, codec=codec, original=original):
+            async def configure(config, codec=codec, original=original, endpoint=sink):
                 try:
-                    fmt = negotiated(codec, config)
+                    peer.watch_stream(endpoint.stream)
+                    fmt = peer.configuration(codec, config)
                     # Verify decoder construction before accepting a stream.
                     if getattr(self.mixer, "remote", False):
                         await asyncio.to_thread(session.configure, fmt)
@@ -751,7 +834,10 @@ class Receiver:
                     )
                 if not getattr(self.mixer, "remote", False):
                     session.configure(fmt, check)
-                return await original(config)
+                response = await original(config)
+                if response is None and not peer.applying:
+                    peer.configured(codec, config)
+                return response
 
             sink.on_set_configuration_command = configure
             reconfigure_original = sink.on_reconfigure_command
@@ -759,7 +845,7 @@ class Receiver:
             async def reconfigure(config, codec=codec, original=reconfigure_original, endpoint=sink):
                 config = list(config)
                 try:
-                    fmt = negotiated(codec, config)
+                    fmt = peer.configuration(codec, config)
                     response = await original(config)
                     if response is not None:
                         return response
@@ -777,6 +863,8 @@ class Receiver:
                     return avdtp.Reconfigure_Reject(avdtp.AVDTP_MEDIA_CODEC_SERVICE_CATEGORY,
                                                   avdtp.AVDTP_UNSUPPORTED_CONFIGURATION_ERROR)
                 endpoint.configuration = [c for c in endpoint.configuration if not isinstance(c, avdtp.MediaCodecCapabilities)] + [c for c in config if isinstance(c, avdtp.MediaCodecCapabilities)]
+                if not peer.applying:
+                    peer.configured(codec, config)
                 return None
 
             sink.on_reconfigure_command = reconfigure
@@ -816,7 +904,10 @@ class Receiver:
                 raise ControllerInitializationTimeout('蓝牙适配器启动超时，未收到完整初始化响应；请打开“蓝牙驱动设置”，点击右下方的“修复专用蓝牙”。') from None
             from .discovery import update_inquiry_power
             await update_inquiry_power(device, config.name, self.settings.calls and self.classic_calls_available)
-            await self.advertise()
+            # Dual-mode peers must not discover a Classic-only identity before
+            # LE services and the validated Class-of-Device are ready.
+            if not self.settings.le_audio_enabled:
+                await self.advertise()
 
         setup = asyncio.create_task(initialize())
         stopped = asyncio.create_task(self.stop_event.wait())
@@ -892,6 +983,10 @@ class Receiver:
                 if self.settings.le_audio_enabled:
                     raise ValueError('LE Audio 需要原生音频后台，请通过 BlueHead 桌面程序启动')
                 lease.acquire()
+            self.emit('status', message='正在检查本机可用的音频解码器…')
+            await self.prepare_codecs()
+            if self.stop_event.is_set():
+                return
             opened = (await open_transport(transport_spec, le_audio=True) if self.settings.le_audio_enabled
                       else await open_transport(transport_spec))
             async with opened as transport, contextlib.AsyncExitStack() as session:
@@ -909,7 +1004,9 @@ class Receiver:
                 config.keystore = "JsonKeyStore:" + str(self.directory / "pairing.json")
                 device = Device.from_config_with_hci(config, transport.source, transport.sink)
                 # Numeric comparison is not meaningful on a headset; pair on the phone.
-                device.pairing_config_factory = lambda _: PairingConfig(mitm=False)
+                device.pairing_config_factory = lambda _: PairingConfig(
+                    mitm=False, sc=True, bonding=True,
+                    identity_address_type=PairingConfig.AddressType.PUBLIC)
                 self.attach(device)
                 output_factory = AudioOutput
                 if getattr(self.mixer, "remote", False):
@@ -922,6 +1019,14 @@ class Receiver:
                 if self.settings.le_audio_enabled:
                     from .le_audio.application import LeAudioApplication
                     self.le_audio = await LeAudioApplication.prepare(self, device, transport)
+                    if self.le_audio:
+                        from .le_audio.discovery import class_of_device
+                        from bumble import hci
+                        await device.send_sync_command(hci.HCI_Write_Class_Of_Device_Command(
+                            class_of_device=class_of_device(True)))
+                        device.class_of_device = class_of_device(True)
+                if self.settings.le_audio_enabled:
+                    await self.advertise()
                 self.emit("status", message=f"已就绪：在移动设备蓝牙列表连接 {config.name}")
                 stopped = asyncio.create_task(self.stop_event.wait())
                 terminated = asyncio.ensure_future(asyncio.shield(transport.source.terminated))
@@ -970,6 +1075,10 @@ class Receiver:
         if self.retiring:
             return
         self.retiring = True
+        for peer in self.codec_peers.values():
+            peer.close()
+        self.codec_peers.clear()
+        self.codec_switching.clear()
         if self.voice_protection:
             self.voice_protection.close()
         self.stop_event.set()
@@ -1104,7 +1213,12 @@ class Receiver:
             return mapped, errors
 
     async def action(self, action, key):
-        if action == 'broadcast':
+        if action in ('codec_options', 'codec_switch'):
+            from .codec_sessions import execute
+            await execute(self, action, key)
+        elif action == 'codec_preferences':
+            self.settings = replace(self.settings, **key)
+        elif action == 'broadcast':
             from .le_audio.commands import execute
             await execute(self, key)
         elif action in ("play", "pause", "play_pause", "stop", "next", "previous") and self.avrcp:

@@ -33,6 +33,7 @@ class AudioStreamService(gatt.TemplateService):
     ):
         self.device, self.bridge, self.notify_engine = device, bridge, emit
         self.admit = lambda owner: True
+        self.peer_activity = lambda owner: None
         self.control = StreamControl(
             maximum_peers, microphone=microphone, source_octets=source_octets, source_blocks=source_blocks
         )
@@ -102,6 +103,7 @@ class AudioStreamService(gatt.TemplateService):
     def watch(self, owner):
         if not self.current(owner) or not getattr(owner, "encryption", False):
             raise att.ATT_Error(att.ATT_INSUFFICIENT_ENCRYPTION_ERROR)
+        self.peer_activity(owner)
         identity = id(owner)
         if identity not in self.watched:
             try:

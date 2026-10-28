@@ -852,6 +852,27 @@ public:
       }
       return iso.snapshot();
     }
+    if (op == "codec_probe") {
+      // Control-plane construction only; no mixer, USB or live source changes.
+      static constexpr const char *names[] = {"", "sbc", "aac", "aptx", "aptx_hd", "ldac", "lhdc5"};
+      json result = json::object();
+      for (int code = 1; code <= 6; ++code) {
+        bool available = false;
+        try {
+          if (code >= 5) {
+            IsolatedMediaWorker probe(assets, 48000, 2, code, code == 6 ? 24 : 16);
+            available = true;
+          } else {
+            auto *probe = api.bh_media_create(code, 48000, 2, 48000);
+            available = probe != nullptr;
+            if (probe) api.bh_media_destroy(probe);
+          }
+        } catch (const std::exception &) {}
+        result[names[code]] = {{"available", available},
+                              {"reason", available ? "" : "解码器未能初始化，请完整更新程序后重试。"}};
+      }
+      return result;
+    }
     if (op == "media_config") {
       int id = key_input(request.at("key"));
       require(!iso_receivers[id]->prepared(), "LE stream still owns this mixer source");

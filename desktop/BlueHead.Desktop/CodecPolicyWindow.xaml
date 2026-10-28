@@ -1,0 +1,23 @@
+<Window x:Class="BlueHead.Desktop.CodecPolicyWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+ Title="连接与编码 · BlueHead" Width="470" SizeToContent="Height" ResizeMode="NoResize" WindowStartupLocation="CenterOwner" ShowInTaskbar="False" Background="#F6F9F8" Foreground="{StaticResource Ink}">
+ <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel Margin="20,16">
+  <TextBlock Text="连接与编码" FontSize="19" FontWeight="SemiBold"/>
+  <TextBlock Text="选择连接偏好，再决定向设备提供哪些经典蓝牙编码。" Style="{StaticResource Caption}" Margin="0,5,0,14"/>
+  <Border Style="{StaticResource Card}" Padding="12"><StackPanel>
+   <TextBlock Text="连接偏好" FontWeight="SemiBold"/>
+   <ComboBox x:Name="PolicyPicker" SelectionChanged="PolicyChanged" Margin="0,7,0,0" AutomationProperties.Name="连接偏好"><ComboBoxItem Content="优先 LE Audio / LC3" Tag="prefer_le"/><ComboBoxItem Content="仅经典蓝牙" Tag="classic"/></ComboBox>
+   <TextBlock x:Name="PolicyExplanation" Style="{StaticResource Caption}" Margin="0,7,0,0"/>
+  </StackPanel></Border>
+  <Border Style="{StaticResource Card}" Padding="12" Margin="0,10,0,0"><StackPanel>
+   <TextBlock Text="允许的经典蓝牙编码" FontWeight="SemiBold"/>
+   <TextBlock Text="勾选的可用编码会一起提供给发送设备。SBC 保留用于兼容。" Style="{StaticResource Caption}" Margin="0,5,0,7"/>
+   <StackPanel x:Name="CodecChecks"/>
+   <Border Height="1" Background="{StaticResource Line}" Margin="0,9"/>
+   <TextBlock Text="首选媒体编码" FontWeight="SemiBold"/>
+   <ComboBox x:Name="PreferencePicker" SelectionChanged="PreferenceChanged" Margin="0,7,0,0" AutomationProperties.Name="首选媒体编码"/>
+   <TextBlock Text="首选是协商偏好，发送设备仍可能选择其它已允许的编码。设备卡片显示实际结果；单台调整在该设备的“…” →“编码与音质”。" Style="{StaticResource Caption}" Margin="0,7,0,0"/>
+  </StackPanel></Border>
+  <TextBlock x:Name="SaveState" Text="修改自动保存。连接偏好在下次开始接收生效；经典编码列表用于下次设备连接，现有连接继续播放。" Style="{StaticResource Caption}" Margin="0,12,0,10" AutomationProperties.LiveSetting="Polite"/>
+  <ui:Button Content="完成" Click="DoneClick" HorizontalAlignment="Right" Appearance="Primary" Padding="14,5"/>
+ </StackPanel></ScrollViewer>
+</Window>

@@ -21,8 +21,8 @@ internal static partial class Program
         }
         receive("""{"event":"stopped"}""");
         window.ShowPage("settings"); window.LeAudioToggle.IsChecked = true; window.Lhdc5Toggle.IsChecked = true;
-        Click(window.SaveButton); Pump();
-        var saved = window.SelfTestCommands.Last(item => item.Text("command") == "configure").GetProperty("settings");
+        window.FlushSettings().GetAwaiter().GetResult(); Pump();
+        var saved = window.SelfTestCommands.Last(item => item.Text("command") == "preferences").GetProperty("values");
         checks["le_audio_lhdc_settings_persist_without_restarting"] = saved.Flag("le_audio_enabled") && saved.Flag("lhdc5_enabled") && window.StartButton.Content.ToString() == "开始接收";
         window.ShowPage("broadcast"); Pump();
         checks["broadcast_page_reachable_and_explains_start"] = window.BroadcastPage.IsVisible && window.BroadcastPage.Guidance.Text.Contains("开始接收") && !window.BroadcastPage.ScanButton.IsEnabled;
@@ -57,6 +57,6 @@ internal static partial class Program
         window.ShowPage("home");
         window.CodecPicker.SelectedItem=window.CodecPicker.Items.OfType<ComboBoxItem>().Single(item=>Equals(item.Tag,"lhdc5"));
         window.ApplyCodecProfile().GetAwaiter().GetResult();
-        checks["home_lhdc_selection_enables_decoder_without_losing_le_setting"] = window.SelfTestCommands.Last().GetProperty("settings").Text("codec")=="lhdc5" && window.SelfTestCommands.Last().GetProperty("settings").Flag("lhdc5_enabled") && window.SelfTestCommands.Last().GetProperty("settings").Flag("le_audio_enabled");
+        checks["home_lhdc_selection_enables_decoder_without_losing_le_setting"] = window.SelfTestCommands.Last().GetProperty("values").Text("codec")=="lhdc5" && window.SelfTestCommands.Last().GetProperty("values").Flag("lhdc5_enabled") && window.SelfTestCommands.Last().GetProperty("values").Flag("le_audio_enabled");
     }
 }

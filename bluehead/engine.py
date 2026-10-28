@@ -32,17 +32,19 @@ def inventory():
     return {"adapters": usb_adapters(), "audio": audio_inventory()}
 
 
-def validate_settings(values):
+def validate_settings(values, *, require_transport=True):
     valid = {field.name for field in fields(Settings)}
     if not isinstance(values, dict) or set(values) - valid:
         raise ValueError("设置格式不受支持")
     settings = Settings(**values)
     if settings.mode not in ("advanced", "native"):
         raise ValueError("未知接收方式")
-    if settings.mode == "advanced":
+    if settings.mode == "advanced" and (require_transport or settings.transport != ""):
         transport_target(settings.transport)
     if settings.codec not in ("auto", "sbc", "aac", "aac_192", "aptx", "aptx_hd", "ldac", "lhdc5"):
         raise ValueError("未知媒体编码")
+    if settings.connection_policy not in ('prefer_le', 'classic'):
+        raise ValueError('请选择优先 LE Audio / LC3 或仅经典蓝牙')
     if settings.media_mode not in ("single", "mix"):
         raise ValueError("未知出声方式")
     if not isinstance(settings.name, str) or not settings.name.strip() or len(settings.name.encode("utf-8")) > 200:
@@ -71,10 +73,12 @@ def validate_settings(values):
             raise ValueError("设备音量设置无效")
         for value in gains.values():
             validate_gain(value)
-    if settings.codec == "ldac" and not settings.ldac_enabled:
-        raise ValueError("请先启用实验性 LDAC")
-    if settings.codec == 'lhdc5' and not settings.lhdc5_enabled:
-        raise ValueError('请先启用 LHDC 5.0')
+    from .codec_policy import canonical, permitted
+    allowed = permitted(settings)
+    if settings.codec != 'auto' and canonical(settings.codec) not in allowed:
+        raise ValueError('首选编码必须先在“允许的编码”中启用')
+    settings.ldac_enabled = 'ldac' in allowed
+    settings.lhdc5_enabled = 'lhdc5' in allowed
     return settings
 
 
@@ -289,6 +293,41 @@ class Engine:
                                   "play", "pause", "play_pause", "stop", "next", "previous"):
                 raise ValueError("不支持的设备操作")
             self.runner.action(operation, str(message.get("key", ""))[:200])
+        elif action in ('codec_options', 'codec_switch'):
+            from .codec_sessions import validate
+            values = validate(message, switch=action == 'codec_switch')
+            if not running or self.settings.mode == 'native':
+                self.emit(action, key=values['key'], request_id=values['request_id'],
+                          success=False, done=True, phase='failed',
+                          message='请先使用 BlueHead 专用蓝牙开始接收，并在这台设备上播放媒体。')
+            else:
+                self.runner.action(action, values)
+        elif action == 'preferences':
+            patch = message.get('values')
+            allowed = {'codec', 'allowed_codecs', 'ldac_enabled', 'lhdc5_enabled', 'connection_policy',
+                       'le_audio_enabled', 'name', 'maximum_devices', 'buffer_ms', 'call_buffer_ms',
+                       'calls', 'voice_single_device'}
+            if not isinstance(patch, dict) or set(patch) - allowed:
+                raise ValueError('自动保存设置格式无效')
+            with self.settings_lock:
+                values = {**asdict(self.settings), **patch}
+                next_settings = validate_settings(values, require_transport=False)
+                previous_settings = self.settings
+                self.settings = next_settings
+                try:
+                    self.save()
+                except OSError:
+                    self.settings = previous_settings
+                    self.emit('preferences', success=False, request_id=message.get('request_id', 0),
+                              message='设置未能保存，请检查数据目录是否可写，再修改一次或重新开始接收。')
+                    return
+            if running:
+                live = {name: getattr(next_settings, name) for name in (
+                    'codec', 'allowed_codecs', 'ldac_enabled', 'lhdc5_enabled')}
+                self.runner.action('codec_preferences', live)
+            self.emit('preferences', success=True, settings=asdict(next_settings),
+                      request_id=message.get('request_id', 0), deferred=running,
+                      message='已自动保存；连接设置在下次开始接收时生效。' if running else '已自动保存。')
         elif action == "gain":
             gain = validate_gain(message.get("gain", 1))
             key = str(message.get("key", ""))[:200]

@@ -66,7 +66,7 @@ BlueHead 的持续音频链路已从 Python 迁至 **C/C++**。Python 仍负责�
 | 音频广播接收 | BAP 广播、BASS/PAST、公开／带密码广播、节目选择、单 BIS 或分离立体声 |
 | 标准平台音频 | iPhone/iPad 的 AAC/SBC、HFP 和 AVRCP；Android、HarmonyOS、Windows 等以实际开放的协议和应用路由为准 |
 
-LHDC 5.0 可在首页选择；LE Audio 在 **设置 → 高级音频设置** 开启。普通“媒体编码”只控制经典 A2DP，语音和 LE Audio 的 LC3 自动协商。操作与详细范围见 [LE Audio / LHDC](docs/LE_AUDIO.md)。
+首页媒体编码右侧的设置按钮统一管理 **优先 LE Audio / LC3／仅经典蓝牙**、**允许的经典编码**和**首选编码**；连接偏好也可在应用设置的 LE Audio 开关旁修改。设置自动保存。每台设备的 **“…” → 编码与音质** 可在本次连接中单独调整双方支持的编码、采样率及可协商参数，失败时尝试恢复原格式，不重启其它设备。实际协议、码率与回退原因以界面为准。详见 [编码与连接策略](docs/CODEC_POLICY.md)、[LE Audio / LHDC](docs/LE_AUDIO.md)。
 
 蓝牙版本号不能保证 ISO、LE Audio 或特定编码能力。实际可用功能由适配器、USB 传输、固件和对端共同决定；未支持的方向不会被伪报为可用。多路高清媒体可能超过无线带宽，需要时可手动选 AAC 或单设备自动接替。
 

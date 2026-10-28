@@ -11,13 +11,16 @@ import struct
 import time
 from types import SimpleNamespace
 
-from bumble import avdtp, hci
+from bumble import avdtp, hci, gatt
 from bumble.core import PhysicalTransport
 from .profile import ControllerSupport, create_services, CommonAudioService
 from .native_bridge import NativeStreamBridge
 from .broadcast_receiver import BroadcastReceiver, NativeBroadcastSink
 from .bass_service import BroadcastScanService
 from .audio_controls import AudioControls
+from .discovery import AudioAdvertisement, HEADSET_APPEARANCE, announcement, roles
+from .peer_control import PeerAudioControl
+from .service_cache import ServiceCache
 from ..protocol import Format
 from ..errors import Retirement
 
@@ -121,6 +124,9 @@ class LeAudioApplication:
         self.identities = {}
         self.closed = False
         self.advertise_lock = asyncio.Lock()
+        self.announcer = AudioAdvertisement(device)
+        self.peer_controls = PeerAudioControl(self)
+        self.bonded = False
         self.failure = asyncio.get_running_loop().create_future()
         self.bridge = NativeStreamBridge(
             self.client,
@@ -177,6 +183,7 @@ class LeAudioApplication:
         if self.bundle:
             self.bundle.streams.admit = self.admitted
             self.bundle.streams.control.delay_caps = self.budget.capabilities
+            self.bundle.streams.peer_activity = self.peer_controls.start
         if self.broadcast:
             self.broadcast.failure = self.controller_failed
         if self.bass:
@@ -204,7 +211,21 @@ class LeAudioApplication:
         services.extend(self.controls.services)
         if self.bass:
             services.append(self.bass)
+        host = getattr(device, 'host', None)
+        le_2m = bool(host and host.supports_le_features(hci.LeFeatureMask.LE_2M_PHY))
+        self.tmap_roles = roles(receive=bool(self.bundle),
+                                transmit=support.transmit and receiver.settings.calls,
+                                broadcast=bool(self.broadcast), le_2m=le_2m)
+        if self.tmap_roles:
+            from bumble.profiles.tmap import TelephonyAndMediaAudioService
+            services.append(TelephonyAndMediaAudioService(self.tmap_roles))
         device.add_services(services)
+        # Match the extended advertisement's headset appearance in GAP itself.
+        server = getattr(device, 'gatt_server', None)
+        for attribute in getattr(server, 'attributes', ()):
+            if attribute.type == gatt.GATT_APPEARANCE_CHARACTERISTIC:
+                attribute.value = struct.pack('<H', HEADSET_APPEARANCE)
+        self.service_cache = ServiceCache(self)
 
     async def set_render_gain(self, value):
         await self.bridge.set_render_gain(value)
@@ -216,6 +237,10 @@ class LeAudioApplication:
         # The packet pump is the sole consumer of usb_poll. Snapshot is read-only.
         status = await asyncio.to_thread(receiver.mixer.client.request, "snapshot")
         support = ControllerSupport.parse(status.get("usb", {}))
+        if not device.supports_le_features(hci.LeFeatureMask.LE_EXTENDED_ADVERTISING):
+            support = replace(support, receive=False, transmit=False, broadcast=False)
+            receiver.emit('le_audio_discovery', phase='unavailable',
+                          reason='这个适配器当前不能发送 LE Audio 所需的扩展广播，已使用经典蓝牙。')
         if support.receive:
             # Enable the host ISO feature only after actual transport/features
             # are known. Unsupported LE Audio must not break classic startup.
@@ -243,6 +268,8 @@ class LeAudioApplication:
             return None
         app = cls(receiver, device, support)
         try:
+            if device.keystore:
+                app.bonded = bool(await device.keystore.get_all())
             await app.advertise()
             return app
         except BaseException:
@@ -342,18 +369,35 @@ class LeAudioApplication:
             self.disconnected(connection)
 
         def paired(keys):
+            self.bonded = True
             self.identity_changed(connection)
+            self.peer_controls.start(connection)
+            self.service_cache.ready(connection)
+
+        def encrypted():
+            if self.admitted(connection):
+                self.emit('le_audio_discovery', key=str(connection.peer_address), phase='encrypted')
+                self.peer_controls.start(connection)
+                self.service_cache.ready(connection)
 
         connection.on("disconnection", lost)
         connection.on("pairing", paired)
-        self.listeners.extend(((connection, "disconnection", lost), (connection, "pairing", paired)))
+        connection.on('connection_encryption_change', encrypted)
+        self.listeners.extend(((connection, "disconnection", lost), (connection, "pairing", paired),
+                               (connection, 'connection_encryption_change', encrypted)))
         if first:
             self.emit("device", key=key, state="已连接，等待音频")
+        self.emit('le_audio_discovery', key=key, phase='connected',
+                  reason='已建立低功耗连接，正在等待设备配置 LC3 音频。')
+        self.peer_controls.start(connection)
+        self.service_cache.ready(connection)
         self.receiver.spawn_control(self.advertise())
 
     def disconnected(self, connection):
         if self.connections.pop(id(connection), None) is None:
             return
+        self.peer_controls.disconnected(connection)
+        self.service_cache.disconnected(connection)
         for source, event, callback in tuple(self.listeners):
             if source is connection:
                 source.remove_listener(event, callback)
@@ -390,6 +434,8 @@ class LeAudioApplication:
                     channels=session.format.channels,
                     protocol="LE Audio",
                 )
+                self.emit('le_audio_discovery', key=key, phase='channel_ready',
+                          reason='LE Audio 音频通道已建立，等待发送设备传来 LC3 音频。')
         elif session is not None:
             session.records.pop(record.key, None)
             if not session.records:
@@ -447,28 +493,12 @@ class LeAudioApplication:
         allowed = len(self.receiver.connection_keys()) < self.receiver.settings.maximum_devices and not (
             guard and guard.enabled and guard.reservation
         )
-        if not allowed:
-            if self.device.is_advertising:
-                await self.device.stop_advertising()
-            return
-        if self.device.is_advertising:
-            return
-        contexts = 0x0FFF | (0x0FFF0000 if self.support.transmit and self.receiver.settings.calls else 0)
-        ad = b"\x02\x01\x1a"
-        if self.bundle:
-            payload = b"\x4e\x18\x00" + struct.pack("<I", contexts) + b"\x00"
-            ad += bytes([len(payload) + 1, 0x16]) + payload
-        uuids = b"\x53\x18"
-        if self.bass:
-            uuids += b"\x4f\x18"
-        if uuids:
-            ad += bytes([len(uuids) + 1, 0x03]) + uuids
-        remaining = 31 - len(ad) - 2
-        name = self.receiver.settings.name.encode("utf-8")[:remaining].decode("utf-8", "ignore").encode("utf-8")
-        if name:
-            ad += bytes([len(name) + 1, 8]) + name
+        ad = announcement(self.receiver.settings.name, receive=bool(self.bundle),
+                          transmit=self.support.transmit and self.receiver.settings.calls,
+                          broadcast=bool(self.bass), targeted=self.bonded,
+                          tmap_roles=self.tmap_roles)
         await asyncio.wait_for(
-            self.device.start_advertising(advertising_data=ad, own_address_type=hci.OwnAddressType.PUBLIC), 3
+            self.announcer.update(allowed, ad), 3
         )
 
     async def disconnect(self, key):
@@ -490,6 +520,9 @@ class LeAudioApplication:
         ):
             self.receiver.voice_protection.before_prepare = self.previous_voice_prepare
         retirement = Retirement()
+        await retirement.async_call(self.peer_controls.close)
+        await retirement.async_call(self.service_cache.close)
+        await retirement.async_call(self.announcer.close)
         await retirement.async_call(self.controls.close)
         if self.bass:
             await retirement.async_call(self.bass.close)

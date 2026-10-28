@@ -67,9 +67,7 @@ public partial class MainWindow
     private Task? driverRefreshTask;
     private string? driverInventoryError, preparedDriverInstance, pendingSetupMode, driverResultInstance;
     internal List<string> SelfTestExternalLinks { get; } = [];
-    private string? codecDraft;
     private bool mediaModePending, voiceInUse, mediaProtected, highMediaActive;
-    private EngineSettings? restartWithCodec;
     private System.Windows.Forms.NotifyIcon? tray;
     internal MainWindow(bool offline = false)
     {
@@ -78,7 +76,7 @@ public partial class MainWindow
         dataDirectory = Environment.GetEnvironmentVariable("BLUEHEAD_DATA_DIR") ??
             (File.Exists(Path.Combine(portableRoot, "portable.flag")) ? Path.Combine(portableRoot, "data") :
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BlueHead", "data"));
-        InitializeComponent(); DataContext = State; InitializeProtocolControls();
+        InitializeComponent(); DataContext = State; InitializeProtocolControls(); InitializeCodecControls();
         if (!offline) WindowSizing.Track(this);
         LocationChanged += (_, _) => CloseAudioEditors();
         SizeChanged += (_, _) => { CloseAudioEditors(); UpdateAudioFooterLayout(); };
@@ -168,6 +166,7 @@ public partial class MainWindow
     }
     private void ClearSession()
     {
+        EndCodecConnections();
         VoiceProtectionNotice.Visibility = Visibility.Collapsed; VoiceProtectionText.Text = "";
         voiceInUse = mediaProtected = highMediaActive = systemAudioActive = systemFeedbackBlocked = refreshingAudio = false;
         sessionMediaOnly = mediaModePending = false; systemAudioRequest = null;
@@ -179,7 +178,7 @@ public partial class MainWindow
     internal void ApplyEngineFailure(int generation, string message)
     {
         if (closing || generation != engine.Generation) return;
-        restartWithCodec = null; stopping = false; ClearSession(); SetRunning(false);
+        stopping = false; ClearSession(); SetRunning(false);
         EngineState.Text = "后台已断开"; FooterStatus.Text = "连接已清除 · 点击开始接收恢复";
         ShowNotice(message);
     }
@@ -201,9 +200,7 @@ public partial class MainWindow
     {
         settings.name = NameEntry.Text.Trim(); settings.calls = CallsToggle.IsChecked == true;
         settings.voice_single_device = VoiceProtectionToggle.IsChecked == true;
-        settings.codec = (CodecPicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "auto"; codecDraft = null;
-        if (settings.codec == "ldac") LdacToggle.IsChecked = true;
-        if (settings.codec == "lhdc5") Lhdc5Toggle.IsChecked = true;
+        settings.codec = (CodecPicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "auto";
         settings.transport = (AdapterPicker.SelectedItem as AdapterChoice)?.Transport ?? settings.transport;
         settings.buffer_ms = int.Parse((MediaBufferPicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "60");
         settings.call_buffer_ms = int.Parse((CallBufferPicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "30");
@@ -211,6 +208,7 @@ public partial class MainWindow
         settings.ldac_enabled = LdacToggle.IsChecked == true;
         settings.lhdc5_enabled = Lhdc5Toggle.IsChecked == true;
         settings.le_audio_enabled = LeAudioToggle.IsChecked == true;
+        settings.connection_policy = settings.le_audio_enabled ? "prefer_le" : "classic";
         return settings;
     }
     private void ApplySettings()
@@ -219,7 +217,8 @@ public partial class MainWindow
         NameEntry.Text = settings.name; CallsToggle.IsChecked = settings.calls; LdacToggle.IsChecked = settings.ldac_enabled;
         VoiceProtectionToggle.IsChecked = settings.voice_single_device;
         Lhdc5Toggle.IsChecked = settings.lhdc5_enabled; LeAudioToggle.IsChecked = settings.le_audio_enabled;
-        SelectTag(CodecPicker, codecDraft ?? settings.codec); SelectTag(PlaybackModePicker, settings.media_mode); SelectTag(ModePicker, settings.mode); SelectTag(HomeModePicker, settings.mode);
+        SelectTag(ConnectionPolicyPicker, settings.le_audio_enabled ? "prefer_le" : "classic");
+        SelectTag(CodecPicker, settings.codec); RefreshCodecChoices(); SelectTag(PlaybackModePicker, settings.media_mode); SelectTag(ModePicker, settings.mode); SelectTag(HomeModePicker, settings.mode);
         SelectTag(MediaBufferPicker, settings.buffer_ms.ToString()); SelectTag(CallBufferPicker, settings.call_buffer_ms.ToString());
         SelectTag(MaximumPicker, settings.maximum_devices.ToString());
         MuteToggle.IsChecked = settings.microphone_muted;
@@ -240,6 +239,7 @@ public partial class MainWindow
     {
         var kind = message.Text("event");
         if (stopping && kind is not ("stopped" or "stopping" or "error" or "warning")) return;
+        if (ApplyCodecMessage(message)) return;
         ApplyProtocolMessage(message);
         if (kind == "hello")
         {
@@ -288,12 +288,6 @@ public partial class MainWindow
         else if (kind == "stopped")
         {
             stopping = false; ClearSession(); SetRunning(false);
-            if (restartWithCodec is { } next)
-            {
-                restartWithCodec = null; settings = next; codecDraft = null; ApplySettings();
-                _ = Send(new { command = "start", settings });
-                FooterStatus.Text = "媒体编码已应用 · 请重新连接移动设备";
-            }
             // A controller fault is presented for explicit recovery; never raise UAC here.
         }
         else if (kind == "controller_capabilities")
@@ -467,7 +461,12 @@ public partial class MainWindow
             UpdateDevices();
         }
     }
-    private void UpdateDevices() { DeviceCount.Text = $"{State.Devices.Count} 台设备"; UpdateSetupState(); UpdateMediaControls(); RefreshOpenHelp(); }
+    private void UpdateDevices()
+    {
+        DeviceCount.Text = $"{State.Devices.Count} 台设备";
+        foreach (var item in codecWindows) if (!devices.ContainsKey(item.Key)) item.Value.Disconnected();
+        UpdateSetupState(); UpdateMediaControls(); RefreshOpenHelp();
+    }
     private DriverDevice? ReceptionAdapter
     {
         get
@@ -505,6 +504,7 @@ public partial class MainWindow
         VoiceProtectionToggle.IsEnabled = !running && !stopping && !starting && !driverBusy;
         SharedCodecValue.Visibility = shared ? Visibility.Visible : Visibility.Collapsed;
         CodecPicker.Visibility = shared ? Visibility.Collapsed : Visibility.Visible;
+        CodecSettingsButton.Visibility = shared ? Visibility.Collapsed : Visibility.Visible;
         PlaybackModePicker.Visibility = shared ? Visibility.Collapsed : Visibility.Visible;
         SharedPlaybackValue.Visibility = shared ? Visibility.Visible : Visibility.Collapsed;
         ModeStatusButton.Content = "驱动设置";
@@ -647,6 +647,7 @@ public partial class MainWindow
         }
         else if (stream.TryGetProperty("media", out var media) && media.Text("codec").Length > 0)
         {
+            if (codecWindows.TryGetValue(card.Key, out var codecWindow)) codecWindow.UpdateTelemetry(media);
             card.Media = $"{media.Text("protocol", "A2DP")} / {CodecName(media.Text("codec"))} · {media.Number("rate") / 1000:0.###} kHz · {Bitrate(media.Number("bitrate"))}";
             if (media.Flag("protected")) card.PlaybackNotice = "链路不稳 · 已暂时隔离碎音，建议降低码率";
             if (media.Text("protocol") == "LE Audio")
@@ -661,9 +662,9 @@ public partial class MainWindow
         running = value;
         if (!value && !driverBusy && pendingSetupMode is { } desired) { pendingSetupMode = null; _ = ChooseMode(desired, false); }
         StartButton.Content = value ? "停止接收" : "开始接收"; StartButton.IsEnabled = !driverBusy;
-        foreach (Control control in new Control[] { NameEntry, CallsToggle, ModePicker, AdapterPicker, MediaBufferPicker, CallBufferPicker, MaximumPicker, LdacToggle, Lhdc5Toggle, LeAudioToggle, SaveButton }) control.IsEnabled = !value && !driverBusy;
+        foreach (Control control in new Control[] { NameEntry, CallsToggle, ModePicker, AdapterPicker, MediaBufferPicker, CallBufferPicker, MaximumPicker, LdacToggle, Lhdc5Toggle, LeAudioToggle, ConnectionPolicyPicker }) control.IsEnabled = !value && !driverBusy;
         if (!value) { pending.Clear(); StatusTitle.Text = "接收已停止"; StatusDetail.Text = "点击开始接收，即可再次连接移动设备。"; }
-        SettingsHint.Text = value ? "音量、声音设备和高级混合可实时调整；连接设置在停止后修改。" : "";
+        SettingsHint.Text = value ? "音量与声音设备可实时调整；其它连接设置先停止接收再修改，修改自动保存。" : "修改自动保存。";
         SetPickerStates(); UpdateSetupState(); UpdateProtocolAvailability();
         DriverStopButton.IsEnabled = !stopping;
         if (stopping || starting) StartButton.IsEnabled = false;
@@ -681,7 +682,7 @@ public partial class MainWindow
         SystemGain.IsEnabled &= !running || !sessionMediaOnly;
         SystemGain.CanAdjust = settings.system_audio_enabled;
         SystemAudioToggle.IsEnabled = settings.mode != "native" && (!running || !sessionMediaOnly) && settings.calls && !driverBusy && systemAudioRequest == null;
-        foreach (Control control in new Control[] { NameEntry, CallsToggle, MediaBufferPicker, CallBufferPicker, MaximumPicker, LdacToggle, Lhdc5Toggle, LeAudioToggle })
+        foreach (Control control in new Control[] { NameEntry, CallsToggle, MediaBufferPicker, CallBufferPicker, MaximumPicker, LdacToggle, Lhdc5Toggle, LeAudioToggle, ConnectionPolicyPicker })
             control.IsEnabled = !running && !driverBusy && settings.mode != "native";
         VoiceCodecHint.Text = settings.mode == "native" ? VoiceCodecStatus : VoiceCodecStatus + "；用于通话及支持蓝牙麦克风的录音、录像应用";
         if (!running) SettingsHint.Text = settings.mode == "native" ? "共用蓝牙模式：设备名称、媒体编码、播放设备和音量由 Windows 管理，不提供蓝牙语音与麦克风。" : "";
@@ -693,44 +694,39 @@ public partial class MainWindow
     {
         if (CodecPicker == null || PlaybackModePicker == null) return;
         var dedicated = settings.mode != "native";
-        CodecPicker.IsEnabled = dedicated && !driverBusy && restartWithCodec == null;
-        PlaybackModePicker.IsEnabled = dedicated && !driverBusy && !mediaModePending && restartWithCodec == null;
+        CodecPicker.IsEnabled = CodecSettingsButton.IsEnabled = dedicated && !driverBusy;
+        PlaybackModePicker.IsEnabled = dedicated && !driverBusy && !mediaModePending;
         foreach (var card in State.Devices) card.CanSelectMedia = dedicated && settings.media_mode == "single" && State.Devices.Count >= 2;
         MediaModeHint.Text = !dedicated ? "此模式的媒体连接与编码由 Windows 管理。" : settings.media_mode == "mix"
             ? "一起听：各设备声音同时播放，可分别调节音量。" : "当前设备停止传音约 0.8 秒后自动接替等待播放的设备；点击设备名旁的标记可立即切换。语音使用中不自动切换媒体。";
         if (dedicated && State.Devices.Count >= 2) MediaModeHint.Text = $"已连接 {State.Devices.Count} 台 · " + MediaModeHint.Text;
-        var desired = codecDraft ?? settings.codec;
+        var desired = settings.codec;
         CodecHint.Text = !dedicated ? "此模式的媒体编码和码率由 Windows 管理，不提供蓝牙语音与麦克风。" : (desired switch
         {
             "auto" => "优先协商可用高清媒体编码；多设备断续时可切换 AAC。",
             "aac" => "AAC 最高 320 kb/s，兼顾音质与带宽。实际码率由移动设备协商。",
             "aac_192" => "AAC 最高 192 kb/s，减少无线带宽占用，适合多设备或信号不稳时使用。",
             "sbc" => "SBC 兼容性较好，实际码率由移动设备协商；不一定比 AAC 更低。",
-            "ldac" => "LDAC 实验解码；并发更占带宽，建议仅一个设备出声。",
+            "ldac" => "LDAC 高清解码；并发更占带宽，建议仅一个设备出声。",
             "lhdc5" => "LHDC 5.0 高清媒体解码；需要发送设备支持。采样率与实际码率显示在设备卡片上。",
             _ => "高清媒体编码更占无线带宽，多设备同时播放可能丢包；建议只听一台。"
-        }) + " 仅影响媒体播放，语音编码自动协商。";
-        var dirty = codecDraft != null && codecDraft != settings.codec;
-        CodecApplyRow.Visibility = dirty ? Visibility.Visible : Visibility.Collapsed;
-        ApplyCodecButton.Content = running ? "应用并重连" : "保存媒体编码";
-        ApplyCodecButton.IsEnabled = dedicated && !NeedsBluetoothSetup && !driverBusy && !VoiceBusy && !refreshingAudio && pending.Count == 0 && !mediaModePending && restartWithCodec == null;
-        CodecApplyHint.Text = VoiceBusy ? "语音通道正在使用，请结束后再更换媒体编码。" : refreshingAudio || pending.Count != 0 || mediaModePending ? "正在更新声音设备或设备播放方式，请完成后再应用媒体编码。" : running
-            ? "应用媒体编码会断开当前蓝牙连接；请随后重新连接移动设备。" : "保存媒体编码后，在下一次蓝牙连接时使用。";
+        }) + " 首选与允许列表分开；修改自动保存，用于下次设备连接。当前设备可从“…” →“编码与音质”单独调整。语音编码自动协商。";
         var high = settings.codec is "aptx" or "aptx_hd" or "ldac" or "lhdc5" || settings.codec == "auto" && highMediaActive;
         MultipointNotice.Visibility = dedicated && State.Devices.Count >= 2 && settings.media_mode == "mix" && mediaProtected ? Visibility.Visible : Visibility.Collapsed;
         MultipointText.Text = settings.media_mode == "single" ? $"已连接 {State.Devices.Count} 台 · 当前只听一个设备。需要一起听时，在上方“多设备播放”选择“同时播放”。"
-            : mediaProtected ? "检测到持续丢包，已隔离不稳定一路的碎音。可降低码率后重连，或改为仅一个设备出声。"
-            : high ? "已连接多台 · 高清并发可能断续。两路无法稳定播放时，切换 AAC 后重新连接。"
+            : mediaProtected ? "检测到持续丢包，已隔离不稳定一路的碎音。可从设备的“…” →“编码与音质”改用 AAC，或选择单台自动接替。"
+            : high ? "已连接多台 · 高清并发可能断续。可从各设备的“…” →“编码与音质”分别改用 AAC。"
             : $"已连接 {State.Devices.Count} 台 · 当前同时出声。若出现断续，可进一步降低 AAC 码率。";
         LowerBitrateButton.Visibility = settings.media_mode == "mix" && settings.codec != "aac_192" ? Visibility.Visible : Visibility.Collapsed;
-        LowerBitrateButton.Content = high ? "切换 AAC 并重连" : "降至 192 并重连";
-        LowerBitrateButton.IsEnabled = !VoiceBusy && !driverBusy && !refreshingAudio && pending.Count == 0 && !mediaModePending && restartWithCodec == null;
+        LowerBitrateButton.Content = "逐台调整编码…";
+        LowerBitrateButton.IsEnabled = !VoiceBusy && !driverBusy;
     }
     private void PlaybackSettingsClick(object sender, RoutedEventArgs e) => ShowAdvancedAudio();
     private void CodecChanged(object sender, SelectionChangedEventArgs e)
     {
         if (applying || CodecPicker?.SelectedItem is not ComboBoxItem selected) return;
-        codecDraft = selected.Tag?.ToString(); UpdateMediaControls();
+        settings.codec = selected.Tag?.ToString() ?? "auto";
+        QueueSettings(); UpdateMediaControls();
     }
     private async void PlaybackModeChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -744,26 +740,15 @@ public partial class MainWindow
     {
         if (sender is FrameworkElement { DataContext: DeviceCard card }) await Send(new { command = "device_action", action = "select_media", key = card.Key });
     }
-    private async void ApplyCodecClick(object sender, RoutedEventArgs e) => await ApplyCodecProfile();
-    private async void LowerBitrateClick(object sender, RoutedEventArgs e) => await ApplyCodecProfile(settings.codec is "aptx" or "aptx_hd" or "ldac" or "lhdc5" || settings.codec == "auto" && highMediaActive ? "aac" : "aac_192");
+    private void LowerBitrateClick(object sender, RoutedEventArgs e)
+    {
+        if ((State.Devices.FirstOrDefault(card => card.IsMediaSelected) ?? State.Devices.FirstOrDefault()) is { } card) OpenDeviceCodec(card);
+    }
     internal async Task ApplyCodecProfile(string? force = null)
     {
-        if (VoiceBusy || driverBusy || refreshingAudio || pending.Count != 0 || mediaModePending || settings.mode == "native" || restartWithCodec != null) return;
-        var next = JsonSerializer.Deserialize<EngineSettings>(JsonSerializer.Serialize(settings))!;
-        next.codec = force ?? codecDraft ?? settings.codec;
-        if (next.codec == "ldac") next.ldac_enabled = true;
-        if (next.codec == "lhdc5") next.lhdc5_enabled = true;
-        await FlushGains();
-        if (running)
-        {
-            restartWithCodec = next; UpdateMediaControls();
-            if (!await Send(new { command = "stop" })) { restartWithCodec = null; UpdateMediaControls(); }
-        }
-        else
-        {
-            if (await Send(new { command = "configure", settings = next }))
-            { settings = next; codecDraft = null; ApplySettings(); FooterStatus.Text = "媒体编码已保存 · 下次连接时生效"; }
-        }
+        if (driverBusy || settings.mode == "native") return;
+        if (force != null) { settings.codec = force; var previous = applying; applying = true; SelectTag(CodecPicker, force); applying = previous; }
+        QueueSettings(); await FlushSettings();
     }
     private void UpdateAudioFooterLayout()
     {
@@ -803,6 +788,7 @@ public partial class MainWindow
         if (!automatic) receptionRequested = true;
         if (!NeedsBluetoothSetup) await RefreshDrivers();
         if (NeedsBluetoothSetup) { if (!automatic) SetupBluetoothClick(StartButton, new RoutedEventArgs()); else ShowPage("adapters"); return; }
+        if (!await FlushSettings()) return;
         var selected = ReadSettings();
         starting = true; SetRunning(true); StatusTitle.Text = "正在准备接收";
         try
@@ -846,24 +832,11 @@ public partial class MainWindow
         if (!await Send(new { command = "system_audio", enabled = SystemAudioToggle.IsChecked == true, request_id = id }))
         { systemAudioRequest = null; ApplySettings(); }
     }
-    private async void SaveSettingsClick(object sender, RoutedEventArgs e) => await SaveSettings();
     private async Task<bool> SaveSettings()
     {
         if (running) { ShowNotice("请先停止接收，再保存连接设置。"); return false; }
         if (!await Send(new { command = "configure", settings = ReadSettings() })) return false;
-        preferences.Tray = TrayToggle.IsChecked == true; preferences.AutoStart = AutoStartToggle.IsChecked == true;
-        if (!offline)
-        {
-            Directory.CreateDirectory(dataDirectory);
-            File.WriteAllText(Path.Combine(dataDirectory, "desktop.json"), JsonSerializer.Serialize(preferences));
-            // Source candidates use their own data and must not replace the
-            // installed application's per-user autostart entry.
-            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("BLUEHEAD_SOURCE_ROOT")))
-            {
-                using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-                if (preferences.AutoStart) key.SetValue("BlueHead", $"{FrameworkCompat.QuoteArgument(FrameworkCompat.ProcessPath)} --tray"); else key.DeleteValue("BlueHead", false);
-            }
-        }
+        settingsDirty = false; settingsTimer.Stop(); SaveDesktopPreferences();
         return true;
     }
     private async void ModeChanged(object sender, SelectionChangedEventArgs e)
@@ -1143,6 +1116,8 @@ public partial class MainWindow
         try { if (offline && SelfTestShutdown != null) await SelfTestShutdown(); }
         catch (Exception error) { RecordExitError(error); }
         try { await FlushGains(); }
+        catch (Exception error) { RecordExitError(error); }
+        try { await FlushSettings(); }
         catch (Exception error) { RecordExitError(error); }
         try { await engine.ShutdownAsync(); }
         catch (Exception error) { RecordExitError(error); }

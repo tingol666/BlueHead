@@ -125,13 +125,13 @@ internal static partial class Program
         Capture((FrameworkElement)window.AudioOptionHelpPopup.Child, Path.Combine(folder, "help-codec-popup.png"));
         Click(window.CodecHelpButton);
         checks["clicking_same_help_icon_closes_popup"] = !window.AudioOptionHelpPopup.IsOpen;
-        window.ShowPage("settings"); window.MaximumPicker.SelectedIndex = 3; Click(window.SaveButton); window.ShowPage("home");
+        window.ShowPage("settings"); window.MaximumPicker.SelectedIndex = 3; window.FlushSettings().GetAwaiter().GetResult(); window.ShowPage("home");
         Click(window.PlaybackHelpButton);
         checks["playback_help_shows_saved_connection_limit_and_current_count"] = window.AudioOptionHelpPopup.IsOpen && window.AudioOptionHelpTitle.Text == "多设备播放" && window.AudioOptionHelpFact.IsVisible && window.AudioOptionHelpFactText.Text.Contains("最多同时连接 4 台设备") && window.AudioOptionHelpFactText.Text.Contains("当前已连接 0 台");
         Capture((FrameworkElement)window.AudioOptionHelpPopup.Child, Path.Combine(folder, "help-playback-popup.png"));
         Click(window.CloseOptionHelpButton);
         checks["help_close_button_works"] = !window.AudioOptionHelpPopup.IsOpen;
-        window.ShowPage("settings"); window.MaximumPicker.SelectedIndex = 2; Click(window.SaveButton); window.ShowPage("home");
+        window.ShowPage("settings"); window.MaximumPicker.SelectedIndex = 2; window.FlushSettings().GetAwaiter().GetResult(); window.ShowPage("home");
         Click(window.SystemAudioHelpButton);
         checks["system_sound_help_explains_target_mix_gains_and_return_exclusion"] = window.AudioOptionHelpPopup.IsOpen && window.AudioOptionHelpTitle.Text == "同时发送电脑声音" && window.OptionHelpPlainText.Contains("当前使用蓝牙麦克风") && window.OptionHelpPlainText.Contains("麦克风发送") && window.OptionHelpPlainText.Contains("排除 BlueHead");
         Capture((FrameworkElement)window.AudioOptionHelpPopup.Child, Path.Combine(folder, "help-system-popup.png"));
@@ -155,7 +155,8 @@ internal static partial class Program
         Event("""{"event":"telemetry","audio":{},"devices":[{"key":"demo-phone","media":{},"call":{"active":true,"codec":"msbc","rate":16000,"rx_bitrate":60800,"tx_bitrate":60800,"rx_packets":800,"microphone_active":true,"system_audio_active":false}},{"key":"demo-tablet","media":{"codec":"aptx_hd","rate":48000,"bitrate":576000,"packets_per_second":100,"playing":true,"buffer_ms":60,"recoveries":0},"call":{}}]}""");
         checks["multiple_connections_offer_explained_choice"] = window.PlaybackModePicker.IsVisible && window.PlaybackModePicker.Items.Count == 2;
         window.CodecPicker.SelectedItem = window.CodecPicker.Items.OfType<System.Windows.Controls.ComboBoxItem>().First(item => Equals(item.Tag, "aptx_hd"));
-        checks["codec_change_is_deferred_while_voice_in_use"] = window.CodecPicker.IsEnabled && window.CodecApplyRow.IsVisible && !window.ApplyCodecButton.IsEnabled && window.CodecApplyHint.Text.Contains("语音通道");
+        window.FlushSettings().GetAwaiter().GetResult();
+        checks["global_codec_preference_can_save_during_voice_without_restarting"] = window.CodecPicker.IsEnabled && window.SelfTestCommands.Last().Text("command") == "preferences";
         window.CodecPicker.SelectedIndex = 0;
         window.PlaybackModePicker.SelectedIndex = 1;
         checks["mode_choice_sends_explicit_live_command"] = window.SelfTestCommands.Last().Text("command") == "media_mode" && window.SelfTestCommands.Last().Text("mode") == "single";
@@ -247,10 +248,10 @@ internal static partial class Program
         checks["connection_settings_locked_while_receiving"] = !window.AdapterPicker.IsEnabled && !window.NameEntry.IsEnabled;
         window.OutputPicker.SelectedIndex = 1;
         checks["output_switch_waits_for_ack"] = !window.OutputPicker.IsEnabled;
-        Event("""{"event":"audio_device","direction":"output","device":1,"request_id":1,"success":true}""");
+        Event(JsonSerializer.Serialize(new { @event = "audio_device", direction = "output", device = 1, request_id = window.SelfTestCommands.Last(item => item.Text("command") == "audio_device").Number("request_id"), success = true }));
         checks["output_switch_ack_keeps_connection"] = window.OutputPicker.IsEnabled && window.State.Devices.Count == 1;
         window.InputPicker.SelectedIndex = 1;
-        Event("""{"event":"audio_device","direction":"input","device":2,"request_id":2,"success":false,"message":"测试：麦克风不可用，已保留原设备"}""");
+        Event(JsonSerializer.Serialize(new { @event = "audio_device", direction = "input", device = 2, request_id = window.SelfTestCommands.Last(item => item.Text("command") == "audio_device").Number("request_id"), success = false, message = "测试：麦克风不可用，已保留原设备" }));
         checks["failed_input_switch_rolls_back"] = window.InputPicker.IsEnabled && window.InputPicker.SelectedIndex == 0 && window.State.Devices.Count == 1;
         Event("""{"event":"call","key":"demo-phone","state":"来电","phase":"incoming"}""");
         checks["incoming_call_actions"] = window.State.Devices[0].CanAnswer && window.State.Devices[0].CanHangup;
@@ -267,7 +268,7 @@ internal static partial class Program
         window.State.Devices[0].Volume = 175; window.State.Devices[0].UplinkVolume = 130;
         checks["independent_device_and_master_levels_0_to_200"] = window.PlaybackGain.Maximum == 200 && window.MicrophoneGain.Maximum == 200 && window.SystemGain.Maximum == 200 && window.State.Devices[0].Volume == 175 && window.State.Devices[0].UplinkVolume == 130;
         window.SystemAudioToggle.IsChecked = true;
-        Event("""{"event":"system_audio","success":true,"enabled":true,"request_id":3}""");
+        Event(JsonSerializer.Serialize(new { @event = "system_audio", success = true, enabled = true, request_id = window.SelfTestCommands.Last(item => item.Text("command") == "system_audio").Number("request_id") }));
         checks["advanced_mix_can_enable_live"] = window.SystemGain.IsEnabled && window.SystemGain.CanAdjust && window.SystemAudioToggle.IsEnabled;
         window.ShowPage("home"); Pump();
         checks["mix_enabled_shows_third_master"] = window.SystemGain.IsVisible;
@@ -356,15 +357,15 @@ internal static partial class Program
         Event("""{"event":"audio_refreshing"}""");
         var beforeRefreshApply = window.SelfTestCommands.Count;
         window.ApplyCodecProfile().GetAwaiter().GetResult();
-        checks["audio_device_refresh_blocks_codec_restart"] = !window.ApplyCodecButton.IsEnabled && window.SelfTestCommands.Count == beforeRefreshApply && window.CodecApplyHint.Text.Contains("更新");
+        checks["codec_preferences_during_audio_refresh_never_restart_controller"] = window.SelfTestCommands.Skip(beforeRefreshApply).All(item => item.Text("command") == "preferences");
         Event("""{"event":"audio_refreshed","success":true,"output_device":null,"input_device":null,"output_endpoint_id":"recovery-preferred","input_endpoint_id":null}""");
-        checks["reconnect_button_explains_connection_interruption"] = window.CodecApplyRow.IsVisible && window.CodecApplyHint.Text.Contains("断开") && window.ApplyCodecButton.IsEnabled;
+        checks["codec_preferences_use_compact_settings_instead_of_restart_button"] = window.CodecSettingsButton.IsVisible;
         window.ApplyCodecProfile().GetAwaiter().GetResult();
-        checks["applying_codec_stops_before_starting"] = window.SelfTestCommands.Last().Text("command") == "stop";
+        checks["applying_global_codec_preserves_live_receiver"] = window.SelfTestCommands.Last().Text("command") == "preferences" && window.StartButton.Content.ToString() == "停止接收";
+        var savedCodec = window.SelfTestCommands.Last().GetProperty("values");
+        checks["codec_preferences_do_not_overwrite_preferred_endpoint_intent"] = !savedCodec.TryGetProperty("output_endpoint_id", out _);
+        checks["codec_preferences_do_not_overwrite_audio_gains_or_playback_mode"] = savedCodec.Text("codec") == "aac_192" && !savedCodec.TryGetProperty("playback_gain", out _) && !savedCodec.TryGetProperty("media_mode", out _);
         Event("""{"event":"stopped"}""");
-        var restart = window.SelfTestCommands.Last();
-        checks["codec_restart_preserves_missing_preferred_endpoint_intent"] = restart.GetProperty("settings").Text("output_endpoint_id") == "recovery-preferred";
-        checks["codec_restarts_with_gains_and_mode_preserved"] = restart.Text("command") == "start" && restart.GetProperty("settings").Text("codec") == "aac_192" && restart.GetProperty("settings").Text("media_mode") == "mix" && restart.GetProperty("settings").Number("playback_gain") == 1.45;
         Event("""{"event":"starting"}""");
         Event("""{"event":"device","key":"demo-a","state":"已连接"}""");
         Event("""{"event":"device","key":"demo-b","state":"已连接"}""");
@@ -409,7 +410,7 @@ internal static partial class Program
         checks["unprepared_mode_states_next_step_and_driver_impact"] = window.ModePendingTitle.Text.Contains("待你确认") && window.ChoiceFeedback.Text.Contains("尚未切换") && window.ModePendingText.Text.Contains("返回或取消") && window.DriverImpactTitle.Text.Contains("鼠标") && window.DriverImpactTitle.Text.Contains("断开") && window.DriverImpactText.Text.Contains("Windows") && window.DriverImpactText.Text.Contains("蓝牙开关会消失");
         checks["system_driver_offers_only_backup_install_for_advanced_choice"] = window.DriverInstallButton.IsVisible && window.DriverInstallButton.IsEnabled && window.DriverRestoreButton.Visibility == Visibility.Collapsed && window.OriginalBootstrapButton.Visibility == Visibility.Collapsed;
         var operationsBeforeDraft = window.SelfTestDriverOperations.Count;
-        Click(window.SaveButton);
+        window.FlushSettings().GetAwaiter().GetResult();
         checks["saving_settings_cannot_persist_an_unprepared_mode"] = SavedMode() == "native" && window.HasPendingMode && window.SelfTestDriverOperations.Count == operationsBeforeDraft;
         window.ApplyDriverInventory([systemAdapter], true); Pump();
         checks["refresh_does_not_commit_a_pending_mode"] = window.HasPendingMode && window.HomeModePicker.SelectedIndex == 1;
@@ -619,7 +620,7 @@ internal static partial class Program
         checks["partial_system_snapshot_does_not_delete_windows_owned_connections"] = window.State.Devices.Count == 1;
         Event("""{"event":"telemetry","running":false,"audio":{},"devices":[]}""");
         checks["stopped_receiver_snapshot_clears_remaining_ui_state"] = window.State.Devices.Count == 0 && window.StartButton.IsEnabled;
-        try { ProtocolChecks(window, checks, folder, Event); checks["protocol_checks_completed"] = true; }
+        try { ProtocolChecks(window, checks, folder, Event); CodecChecks(window, checks, folder, Event); checks["protocol_checks_completed"] = true; }
         catch (Exception error)
         {
             checks["protocol_checks_completed"] = false;

@@ -384,7 +384,7 @@ internal static partial class Program
         Event("""{"event":"device","key":"demo-a","state":"已连接"}""");
         Event("""{"event":"device","key":"demo-b","state":"已连接"}""");
         Event("""{"event":"telemetry","audio":{},"devices":[{"key":"demo-a","media":{"codec":"aac","rate":48000,"bitrate":180000,"protected":true,"lost_packets":123},"call":{}}]}""");
-        checks["protection_is_visible_and_lowest_profile_does_not_offer_same_retry"] = window.State.Devices[0].PlaybackNotice.Contains("隔离") && window.MultipointText.Text.Contains("丢包") && !window.LowerBitrateButton.IsVisible;
+        checks["protection_is_visible_with_global_parameters_and_reconnect_action"] = window.State.Devices[0].PlaybackNotice.Contains("隔离") && window.MultipointText.Text.Contains("丢包") && window.MultipointText.Text.Contains("重连") && window.LowerBitrateButton.IsVisible;
         Capture(window, Path.Combine(folder, "home-protection-demo.png"));
         Event("""{"event":"stopped"}""");
 
@@ -634,7 +634,7 @@ internal static partial class Program
         checks["partial_system_snapshot_does_not_delete_windows_owned_connections"] = window.State.Devices.Count == 1;
         Event("""{"event":"telemetry","running":false,"audio":{},"devices":[]}""");
         checks["stopped_receiver_snapshot_clears_remaining_ui_state"] = window.State.Devices.Count == 0 && window.StartButton.IsEnabled;
-        try { ProtocolChecks(window, checks, folder, Event); CodecChecks(window, checks, folder, Event); checks["protocol_checks_completed"] = true; }
+        try { ProtocolChecks(window, checks, folder, Event); CodecChecks(window, checks, folder, Event); MediaHealthChecks(window, checks, folder, Event); checks["protocol_checks_completed"] = true; }
         catch (Exception error)
         {
             checks["protocol_checks_completed"] = false;

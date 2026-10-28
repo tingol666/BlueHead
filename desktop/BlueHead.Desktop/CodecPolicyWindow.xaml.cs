@@ -79,7 +79,8 @@ public partial class CodecPolicyWindow : Window
         PreferencePicker.Items.Clear();
         PreferencePicker.Items.Add(new ComboBoxItem { Content = "自动 · 优先高清", Tag = "auto" });
         foreach (var (code, name) in Codecs.Where(item => allowed.Contains(item.Code)))
-            PreferencePicker.Items.Add(new ComboBoxItem { Content = name, Tag = code, IsEnabled = !unavailable.ContainsKey(code) });
+            PreferencePicker.Items.Add(new ComboBoxItem { Content = CodecBitrateLimits.Label(code, parameters), Tag = code, IsEnabled = !unavailable.ContainsKey(code),
+                ToolTip = new ToolTip { FontFamily = new FontFamily("Segoe UI, Microsoft YaHei UI"), Content = new TextBlock { FontFamily = new FontFamily("Segoe UI, Microsoft YaHei UI"), Text = CodecBitrateLimits.Description(code, parameters), MaxWidth = 340, TextWrapping = TextWrapping.Wrap } } });
         PreferencePicker.SelectedItem = PreferencePicker.Items.OfType<ComboBoxItem>().FirstOrDefault(item => Equals(item.Tag, preferred)) ?? PreferencePicker.Items[0];
         preferred = (PreferencePicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "auto";
         applying = previous;

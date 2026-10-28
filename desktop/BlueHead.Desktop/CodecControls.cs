@@ -27,7 +27,7 @@ public partial class MainWindow
     {
         settingsTimer.Tick += async (_, _) => await FlushSettings();
         NameEntry.TextChanged += SettingsEdited;
-        foreach (var toggle in new[] { CallsToggle, VoiceProtectionToggle, LdacToggle, Lhdc5Toggle, LeAudioToggle, TrayToggle, AutoStartToggle })
+        foreach (var toggle in new[] { CallsToggle, VoiceProtectionToggle, LeAudioToggle, TrayToggle, AutoStartToggle })
         { toggle.Checked += SettingsEdited; toggle.Unchecked += SettingsEdited; }
         foreach (var picker in new[] { MediaBufferPicker, CallBufferPicker, MaximumPicker, ConnectionPolicyPicker }) picker.SelectionChanged += SettingsEdited;
     }
@@ -42,15 +42,6 @@ public partial class MainWindow
         if (applying || closing) return;
         if (ReferenceEquals(sender, LeAudioToggle)) SetPolicyControls(LeAudioToggle.IsChecked == true ? "prefer_le" : "classic");
         if (ReferenceEquals(sender, ConnectionPolicyPicker)) SetPolicyControls((ConnectionPolicyPicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "classic");
-        if (ReferenceEquals(sender, LdacToggle) || ReferenceEquals(sender, Lhdc5Toggle))
-        {
-            var allowed = CodecPolicyWindow.Allowed(settings);
-            var code = ReferenceEquals(sender, LdacToggle) ? "ldac" : "lhdc5";
-            if (((CheckBox)sender).IsChecked == true) allowed.Add(code); else allowed.Remove(code);
-            settings.allowed_codecs = allowed.ToList();
-            if (settings.codec != "auto" && !allowed.Contains(CodecPolicyWindow.Canonical(settings.codec))) settings.codec = "auto";
-            var previous = applying; applying = true; SelectTag(CodecPicker, settings.codec); applying = previous;
-        }
         preferences.Tray = TrayToggle.IsChecked == true; preferences.AutoStart = AutoStartToggle.IsChecked == true;
         ReadSettings();
         QueueSettings();
@@ -107,9 +98,14 @@ public partial class MainWindow
         foreach (var item in CodecPicker.Items.OfType<ComboBoxItem>())
         {
             var code = CodecPolicyWindow.Canonical(item.Tag?.ToString() ?? "auto");
+            item.Content = CodecBitrateLimits.Label(code, settings.codec_parameters);
             item.IsEnabled = code == "auto" || allowed.Contains(code) && !unavailableCodecs.ContainsKey(code);
             item.Opacity = item.IsEnabled ? 1 : .55;
-            item.ToolTip = unavailableCodecs.TryGetValue(code, out var reason) ? reason : !allowed.Contains(code) && code != "auto" ? "尚未允许此编码，点击媒体编码右侧的设置按钮启用。" : null;
+            var availability = unavailableCodecs.TryGetValue(code, out var reason) ? reason : !allowed.Contains(code) && code != "auto" ? "尚未允许此编码，点击媒体编码右侧的设置按钮启用。" : "";
+            var font = new System.Windows.Media.FontFamily("Segoe UI, Microsoft YaHei UI");
+            item.ToolTip = new ToolTip { FontFamily = font, Content = new TextBlock { FontFamily = font, MaxWidth = 340,
+                TextWrapping = TextWrapping.Wrap, Text = (availability.Length > 0 ? availability + "\n\n" : "") + CodecBitrateLimits.Description(code, settings.codec_parameters) } };
+            ToolTipService.SetShowOnDisabled(item, true);
         }
     }
     internal void OpenCodecPolicy()

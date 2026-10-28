@@ -11,10 +11,13 @@ internal static partial class Program
 {
     private static void CodecChecks(MainWindow window, Dictionary<string, bool> checks, string folder, Action<string> receive)
     {
+        CodecBitrateChecks(checks);
         var fresh = new EngineSettings();
-        checks["fresh_install_allows_ldac_and_lhdc"] = fresh.ldac_enabled && fresh.lhdc5_enabled && CodecPolicyWindow.Allowed(fresh).IsSupersetOf(new[] { "ldac", "lhdc5" });
+        checks["fresh_install_allows_every_available_classic_codec"] = fresh.ldac_enabled && fresh.lhdc5_enabled && CodecPolicyWindow.Allowed(fresh).SetEquals(CodecPolicyWindow.Codecs.Select(item => item.Code));
         var disabled = JsonSerializer.Deserialize<EngineSettings>("{\"ldac_enabled\":false,\"lhdc5_enabled\":false}")!;
         checks["saved_disabled_hd_codecs_are_not_enabled_by_new_defaults"] = !disabled.ldac_enabled && !disabled.lhdc5_enabled && !CodecPolicyWindow.Allowed(disabled).Overlaps(new[] { "ldac", "lhdc5" });
+        var legacy = JsonSerializer.Deserialize<EngineSettings>("{\"allowed_codecs\":null,\"ldac_enabled\":true,\"lhdc5_enabled\":true}")!;
+        checks["legacy_allowlist_remains_explicitly_distinct_from_fresh_defaults"] = CodecPolicyWindow.Allowed(legacy).Count == 6;
         int CaptureControl(FrameworkElement element, string name)
         {
             element.UpdateLayout();
@@ -103,6 +106,8 @@ internal static partial class Program
         saved = window.SelfTestCommands.Last(item => item.Text("command") == "preferences");
         parameters = saved.GetProperty("values").GetProperty("codec_parameters");
         checks["separate_codec_settings_do_not_overwrite_each_other"] = parameters.GetProperty("aac").Number("bitrate") == 192000 && parameters.GetProperty("aac").Text("quality") == "balanced" && parameters.GetProperty("lhdc5").Number("rate") == 96000;
+        var aacChoice = window.CodecPicker.Items.OfType<ComboBoxItem>().Single(item => Equals(item.Tag, "aac"));
+        checks["home_theoretical_bitrate_updates_after_saving_codec_parameters"] = Equals(aacChoice.Content, "AAC · ≤192 kb/s") && ((TextBlock)((ToolTip)aacChoice.ToolTip).Content).Text.Contains("不是正在播放的实际码率");
         checks["aac_has_one_preference_entry_with_independent_bitrate_settings"] = window.CodecPicker.Items.OfType<ComboBoxItem>().Count(item => CodecPolicyWindow.Canonical(item.Tag?.ToString() ?? "") == "aac") == 1;
         Message(new { protocol = 1, @event = "preferences", request_id = saved.Number("request_id"), success = true, reconnect_required = true, restart_required = false, message = "已保存，请重新连接。" });
         Capture(policy, Path.Combine(folder, "connection-codec-policy.png"));

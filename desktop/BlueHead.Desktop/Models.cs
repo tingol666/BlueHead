@@ -146,10 +146,14 @@ public sealed class DesktopState
 }
 public sealed class EngineSettings
 {
+    public EngineSettings() { ldac_enabled = lhdc5_enabled = true; }
+    // Missing lists in serialized legacy settings retain their original flag-based policy.
+    [System.Text.Json.Serialization.JsonConstructor]
+    public EngineSettings(List<string>? allowed_codecs) { this.allowed_codecs = allowed_codecs; }
     public string mode { get; set; } = "advanced";
     public string transport { get; set; } = "";
     public string codec { get; set; } = "auto";
-    public List<string>? allowed_codecs { get; set; }
+    public List<string>? allowed_codecs { get; set; } = ["sbc", "aac", "aptx", "aptx_hd", "ldac", "lhdc5"];
     public Dictionary<string, CodecParameters> codec_parameters { get; set; } = [];
     public string connection_policy { get; set; } = "";
     public string media_mode { get; set; } = "mix";
@@ -165,8 +169,8 @@ public sealed class EngineSettings
     public string? system_endpoint_id { get; set; }
     public bool calls { get; set; } = true;
     public bool voice_single_device { get; set; } = true;
-    public bool ldac_enabled { get; set; } = true;
-    public bool lhdc5_enabled { get; set; } = true;
+    public bool ldac_enabled { get; set; }
+    public bool lhdc5_enabled { get; set; }
     public bool le_audio_enabled { get; set; }
     public bool microphone_muted { get; set; }
     public double playback_gain { get; set; } = 1;

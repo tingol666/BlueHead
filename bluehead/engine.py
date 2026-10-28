@@ -106,6 +106,14 @@ class Engine:
         if path.exists():
             try:
                 values = json.loads(path.read_text("utf-8"))
+                # Before the allow-list existed, saved codec choices used the
+                # base four codecs plus explicit LDAC/LHDC switches. Preserve
+                # that historical meaning independently of new install defaults.
+                if isinstance(values, dict) and 'allowed_codecs' not in values:
+                    values['allowed_codecs'] = None
+                if isinstance(values, dict) and values.get('allowed_codecs') is None:
+                    values.setdefault('ldac_enabled', False)
+                    values.setdefault('lhdc5_enabled', False)
                 self.settings = validate_settings(
                     {k: v for k, v in values.items() if k in {f.name for f in fields(Settings)}},
                     require_transport=False)

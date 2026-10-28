@@ -53,7 +53,7 @@ class Settings:
     lhdc5_enabled: bool = True
     le_audio_enabled: bool = False
     connection_policy: str = ""
-    allowed_codecs: list[str] | None = None
+    allowed_codecs: list[str] | None = field(default_factory=lambda: ['sbc', 'aac', 'aptx', 'aptx_hd', 'ldac', 'lhdc5'])
     codec_parameters: dict = field(default_factory=dict)
     microphone_muted: bool = False
     playback_gain: float = 1.0

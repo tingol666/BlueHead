@@ -271,9 +271,6 @@
 
        <TextBlock Text="最多同时连接几台设备"/><TextBlock Text="连接不等于同时播放；多设备的播放方式在音频中心选择。通话／语音保护启用时，使用电脑麦克风会暂时只保留一个设备。" Style="{StaticResource Caption}" Margin="0,5,0,0"/><ComboBox x:Name="MaximumPicker" SelectedIndex="2" Margin="0,8,0,16"><ComboBoxItem Content="1 台" Tag="1"/><ComboBoxItem Content="2 台" Tag="2"/><ComboBoxItem Content="3 台" Tag="3"/><ComboBoxItem Content="4 台" Tag="4"/></ComboBox>
 
-       <CheckBox x:Name="LdacToggle" Content="允许 LDAC 媒体编码" Style="{StaticResource Switch}"/><TextBlock Text="仍需移动设备实际支持并协商成功；多设备并发能力取决于蓝牙适配器。" Style="{StaticResource Caption}" Margin="24,6,0,0"/>
-
-       <CheckBox x:Name="Lhdc5Toggle" Content="允许 LHDC 5.0 媒体编码" Style="{StaticResource Switch}" Margin="0,14,0,0"/><TextBlock Text="与“连接与编码”中的允许列表同步。双方支持时可协商；首选不会隐藏其它允许的编码。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="24,6,0,0"/>
        <Grid Margin="0,14,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="210"/></Grid.ColumnDefinitions><CheckBox x:Name="LeAudioToggle" Content="启用 LE Audio（LC3）" Style="{StaticResource Switch}"/><ComboBox x:Name="ConnectionPolicyPicker" Grid.Column="1" AutomationProperties.Name="LE Audio 连接偏好"><ComboBoxItem Content="优先 LE Audio / LC3" Tag="prefer_le"/><ComboBoxItem Content="仅经典蓝牙" Tag="classic"/></ComboBox></Grid><TextBlock Text="与首页媒体编码右侧的设置按钮同步。优先 LE Audio 时，双方支持且设备已开启此功能才使用 LC3；未建立 LE 音频时继续经典蓝牙。选择“仅经典蓝牙”会关闭 LE Audio 与广播功能。修改自动保存，下次开始接收生效。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="24,6,0,0"/>
        <TextBlock x:Name="LeAudioState" Text="开始接收后，这里显示适配器的 LE Audio 能力。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="24,6,0,0"/>
        <TextBlock Text="LE Audio 自动协商 LC3 编码与播放时延，首页“媒体编码”和上方起始缓冲用于经典蓝牙音频。对端可同时提供两种连接，实际协议显示在设备卡片中。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="24,6,0,0"/>

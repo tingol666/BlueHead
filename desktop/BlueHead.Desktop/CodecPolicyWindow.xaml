@@ -15,7 +15,6 @@
    <Border Height="1" Background="{StaticResource Line}" Margin="0,9"/>
    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="86"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="首选编码" VerticalAlignment="Center"/>
    <ComboBox x:Name="PreferencePicker" Grid.Column="1" SelectionChanged="PreferenceChanged" AutomationProperties.Name="首选媒体编码"/></Grid>
-   <TextBlock Text="按音质倾向和蓝牙带宽占用选择；实际格式看设备卡片。" Style="{StaticResource Caption}" Margin="0,6,0,0"/>
   </StackPanel></Border>
   <TextBlock x:Name="SaveState" Text="修改自动保存。编码和参数需断开并重新连接设备；连接偏好需停止接收，再开始接收。" Style="{StaticResource Caption}" Margin="0,12,0,10" AutomationProperties.LiveSetting="Polite"/>
   <ui:Button Content="完成" Click="DoneClick" HorizontalAlignment="Right" Appearance="Primary" Padding="14,5"/>

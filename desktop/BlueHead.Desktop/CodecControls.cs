@@ -98,13 +98,13 @@ public partial class MainWindow
         foreach (var item in CodecPicker.Items.OfType<ComboBoxItem>())
         {
             var code = CodecPolicyWindow.Canonical(item.Tag?.ToString() ?? "auto");
-            item.Content = CodecBitrateLimits.Label(code, settings.codec_parameters);
+            item.Content = CodecBitrateLimits.Label(code);
             item.IsEnabled = code == "auto" || allowed.Contains(code) && !unavailableCodecs.ContainsKey(code);
             item.Opacity = item.IsEnabled ? 1 : .55;
             var availability = unavailableCodecs.TryGetValue(code, out var reason) ? reason : !allowed.Contains(code) && code != "auto" ? "尚未允许此编码，点击媒体编码右侧的设置按钮启用。" : "";
             var font = new System.Windows.Media.FontFamily("Segoe UI, Microsoft YaHei UI");
-            item.ToolTip = new ToolTip { FontFamily = font, Content = new TextBlock { FontFamily = font, MaxWidth = 340,
-                TextWrapping = TextWrapping.Wrap, Text = (availability.Length > 0 ? availability + "\n\n" : "") + CodecBitrateLimits.Description(code, settings.codec_parameters) } };
+            item.ToolTip = availability.Length > 0 ? new ToolTip { FontFamily = font, Content = new TextBlock { FontFamily = font, MaxWidth = 340,
+                TextWrapping = TextWrapping.Wrap, Text = availability } } : null;
             ToolTipService.SetShowOnDisabled(item, true);
         }
     }

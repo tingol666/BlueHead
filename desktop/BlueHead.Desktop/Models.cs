@@ -150,6 +150,7 @@ public sealed class EngineSettings
     public string transport { get; set; } = "";
     public string codec { get; set; } = "auto";
     public List<string>? allowed_codecs { get; set; }
+    public Dictionary<string, CodecParameters> codec_parameters { get; set; } = [];
     public string connection_policy { get; set; } = "";
     public string media_mode { get; set; } = "mix";
     public string name { get; set; } = "BlueHead PC";
@@ -173,6 +174,15 @@ public sealed class EngineSettings
     public double system_gain { get; set; } = 1;
     public bool system_audio_enabled { get; set; }
     public Dictionary<string, DeviceVolumes> device_volumes { get; set; } = [];
+}
+public sealed class CodecParameters
+{
+    public int rate { get; set; }
+    public int depth { get; set; }
+    public int bitrate { get; set; }
+    public string quality { get; set; } = "auto";
+    public CodecParameters Copy() => new() { rate = rate, depth = depth, bitrate = bitrate, quality = quality };
+    public static Dictionary<string, CodecParameters> CopyAll(Dictionary<string, CodecParameters> values) => values.ToDictionary(item => item.Key, item => item.Value.Copy());
 }
 public sealed class DeviceVolumes
 {

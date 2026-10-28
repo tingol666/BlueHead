@@ -2,6 +2,7 @@
 import contextlib
 import time
 from ..errors import SourceExpired
+from ..protocol import format_metadata
 
 class RemoteInput:
     def __init__(self, mixer, key, index, lease):
@@ -135,11 +136,12 @@ class RemoteMediaSession:
         if not self._request("media_config", codec=code, rate=fmt.rate, channels=fmt.channels, depth=getattr(fmt, "depth", 0) or 16):
             return
         self.format = fmt
+        self.connection_details = format_metadata(fmt)
         if self.channel:
             self.bind(self.channel)
         if not self.paused:
             self.resume()
-        self.emit("format", key=self.key, codec=fmt.codec, rate=fmt.rate, channels=fmt.channels)
+        self.emit("format", key=self.key, codec=fmt.codec, rate=fmt.rate, **format_metadata(fmt))
 
     def bind(self, channel):
         if self.closed:
@@ -188,6 +190,7 @@ class RemoteMediaSession:
         if data is None:
             return {}
         return {**data, "codec": self.format.codec if self.format else "", "rate": self.format.rate if self.format else 0,
+                **getattr(self, 'connection_details', format_metadata(self.format)),
                 "selected": self.allowed, "protected": data.get("protected", False), "bitrate": data.get("bitrate", 0)}
 
     def close(self):

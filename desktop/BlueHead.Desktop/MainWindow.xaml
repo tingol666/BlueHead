@@ -99,7 +99,7 @@
 
           <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,6,0"><TextBlock x:Name="MediaCodecLabel" Text="媒体编码" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/><ui:Button x:Name="CodecHelpButton" Content="ⓘ" Tag="codec" Click="AudioOptionHelpClick" Padding="2,0" MinHeight="20" FontSize="15" Background="Transparent" BorderThickness="0" Foreground="{StaticResource AudioAccent}" Margin="3,0,0,0" ToolTip="点击了解媒体编码用途和选择建议" AutomationProperties.Name="媒体编码说明，点击查看"/></StackPanel>
 
-          <ComboBox x:Name="CodecPicker" Grid.Column="4" SelectedIndex="0" SelectionChanged="CodecChanged" AutomationProperties.Name="媒体编码与码率" ToolTipService.ShowOnDisabled="True"><ComboBox.ToolTip><ToolTip><TextBlock x:Name="CodecHint" Text="优先协商可用高清媒体编码；多设备断续时可切换 AAC。仅影响媒体播放，语音编码自动协商。" MaxWidth="320"/></ToolTip></ComboBox.ToolTip><ComboBoxItem Content="自动 · 优先高清" Tag="auto"/><ComboBoxItem Content="aptX HD · 高清" Tag="aptx_hd"/><ComboBoxItem Content="aptX" Tag="aptx"/><ComboBoxItem Content="AAC · 最高 320 kb/s" Tag="aac"/><ComboBoxItem Content="AAC · 最高 192 kb/s" Tag="aac_192"/><ComboBoxItem Content="SBC · 兼容优先" Tag="sbc"/><ComboBoxItem Content="LDAC · 高清" Tag="ldac"/><ComboBoxItem Content="LHDC 5.0 · 高清" Tag="lhdc5"/></ComboBox>
+          <ComboBox x:Name="CodecPicker" Grid.Column="4" SelectedIndex="0" SelectionChanged="CodecChanged" AutomationProperties.Name="媒体编码与码率" ToolTipService.ShowOnDisabled="True"><ComboBox.ToolTip><ToolTip><TextBlock x:Name="CodecHint" Text="优先协商可用高清媒体编码；多设备断续时可切换 AAC。仅影响媒体播放，语音编码自动协商。" MaxWidth="320"/></ToolTip></ComboBox.ToolTip><ComboBoxItem Content="自动 · 优先高清" Tag="auto"/><ComboBoxItem Content="aptX HD · 高清" Tag="aptx_hd"/><ComboBoxItem Content="aptX" Tag="aptx"/><ComboBoxItem Content="AAC" Tag="aac"/><ComboBoxItem Content="SBC · 兼容优先" Tag="sbc"/><ComboBoxItem Content="LDAC · 高清" Tag="ldac"/><ComboBoxItem Content="LHDC 5.0 · 高清" Tag="lhdc5"/></ComboBox>
 
           <TextBlock x:Name="SharedCodecValue" Grid.Column="4" Text="Windows 自动选择" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Visibility="Collapsed"/>
 
@@ -115,7 +115,8 @@
 
 
 
-         <Border x:Name="MultipointNotice" Visibility="Collapsed" Background="#FFF7EB" CornerRadius="6" Padding="8,6" Margin="0,7,0,0"><DockPanel><ui:Button x:Name="LowerBitrateButton" DockPanel.Dock="Right" Content="切换 AAC 并重连" Click="LowerBitrateClick" Margin="8,0,0,0" Padding="8,4" VerticalAlignment="Center"/><TextBlock x:Name="MultipointText" Style="{StaticResource Caption}" Foreground="#946032" VerticalAlignment="Center"/></DockPanel></Border>
+         <Border x:Name="CodecReconnectNotice" Visibility="Collapsed" Background="#FFF7EB" CornerRadius="6" Padding="8,6" Margin="0,7,0,0"><TextBlock x:Name="CodecReconnectText" FontSize="12" Foreground="#80551E" AutomationProperties.LiveSetting="Polite"/></Border>
+         <Border x:Name="MultipointNotice" Visibility="Collapsed" Background="#FFF7EB" CornerRadius="6" Padding="8,6" Margin="0,7,0,0"><DockPanel><ui:Button x:Name="LowerBitrateButton" DockPanel.Dock="Right" Content="编码设置…" Click="LowerBitrateClick" Margin="8,0,0,0" Padding="8,4" VerticalAlignment="Center"/><TextBlock x:Name="MultipointText" Style="{StaticResource Caption}" Foreground="#946032" VerticalAlignment="Center"/></DockPanel></Border>
 
         </StackPanel></Border>
 
@@ -150,7 +151,7 @@
 
              <local:AudioLevel Label="发送到此设备" CompactLabel="麦克风发送" Hint="调节发给这个设备的音量。来源是电脑麦克风，以及已开启的电脑声音；不影响你在电脑听到的声音。" Icon="&#xE720;" Compact="True" Value="{Binding UplinkVolume, Mode=TwoWay}" ValueChanged="UplinkGainChanged" IsEnabled="{Binding CanMix}"/>
 
-             <ui:Button ToolTip="设备操作" AutomationProperties.Name="设备操作" Padding="6,4" MinHeight="26" BorderThickness="0" Background="Transparent" Margin="5,0,0,0"><ui:Button.Content><TextBlock Text="&#xE712;" FontFamily="Segoe Fluent Icons" FontSize="14"/></ui:Button.Content><ui:Button.ContextMenu><ContextMenu><MenuItem Header="编码与音质…" Click="DeviceCodecClick" IsEnabled="{Binding CanMix}"/><Separator/><MenuItem Header="断开连接" Click="DisconnectClick"/></ContextMenu></ui:Button.ContextMenu><ui:Button.Style><Style TargetType="ui:Button" BasedOn="{StaticResource {x:Type ui:Button}}"><EventSetter Event="Click" Handler="DeviceMenuClick"/></Style></ui:Button.Style></ui:Button>
+             <ui:Button ToolTip="设备操作" AutomationProperties.Name="设备操作" Padding="6,4" MinHeight="26" BorderThickness="0" Background="Transparent" Margin="5,0,0,0"><ui:Button.Content><TextBlock Text="&#xE712;" FontFamily="Segoe Fluent Icons" FontSize="14"/></ui:Button.Content><ui:Button.ContextMenu><ContextMenu><MenuItem Header="断开连接" Click="DisconnectClick"/></ContextMenu></ui:Button.ContextMenu><ui:Button.Style><Style TargetType="ui:Button" BasedOn="{StaticResource {x:Type ui:Button}}"><EventSetter Event="Click" Handler="DeviceMenuClick"/></Style></ui:Button.Style></ui:Button>
 
             </StackPanel>
 

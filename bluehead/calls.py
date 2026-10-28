@@ -196,6 +196,7 @@ class CallManager:
                 # context after we capture it. A retired snapshot is absent.
                 pass
         result = {"active": True, "codec": stats.get("codec", ""), "rate": stats.get("rate", 0),
+                "channels": 1, "channel_mode": "mono", "depth": 0, "depth_status": "not_signalled",
                 "rx_bitrate": traffic["rx"].snapshot()["bitrate"] if traffic else 0,
                 "tx_bitrate": traffic["tx"].snapshot()["bitrate"] if traffic else 0,
                 "rx_packets": stats.get("rx_packets", 0), "decode_errors": stats.get("decode_errors", 0),

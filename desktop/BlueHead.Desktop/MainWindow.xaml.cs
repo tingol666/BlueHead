@@ -166,7 +166,7 @@ public partial class MainWindow
     }
     private void ClearSession()
     {
-        EndCodecConnections();
+        ResetCodecPending();
         VoiceProtectionNotice.Visibility = Visibility.Collapsed; VoiceProtectionText.Text = "";
         voiceInUse = mediaProtected = highMediaActive = systemAudioActive = systemFeedbackBlocked = refreshingAudio = false;
         sessionMediaOnly = mediaModePending = false; systemAudioRequest = null;
@@ -230,6 +230,7 @@ public partial class MainWindow
         InputPicker.SelectedItem = State.Inputs.FirstOrDefault(item => item.Index == settings.input_device) ?? State.Inputs.FirstOrDefault();
         SystemPicker.SelectedItem = State.SystemSources.FirstOrDefault(item => item.EndpointId == settings.system_endpoint_id) ?? State.SystemSources.FirstOrDefault();
         applying = false;
+        PolicyWindow?.Synchronize(settings);
         SetPickerStates();
         foreach (var card in State.Devices) card.CanMix = settings.mode != "native";
         PairingHint.Text = settings.mode == "native" ? "在电脑的 Windows 蓝牙设置中添加并配对手机／平板；回 BlueHead 点击“开始接收”，然后在手机／平板播放声音。" : $"点击右上角“开始接收”，然后在手机／平板的蓝牙列表连接“{settings.name}”。";
@@ -442,7 +443,7 @@ public partial class MainWindow
             switch (kind)
             {
                 case "name": card.Name = message.Text("name", "移动设备"); break;
-                case "format": card.Media = $"{message.Text("protocol", "A2DP")} / {CodecName(message.Text("codec"))} · {message.Number("rate") / 1000:0.###} kHz · — kb/s"; break;
+                case "format": card.Media = $"{(message.Text("audio_transport") == "le" ? "LE Audio" : "A2DP")} / {CodecName(message.Text("codec"))} · {message.Number("rate") / 1000:0.###} kHz · — kb/s"; break;
                 case "device":
                     card.Connection = message.Text("state");
                     card.LiveDetails = card.Connection.StartsWith("已连接") ? "已连接 · " + VoiceCodecStatus : card.Connection;
@@ -464,7 +465,7 @@ public partial class MainWindow
     private void UpdateDevices()
     {
         DeviceCount.Text = $"{State.Devices.Count} 台设备";
-        foreach (var item in codecWindows) if (!devices.ContainsKey(item.Key)) item.Value.Disconnected();
+        UpdateCodecNotice();
         UpdateSetupState(); UpdateMediaControls(); RefreshOpenHelp();
     }
     private DriverDevice? ReceptionAdapter
@@ -632,6 +633,18 @@ public partial class MainWindow
             !item.TryGetDouble(out var number) || double.IsNaN(number) || double.IsInfinity(number)) return "";
         return " · " + prefix + number.ToString(format) + suffix;
     }
+    private static string AudioFormatDetails(JsonElement value)
+    {
+        var depth = value.Number("depth");
+        var samples = value.Text("depth_status") == "negotiated" && depth > 0 ? $"{depth:0} bit" : "未单独协商";
+        var channels = value.Number("channels");
+        var mode = value.Text("channel_mode") switch
+        {
+            "mono" => "单声道", "stereo" => "立体声", "joint_stereo" => "联合立体声", "dual_channel" => "双单声道",
+            _ => channels == 1 ? "单声道" : channels == 2 ? "双声道" : "未提供"
+        };
+        return $"\n样本位数：{samples} · 声道模式：{mode}" + (channels > 0 ? $"（{channels:0} 声道）" : "");
+    }
     private void ApplyLiveAudio(DeviceCard card, JsonElement stream)
     {
         card.PlaybackNotice = "";
@@ -644,20 +657,22 @@ public partial class MainWindow
         {
             card.Media = $"{call.Text("protocol", "HFP")} / {CodecName(call.Text("codec"))} · {call.Number("rate") / 1000:0.###} kHz · ↓ {Bitrate(call.Number("rx_bitrate"))}  ↑ {Bitrate(call.Number("tx_bitrate"))}";
             card.LiveDetails = $"{VoiceCodecStatus} · 当前 {CodecName(call.Text("codec"))} · {call.Number("rate") / 1000:0.###} kHz\n语音通道使用中" + DetailMetric(call, "rx_packets", "接收 ", " 包", "0") + DetailMetric(call, "tx_packets", "发送 ", " 包", "0") + $" · 麦克风{(settings.microphone_muted ? "已在电脑暂停发送" : call.Flag("microphone_remote_muted") ? "已被设备静音" : call.Flag("microphone_active") ? "工作中" : "未就绪")} · 电脑声音{(call.Flag("system_feedback_blocked") ? "已暂停以避免返送" : call.Flag("system_audio_active") ? "已加入" : "未加入")}";
+            card.LiveDetails += AudioFormatDetails(call);
         }
         else if (stream.TryGetProperty("media", out var media) && media.Text("codec").Length > 0)
         {
-            if (codecWindows.TryGetValue(card.Key, out var codecWindow)) codecWindow.UpdateTelemetry(media);
             card.Media = $"{media.Text("protocol", "A2DP")} / {CodecName(media.Text("codec"))} · {media.Number("rate") / 1000:0.###} kHz · {Bitrate(media.Number("bitrate"))}";
             if (media.Flag("protected")) card.PlaybackNotice = "链路不稳 · 已暂时隔离碎音，建议降低码率";
             if (media.Text("protocol") == "LE Audio")
                 card.LiveDetails = $"{(media.Flag("playing") ? "媒体播放中" : "媒体未播放")} · LC3 同步音频" + DetailMetric(media, "packets_per_second", "", " 包/s") + DetailMetric(media, "buffer_ms", "实际缓冲 ", " ms") + DetailMetric(media, "concealed_blocks", "补偿 ", " 帧", "0") + DetailMetric(media, "presentation_ms", "协商播放时延 ", " ms") + "\n" + VoiceCodecStatus;
             else card.LiveDetails = $"{(card.CanAnswer ? card.CallDescription : media.Flag("playing") ? "媒体播放中" : "媒体未播放")}" + DetailMetric(media, "packets_per_second", "", " 包/s") + DetailMetric(media, "buffer_ms", "实际缓冲 ", " ms") + DetailMetric(media, "recoveries", "已重同步 ", " 次", "0") + DetailMetric(media, "lost_packets", "RTP 丢包 ", "", "0") + "\n" + VoiceCodecStatus;
+            card.LiveDetails += AudioFormatDetails(media);
         }
         else if (!card.CanAnswer && !card.CanHangup) { card.Media = "媒体编码尚未协商"; card.LiveDetails = "已连接 · 媒体未播放\n" + VoiceCodecStatus; }
     }
     private void SetRunning(bool value)
     {
+        if (value && !running) StartCodecSession();
         StatusDot.Fill = new System.Windows.Media.SolidColorBrush(value ? System.Windows.Media.Color.FromRgb(49, 139, 107) : System.Windows.Media.Color.FromRgb(152, 161, 175));
         running = value;
         if (!value && !driverBusy && pendingSetupMode is { } desired) { pendingSetupMode = null; _ = ChooseMode(desired, false); }
@@ -704,22 +719,23 @@ public partial class MainWindow
         CodecHint.Text = !dedicated ? "此模式的媒体编码和码率由 Windows 管理，不提供蓝牙语音与麦克风。" : (desired switch
         {
             "auto" => "优先协商可用高清媒体编码；多设备断续时可切换 AAC。",
-            "aac" => "AAC 最高 320 kb/s，兼顾音质与带宽。实际码率由移动设备协商。",
+            "aac" => "AAC 兼顾音质与带宽，码率上限和质量范围在右侧编码设置中调整。实际码率由发送设备协商。",
             "aac_192" => "AAC 最高 192 kb/s，减少无线带宽占用，适合多设备或信号不稳时使用。",
             "sbc" => "SBC 兼容性较好，实际码率由移动设备协商；不一定比 AAC 更低。",
             "ldac" => "LDAC 高清解码；并发更占带宽，建议仅一个设备出声。",
             "lhdc5" => "LHDC 5.0 高清媒体解码；需要发送设备支持。采样率与实际码率显示在设备卡片上。",
             _ => "高清媒体编码更占无线带宽，多设备同时播放可能丢包；建议只听一台。"
-        }) + " 首选与允许列表分开；修改自动保存，用于下次设备连接。当前设备可从“…” →“编码与音质”单独调整。语音编码自动协商。";
+        }) + " 首选与允许列表分开；右侧设置中可分别调节各编码参数。修改自动保存，在发送设备的蓝牙设置中断开 BlueHead 再重新连接后生效。语音编码自动协商。";
         var high = settings.codec is "aptx" or "aptx_hd" or "ldac" or "lhdc5" || settings.codec == "auto" && highMediaActive;
         MultipointNotice.Visibility = dedicated && State.Devices.Count >= 2 && settings.media_mode == "mix" && mediaProtected ? Visibility.Visible : Visibility.Collapsed;
         MultipointText.Text = settings.media_mode == "single" ? $"已连接 {State.Devices.Count} 台 · 当前只听一个设备。需要一起听时，在上方“多设备播放”选择“同时播放”。"
-            : mediaProtected ? "检测到持续丢包，已隔离不稳定一路的碎音。可从设备的“…” →“编码与音质”改用 AAC，或选择单台自动接替。"
-            : high ? "已连接多台 · 高清并发可能断续。可从各设备的“…” →“编码与音质”分别改用 AAC。"
+            : mediaProtected ? "检测到持续丢包，已隔离不稳定一路的碎音。可在编码设置中首选 AAC，再重新连接设备；也可选择单台自动接替。"
+            : high ? "已连接多台 · 高清并发可能断续。可在编码设置中首选 AAC，再重新连接设备。"
             : $"已连接 {State.Devices.Count} 台 · 当前同时出声。若出现断续，可进一步降低 AAC 码率。";
-        LowerBitrateButton.Visibility = settings.media_mode == "mix" && settings.codec != "aac_192" ? Visibility.Visible : Visibility.Collapsed;
-        LowerBitrateButton.Content = "逐台调整编码…";
-        LowerBitrateButton.IsEnabled = !VoiceBusy && !driverBusy;
+        LowerBitrateButton.Visibility = settings.media_mode == "mix" ? Visibility.Visible : Visibility.Collapsed;
+        LowerBitrateButton.Content = "编码设置…";
+        LowerBitrateButton.IsEnabled = !driverBusy;
+        UpdateCodecNotice();
     }
     private void PlaybackSettingsClick(object sender, RoutedEventArgs e) => ShowAdvancedAudio();
     private void CodecChanged(object sender, SelectionChangedEventArgs e)
@@ -742,7 +758,7 @@ public partial class MainWindow
     }
     private void LowerBitrateClick(object sender, RoutedEventArgs e)
     {
-        if ((State.Devices.FirstOrDefault(card => card.IsMediaSelected) ?? State.Devices.FirstOrDefault()) is { } card) OpenDeviceCodec(card);
+        OpenCodecPolicy();
     }
     internal async Task ApplyCodecProfile(string? force = null)
     {

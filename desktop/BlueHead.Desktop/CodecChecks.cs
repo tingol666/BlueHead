@@ -58,8 +58,8 @@ internal static partial class Program
         checks["codec_gear_reuses_home_row_and_opens_policy"] = policy.IsVisible && policy.Title.Contains("连接与编码") && Math.Abs(window.CodecSettingsButton.TranslatePoint(new(0,0), window).Y - window.CodecPicker.TranslatePoint(new(0,0), window).Y) < 3;
         policy.PolicyPicker.SelectedIndex = 1; window.FlushSettings().GetAwaiter().GetResult();
         checks["codec_policy_and_settings_le_switch_stay_synchronized"] = window.LeAudioToggle.IsChecked == false && window.ConnectionPolicyPicker.SelectedIndex == 1 && window.SelfTestCommands.Last().GetProperty("values").Text("connection_policy") == "classic";
-        var sbc = policy.CodecChecks.Children.OfType<CheckBox>().Single(item => Equals(item.Tag, "sbc"));
-        var ldac = policy.CodecChecks.Children.OfType<CheckBox>().Single(item => Equals(item.Tag, "ldac"));
+        var sbc = policy.CheckFor("sbc");
+        var ldac = policy.CheckFor("ldac");
         checks["sbc_compatibility_is_always_selected_and_cannot_be_unchecked"] = sbc.IsChecked == true && !sbc.IsEnabled;
         ldac.IsChecked = true; window.FlushSettings().GetAwaiter().GetResult();
         checks["allowed_codec_change_is_separate_from_preference"] = window.SelfTestCommands.Last().GetProperty("values").GetProperty("allowed_codecs").EnumerateArray().Any(item => item.GetString() == "ldac");
@@ -67,53 +67,98 @@ internal static partial class Program
         checks["disabled_codec_stays_visible_but_dimmed"] = ldac.Opacity < 1 && window.CodecPicker.Items.OfType<ComboBoxItem>().Single(item => Equals(item.Tag, "ldac")).IsEnabled == false;
         policy.PolicyPicker.SelectedIndex = 0; window.FlushSettings().GetAwaiter().GetResult();
         checks["le_preference_saves_without_stopping_receiver"] = Stops() == stops && window.LeAudioToggle.IsChecked == true;
-        Capture(policy, Path.Combine(folder, "connection-codec-policy.png")); policy.Close(); Pump();
+        checks["every_codec_has_a_vector_settings_button"] = CodecPolicyWindow.Codecs.All(item => policy.GearFor(item.Code).Content is Viewbox view && view.Child is System.Windows.Shapes.Path path && path.Data.Bounds.Width > 18 && !policy.GearFor(item.Code).FontFamily.Source.Contains("Icons"));
+        void Choose(ComboBox picker, string tag) => picker.SelectedItem = picker.Items.OfType<ComboBoxItem>().Single(item => Equals(item.Tag, tag));
+        foreach (var (code, _) in CodecPolicyWindow.Codecs)
+        {
+            Click(policy.GearFor(code));
+            var editor = policy.ParametersWindow!;
+            checks["global_codec_editor_exposes_only_real_controls_" + code] = editor.Rate.Items.Count == (code is "ldac" or "lhdc5" ? 5 : 3) && editor.DepthRow.IsVisible == (code == "lhdc5") && editor.BitrateRow.IsVisible == (code == "aac") && editor.QualityRow.IsVisible == (code is "aac" or "sbc");
+            if (code is "ldac" or "lhdc5") checks["private_source_quality_is_not_fabricated_" + code] = editor.QualityReason.Text.Contains("发送设备决定");
+            editor.Close(); Pump();
+        }
+        receive("""{"event":"starting"}""");
+        receive("""{"event":"device","key":"codec-peer","state":"已连接"}""");
+        receive("""{"event":"name","key":"codec-peer","name":"示例设备"}""");
+        void Media(string codec, int depth, string mode = "stereo") => Message(new { protocol = 1, @event = "telemetry", running = true, audio = new { }, devices = new[] { new { key = "codec-peer", media = new { codec, rate = codec is "ldac" or "lhdc5" ? 96000 : 48000, bitrate = 500000, playing = true, depth, depth_status = depth > 0 ? "negotiated" : "not_signalled", channels = 2, channel_mode = mode }, call = new { active = false } } } });
+        Media("ldac", 0); Pump();
+        policy.OpenParameters("lhdc5"); Pump();
+        var lhdc = policy.ParametersWindow!; Choose(lhdc.Rate, "96000"); Choose(lhdc.Depth, "24");
+        Capture(lhdc, Path.Combine(folder, "global-lhdc-parameters.png"));
+        Click(lhdc.SaveButton); window.FlushSettings().GetAwaiter().GetResult();
+        var saved = window.SelfTestCommands.Last(item => item.Text("command") == "preferences");
+        var parameters = saved.GetProperty("values").GetProperty("codec_parameters").GetProperty("lhdc5");
+        checks["codec_parameters_are_saved_globally_without_device_switch_commands"] = parameters.Number("rate") == 96000 && parameters.Number("depth") == 24 && window.SelfTestCommands.All(item => item.Text("command") is not ("codec_switch" or "codec_options"));
+        Message(new { protocol = 1, @event = "preferences", request_id = saved.Number("request_id"), success = true, reconnect_required = true, restart_required = false, message = "已保存，请断开并重新连接设备。" });
+        checks["saved_parameters_show_visible_reconnect_steps_and_keep_actual_format"] = window.CodecReconnectNotice.IsVisible && window.CodecReconnectText.Text.Contains("蓝牙设置中断开 BlueHead") && window.State.Devices.Single().MediaDescription.Contains("LDAC") && policy.SaveState.Text.Contains("当前连接仍用原格式");
+        checks["codec_row_summarizes_saved_parameters"] = policy.SummaryFor("lhdc5").Contains("96 kHz") && policy.SummaryFor("lhdc5").Contains("24 bit");
+        policy.OpenParameters("aac"); Pump();
+        var aac = policy.ParametersWindow!; Choose(aac.Bitrate, "192000"); Choose(aac.Quality, "balanced");
+        Capture(aac, Path.Combine(folder, "global-aac-parameters.png"));
+        Click(aac.SaveButton); window.FlushSettings().GetAwaiter().GetResult();
+        saved = window.SelfTestCommands.Last(item => item.Text("command") == "preferences");
+        parameters = saved.GetProperty("values").GetProperty("codec_parameters");
+        checks["separate_codec_settings_do_not_overwrite_each_other"] = parameters.GetProperty("aac").Number("bitrate") == 192000 && parameters.GetProperty("aac").Text("quality") == "balanced" && parameters.GetProperty("lhdc5").Number("rate") == 96000;
+        checks["aac_has_one_preference_entry_with_independent_bitrate_settings"] = window.CodecPicker.Items.OfType<ComboBoxItem>().Count(item => CodecPolicyWindow.Canonical(item.Tag?.ToString() ?? "") == "aac") == 1;
+        Message(new { protocol = 1, @event = "preferences", request_id = saved.Number("request_id"), success = true, reconnect_required = true, restart_required = false, message = "已保存，请重新连接。" });
+        Capture(policy, Path.Combine(folder, "connection-codec-policy.png"));
+        checks["compact_policy_fits_monitor"] = policy.ActualHeight <= SystemParameters.WorkArea.Height - 48 && policy.ActualWidth == 450;
+        policy.Close(); Pump();
+        IEnumerable<T> Descendants<T>(DependencyObject parent) where T : DependencyObject
+        {
+            for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); ++index)
+            {
+                var child = VisualTreeHelper.GetChild(parent, index);
+                if (child is T match) yield return match;
+                foreach (var item in Descendants<T>(child)) yield return item;
+            }
+        }
+        var menus = Descendants<Wpf.Ui.Controls.Button>(window.DeviceCards).Where(item => item.ContextMenu != null).ToArray();
+        checks["device_menu_has_no_codec_hot_switch_entry"] = menus.Length > 0 && menus.All(item => item.ContextMenu.Items.OfType<MenuItem>().All(entry => Equals(entry.Header, "断开连接"))) && typeof(MainWindow).Assembly.GetType("BlueHead.Desktop.DeviceCodecWindow") == null;
+        Media("lhdc5", 24);
+        checks["details_show_negotiated_depth_and_stereo_mode"] = window.State.Devices.Single().LiveDetails.Contains("样本位数：24 bit") && window.State.Devices.Single().LiveDetails.Contains("声道模式：立体声（2 声道）");
+        window.State.Devices.Single().DetailsOpen = true; Pump();
+        var details = Descendants<System.Windows.Controls.Primitives.Popup>(window.DeviceCards).Single(item => item.Name == "DeviceDetailsPopup");
+        CaptureControl((FrameworkElement)details.Child, "details-sample-depth.png");
+        window.State.Devices.Single().DetailsOpen = false;
+        Media("sbc", 0, "joint_stereo");
+        checks["details_clear_old_depth_and_show_actual_joint_stereo"] = window.State.Devices.Single().LiveDetails.Contains("样本位数：未单独协商") && window.State.Devices.Single().LiveDetails.Contains("联合立体声") && !window.State.Devices.Single().LiveDetails.Contains("24 bit");
+        Message(new { protocol = 1, @event = "telemetry", running = true, audio = new { }, devices = new[] { new { key = "codec-peer", media = new { codec = "sbc", rate = 48000 }, call = new { active = true, codec = "msbc", rate = 16000, channels = 1, channel_mode = "mono", depth = 0, depth_status = "not_signalled" } } } });
+        checks["voice_details_distinguish_mono_and_unknown_source_depth"] = window.State.Devices.Single().LiveDetails.Contains("单声道（1 声道）") && window.State.Devices.Single().LiveDetails.Contains("样本位数：未单独协商");
+        Capture(window, Path.Combine(folder, "home-codec-reconnect.png"));
+        receive("""{"event":"device","key":"codec-peer","state":"已断开"}""");
+        checks["reconnect_reminder_clears_when_affected_connection_ends"] = window.CodecReconnectNotice.Visibility == Visibility.Collapsed;
+        receive("""{"event":"device","key":"codec-race","state":"已连接"}""");
+        window.ApplyCodecProfile("aac").GetAwaiter().GetResult();
+        var firstReply = window.SelfTestCommands.Last(item => item.Text("command") == "preferences").Number("request_id");
+        window.TrayToggle.IsChecked = !window.TrayToggle.IsChecked; window.FlushSettings().GetAwaiter().GetResult();
+        var secondReply = window.SelfTestCommands.Last(item => item.Text("command") == "preferences").Number("request_id");
+        Message(new { protocol = 1, @event = "preferences", request_id = secondReply, success = true, reconnect_required = false, restart_required = false, message = "最新设置已保存" });
+        Message(new { protocol = 1, @event = "preferences", request_id = firstReply, success = true, reconnect_required = true, restart_required = false, message = "较早设置已保存" });
+        checks["older_success_keeps_reconnect_requirement_without_overwriting_latest_save_status"] = window.CodecReconnectNotice.IsVisible && window.SettingsHint.Text == "最新设置已保存";
+        window.OpenCodecPolicy(); Pump(); policy = window.PolicyWindow!;
+        Choose(window.CodecPicker, "aptx"); window.FlushSettings().GetAwaiter().GetResult();
+        checks["open_policy_tracks_home_preference_changes"] = Equals(((ComboBoxItem)policy.PreferencePicker.SelectedItem).Tag, "aptx");
+        policy.OpenParameters("aac"); Pump(); aac = policy.ParametersWindow!; Choose(aac.Bitrate, "128000"); Click(aac.SaveButton); window.FlushSettings().GetAwaiter().GetResult();
+        saved = window.SelfTestCommands.Last(item => item.Text("command") == "preferences");
+        checks["gear_save_cannot_restore_stale_home_preference"] = saved.GetProperty("values").Text("codec") == "aptx" && saved.GetProperty("values").GetProperty("codec_parameters").GetProperty("aac").Number("bitrate") == 128000;
+        policy.Close(); Pump();
+        receive("""{"event":"stopped"}"""); receive("""{"event":"starting"}""");
+        receive("""{"event":"device","key":"codec-race","state":"已连接"}""");
+        Message(new { protocol = 1, @event = "preferences", request_id = saved.Number("request_id"), success = true, reconnect_required = true, restart_required = true, message = "旧接收会话的回执" });
+        checks["late_save_reply_cannot_mark_fresh_receiver_session_pending"] = window.CodecReconnectNotice.Visibility == Visibility.Collapsed;
         window.ShowPage("settings");
-        window.ConnectionPolicyPicker.SelectedIndex = 1; Pump(400);
-        checks["application_settings_save_automatically_without_save_button"] = window.FindName("SaveButton") == null && window.SettingsHint.Text.Contains("自动保存") && window.SelfTestCommands.Last(item => item.Text("command") == "preferences").GetProperty("values").Text("connection_policy") == "classic";
+        window.ConnectionPolicyPicker.SelectedIndex = 1; window.FlushSettings().GetAwaiter().GetResult();
+        saved = window.SelfTestCommands.Last(item => item.Text("command") == "preferences");
+        Message(new { protocol = 1, @event = "preferences", request_id = saved.Number("request_id"), success = true, reconnect_required = false, restart_required = true, message = "已保存，请停止并重新开始接收。" });
+        window.ShowPage("home");
+        checks["le_policy_change_explains_stop_start_then_reconnect"] = window.CodecReconnectNotice.IsVisible && window.CodecReconnectText.Text.Contains("停止接收") && window.CodecReconnectText.Text.Contains("开始接收");
+        checks["application_settings_save_automatically_without_save_button"] = window.FindName("SaveButton") == null && window.SelfTestCommands.Last(item => item.Text("command") == "preferences").GetProperty("values").Text("connection_policy") == "classic";
         window.LeAudioToggle.IsChecked = true; window.FlushSettings().GetAwaiter().GetResult();
         checks["enabling_le_updates_application_policy_picker"] = window.ConnectionPolicyPicker.SelectedIndex == 0;
-        window.ShowPage("home");
-        receive("""{"event":"starting"}""");
-        receive("""{"event":"device","key":"codec-target","state":"已连接"}""");
-        receive("""{"event":"device","key":"codec-other","state":"已连接"}""");
-        window.OpenDeviceCodec(window.State.Devices.Single(card => card.Key == "codec-target")); Pump();
-        var device = window.DeviceCodecFor("codec-target")!;
-        var optionsRequest = window.SelfTestCommands.Last(item => item.Text("command") == "codec_options").Number("request_id");
-        Message(new { protocol = 1, @event = "codec_options", key = "codec-target", request_id = optionsRequest, success = true, audio_transport = "classic", session_id = "0123456789abcdef01234567",
-            selection = new { codec = "lhdc5" }, actual = (object?)null,
-            codecs = new object?[] { null, "invalid row", new { codec = "lhdc5", name = "LHDC 5.0", supported = true,
-                rates = new object?[] { 48000, "96000", null, long.MaxValue, 1.5, 96000 }, depths = new object?[] { 16, "24", null, -1, 24 } } } });
-        checks["codec_capability_numbers_ignore_wrong_types_without_losing_valid_options"] = device.Rate.Items.Count == 3 && device.Depth.Items.Count == 3 && device.ApplyButton.IsEnabled;
-        Message(new { protocol = 1, @event = "codec_options", key = "codec-target", request_id = optionsRequest, success = true, audio_transport = "classic", session_id = "0123456789abcdef01234567",
-            actual = new { codec = "aac", rate = 48000 }, selection = new { codec = "auto", rate = 0, depth = 0, bitrate = 0, quality = "auto" },
-            codecs = new object[] { new { codec = "aac", name = "AAC", supported = true, rates = new[] { 44100, 48000 }, depths = Array.Empty<int>(), quality_writable = true, bitrate_writable = true },
-                new { codec = "lhdc5", name = "LHDC 5.0", supported = true, rates = new[] { 48000, 96000 }, depths = new[] { 16, 24 }, quality_writable = false, bitrate_writable = false, quality_reason = "质量档位与实际发送码率由发送设备决定。" } } });
-        device.Codec.SelectedIndex = 2; Pump();
-        checks["per_peer_parameters_expose_real_supported_rates_and_readonly_quality"] = device.Rate.Items.Count == 3 && device.DepthRow.IsVisible && device.QualityRow.Visibility == Visibility.Collapsed && device.QualityReason.Text.Contains("发送设备");
-        device.Rate.SelectedIndex = 2; device.Depth.SelectedIndex = 2;
-        Capture(device, Path.Combine(folder, "device-codec-quality.png"));
-        Click(device.ApplyButton);
-        var request = window.SelfTestCommands.Last(item => item.Text("command") == "codec_switch");
-        checks["codec_switch_is_scoped_to_peer_and_connection_token"] = request.Text("key") == "codec-target" && request.Text("session_id") == "0123456789abcdef01234567" && request.GetProperty("selection").Number("rate") == 96000 && request.GetProperty("selection").Number("depth") == 24;
-        checks["codec_switch_progress_disables_duplicate_apply_without_touching_other_cards"] = !device.ApplyButton.IsEnabled && window.State.Devices.Count == 2 && Stops() == stops;
-        Message(new { protocol = 1, @event = "codec_switch", key = "codec-target", request_id = request.Number("request_id") - 1, success = true, done = true, actual = new { codec = "lhdc5", rate = 192000 }, message = "obsolete" });
-        checks["late_codec_response_cannot_complete_a_new_request"] = !device.ApplyButton.IsEnabled && !device.ActualFormat.Text.Contains("192");
-        Message(new { protocol = 1, @event = "codec_switch", key = "codec-target", request_id = request.Number("request_id"), success = true, done = true, actual = new { codec = "lhdc5", rate = 96000 }, message = "本次连接的编码已调整。" });
-        checks["completed_switch_displays_actual_format"] = device.ApplyButton.IsEnabled && device.ActualFormat.Text.Contains("LHDC 5.0 · 96 kHz");
-        Message(new { protocol = 1, @event = "codec_state", key = "codec-target", actual = new { codec = "aac", rate = 48000 }, reason = "发送设备选择了 AAC，没有采用首选 LDAC。" });
-        checks["fallback_reason_is_kept_with_device_details"] = window.State.Devices.Single(card => card.Key == "codec-target").CodecNote.Contains("发送设备选择") && device.ActualFormat.Text.Contains("AAC");
-        receive("""{"event":"device","key":"codec-target","state":"已断开"}""");
-        checks["disconnect_invalidates_open_codec_dialog"] = !device.ApplyButton.IsEnabled && !device.Refresh.IsEnabled && device.Status.Text.Contains("连接已结束");
-        device.Close();
-        receive("""{"event":"codec_state","key":"old-connection","actual":{"codec":"ldac","rate":96000}}""");
-        checks["codec_events_never_resurrect_old_devices"] = window.State.Devices.All(card => card.Key != "old-connection");
-        window.OpenDeviceCodec(window.State.Devices.Single()); Pump();
-        device = window.DeviceCodecFor("codec-other")!;
-        optionsRequest = window.SelfTestCommands.Last(item => item.Text("command") == "codec_options").Number("request_id");
-        Message(new { protocol = 1, @event = "codec_options", key = "codec-other", request_id = optionsRequest, success = true, audio_transport = "le", codecs = Array.Empty<object>(), actual = new { codec = "lc3", rate = 48000 }, reason = "LE Audio / LC3 参数由发送设备协商。" });
-        checks["le_options_are_truthfully_readonly_without_classic_controls"] = device.Choices.Visibility == Visibility.Collapsed && !device.ApplyButton.IsEnabled && device.ActualFormat.Text.Contains("LE Audio / LC3");
-        Capture(device, Path.Combine(folder, "device-lc3-readonly.png")); device.Close();
+        checks["reverting_to_active_connection_policy_clears_unneeded_restart_prompt"] = window.CodecReconnectNotice.Visibility == Visibility.Collapsed;
+        checks["codec_settings_never_disconnect_or_restart_active_connections"] = Stops() == stops && window.SelfTestCommands.All(item => item.Text("command") != "device_action" || item.Text("action") != "disconnect");
         receive("""{"event":"stopped"}""");
+        checks["receiver_stop_clears_pending_connection_reminders"] = window.CodecReconnectNotice.Visibility == Visibility.Collapsed;
     }
 }

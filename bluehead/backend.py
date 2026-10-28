@@ -26,6 +26,7 @@ from .diagnostics import LoopWatchdog
 from .metrics import TrafficMeter
 from .continuity import ContinuityGuard
 from .errors import Retirement
+from .protocol import format_metadata
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ class Settings:
     le_audio_enabled: bool = False
     connection_policy: str = ""
     allowed_codecs: list[str] | None = None
+    codec_parameters: dict = field(default_factory=dict)
     microphone_muted: bool = False
     playback_gain: float = 1.0
     microphone_gain: float = 1.0
@@ -97,12 +99,13 @@ class MediaSession:
             self.generation += 1
             self.paused = False
             self.format = fmt
+            self.connection_details = format_metadata(fmt)
             self.guard.reset()
             self.mixer.set_enabled(self.key, self.allowed)
             self._empty()
             self.mixer.clear(self.key)
             self.queue.put_nowait((fmt, prepared))
-        self.emit("format", key=self.key, codec=fmt.codec, rate=fmt.rate, channels=fmt.channels)
+        self.emit("format", key=self.key, codec=fmt.codec, rate=fmt.rate, **format_metadata(fmt))
 
     def _empty(self):
         while True:
@@ -252,6 +255,7 @@ class MediaSession:
     def snapshot(self):
         stream = self.mixer.inputs.get(self.key)
         return {"codec": self.format.codec if self.format else "", "rate": self.format.rate if self.format else 0,
+                **getattr(self, 'connection_details', format_metadata(self.format)),
                 **self.traffic.snapshot(), "playing": not self.paused and time.monotonic() - self.last_decoded < 1.5,
                 "buffer_ms": round(stream.frames * 1000 / self.mixer.rate, 1) if stream else 0,
                 "protected": self.guard.protected, "selected": self.allowed,
@@ -290,7 +294,6 @@ class Receiver:
         self.standard_volumes = {}
         self.codec_availability = None
         self.codec_peers = {}
-        self.codec_switching = set()
         self.native = None
         self.audio_lock = asyncio.Lock()
         self.control_tasks = set()
@@ -504,8 +507,6 @@ class Receiver:
 
     def media_owner_idle(self, now=None):
         now = time.monotonic() if now is None else now
-        if self.media_owner in self.codec_switching:
-            return False
         session = self.media_sessions().get(self.media_owner)
         if session is None or session.closed:
             return True
@@ -578,7 +579,7 @@ class Receiver:
     async def _suspend_other_media(self):
         for key, sink in list(self.media_sinks.items()):
             if (self.stop_event.is_set() or self.settings.media_mode != "single"
-                    or key == self.media_owner or key in self.codec_switching):
+                    or key == self.media_owner):
                 continue
             stream = sink.stream
             session = self.media_sessions().get(key)
@@ -615,7 +616,7 @@ class Receiver:
         self.ensure_media_watch()
 
     async def start_media(self, key):
-        if self.stop_event.is_set() or key in self.codec_switching:
+        if self.stop_event.is_set():
             return False
         sink = self.media_sinks.get(key)
         session = self.media_sessions().get(key)
@@ -648,8 +649,6 @@ class Receiver:
         async with self.media_policy_lock:
             if key not in self.connection_keys() or self.stop_event.is_set():
                 raise ValueError("设备已断开")
-            if key in self.codec_switching:
-                raise ValueError('这台设备正在调整编码，请完成后再切换播放')
             await self._select_media(key)
         self.ensure_media_watch()
 
@@ -664,7 +663,7 @@ class Receiver:
             if (self.settings.media_mode != "single" or self.stop_event.is_set() or
                     now - self.last_voice_at < .7 or not self.media_owner_idle(now)):
                 return
-            candidates = [key for key in self.media_waiting if key != self.media_owner and key not in self.codec_switching and key in self.connection_keys()
+            candidates = [key for key in self.media_waiting if key != self.media_owner and key in self.connection_keys()
                           and key in self.media_sessions() and not self.media_sessions()[key].closed and key in self.media_sinks]
             if candidates:
                 await self._select_media(max(candidates, key=self.media_waiting.get))
@@ -783,7 +782,6 @@ class Receiver:
         self.spawn_control(self.advertise())
 
     def on_protocol(self, protocol):
-        from .codec_policy import offered
         from .codec_sessions import CodecPeer
         connection = protocol.l2cap_channel.connection
         key = str(connection.peer_address)
@@ -805,7 +803,7 @@ class Receiver:
         self.update_media_gates()
         codecs = self.media_codecs()
         for codec in codecs:
-            limit = offered(codec, legacy_aac_limit=self.settings.codec == 'aac_192')
+            limit = peer.limit(codec)
             sink = protocol.add_sink(limit)
             peer.endpoints[codec] = sink
             original = sink.on_set_configuration_command
@@ -835,7 +833,7 @@ class Receiver:
                 if not getattr(self.mixer, "remote", False):
                     session.configure(fmt, check)
                 response = await original(config)
-                if response is None and not peer.applying:
+                if response is None:
                     peer.configured(codec, config)
                 return response
 
@@ -863,8 +861,7 @@ class Receiver:
                     return avdtp.Reconfigure_Reject(avdtp.AVDTP_MEDIA_CODEC_SERVICE_CATEGORY,
                                                   avdtp.AVDTP_UNSUPPORTED_CONFIGURATION_ERROR)
                 endpoint.configuration = [c for c in endpoint.configuration if not isinstance(c, avdtp.MediaCodecCapabilities)] + [c for c in config if isinstance(c, avdtp.MediaCodecCapabilities)]
-                if not peer.applying:
-                    peer.configured(codec, config)
+                peer.configured(codec, config)
                 return None
 
             sink.on_reconfigure_command = reconfigure
@@ -1078,7 +1075,6 @@ class Receiver:
         for peer in self.codec_peers.values():
             peer.close()
         self.codec_peers.clear()
-        self.codec_switching.clear()
         if self.voice_protection:
             self.voice_protection.close()
         self.stop_event.set()
@@ -1213,10 +1209,7 @@ class Receiver:
             return mapped, errors
 
     async def action(self, action, key):
-        if action in ('codec_options', 'codec_switch'):
-            from .codec_sessions import execute
-            await execute(self, action, key)
-        elif action == 'codec_preferences':
+        if action == 'codec_preferences':
             self.settings = replace(self.settings, **key)
         elif action == 'broadcast':
             from .le_audio.commands import execute

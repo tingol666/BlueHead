@@ -268,6 +268,7 @@ class NativeCallManager(CallManager):
         ratio = {1: .5, 2: 57 / 60, 3: 58 / 60}[codec]
         self.native_meters[key] = (now, voice["rx_bytes"], voice["tx_bytes"])
         result = {"active": voice["active"], **statistics,
+                  "channels": 1, "channel_mode": "mono", "depth": 0, "depth_status": "not_signalled",
                   "rx_bitrate": max(0, int((voice["rx_bytes"] - rx) * 8 * ratio / elapsed)),
                   "tx_bitrate": max(0, int((voice["tx_bytes"] - tx) * 8 * ratio / elapsed)),
                   "rx_packets": voice["rx_packets"], "decode_errors": voice["decode_errors"],

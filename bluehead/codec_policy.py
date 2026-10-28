@@ -1,4 +1,4 @@
-"""One capability/preference model for Classic discovery and scoped switching.
+"""Persistent capability/preference model for the next Classic connection.
 
 The sending device still owns its encoder. Only parameters present in the wire
 capability are writable; quality names never pretend to control a private source
@@ -80,6 +80,31 @@ class Selection:
         return asdict(self)
 
 
+def parameters(values):
+    """Validate and detach persistent settings; codec keys supply the codec.
+
+    Source-private encoder modes are deliberately rejected, not silently saved
+    as though they could alter LDAC/LHDC transmission quality.
+    """
+    if not isinstance(values, dict) or len(values) > len(CODECS):
+        raise ValueError('各编码的音质设置无效')
+    result = {}
+    for name, detail in values.items():
+        if not isinstance(name, str) or name not in CODECS or not isinstance(detail, dict):
+            raise ValueError('各编码的音质设置无效')
+        if set(detail) - {'rate', 'depth', 'bitrate', 'quality'}:
+            raise ValueError('各编码的音质设置包含不支持的选项')
+        selection = Selection.parse(dict(codec=name, **detail))
+        result[name] = {key: value for key, value in selection.wire().items() if key != 'codec'}
+    return result
+
+
+def selections(settings):
+    """Snapshot settings once per signalling connection, never per media packet."""
+    return {name: Selection(codec=name, **detail)
+            for name, detail in parameters(getattr(settings, 'codec_parameters', {})).items()}
+
+
 def replace_info(cap, raw):
     kind = cap.media_codec_type
     if kind == a2dp.CodecType.NON_A2DP:
@@ -96,7 +121,11 @@ def replace_info(cap, raw):
 
 def offered(codec, selection=None, *, legacy_aac_limit=False):
     codec = canonical(codec)
-    cap = capabilities('aac_192' if codec == 'aac' and legacy_aac_limit else codec)
+    # The historic AAC-192 preset remains intact, but a deliberate per-codec
+    # bitrate or quality override replaces that legacy preset on reconnect.
+    legacy = (codec == 'aac' and legacy_aac_limit
+              and (selection is None or not selection.bitrate and selection.quality == 'auto'))
+    cap = capabilities('aac_192' if legacy else codec)
     if selection is None or selection.codec not in (codec, 'auto'):
         return cap
     raw = bytearray(bytes(cap.media_codec_information))
@@ -112,8 +141,8 @@ def offered(codec, selection=None, *, legacy_aac_limit=False):
     if codec == 'sbc' and selection.quality != 'auto':
         raw[3] = dict(high=53, balanced=40, bandwidth=32)[selection.quality]
     if codec == 'aac':
-        limit = selection.bitrate or dict(auto=320000, high=320000, balanced=256000,
-                                          bandwidth=192000)[selection.quality]
+        limit = min(selection.bitrate or 320000, dict(auto=320000, high=320000, balanced=256000,
+                                                    bandwidth=192000)[selection.quality])
         original = int.from_bytes(raw[3:], 'big') & 0x7fffff
         raw[3:] = ((min(limit, original) | (raw[3] & 0x80) << 16)).to_bytes(3, 'big')
     if codec == 'lhdc5' and selection.depth:

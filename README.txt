@@ -17,7 +17,8 @@ https://github.com/tingol666/BlueHead
 A2DP：SBC/AAC/aptX/aptX HD、实验 LDAC、LHDC 5.0。
 HFP：CVSD/mSBC/LC3-SWB。iPhone/iPad 标准 AAC/SBC、HFP、AVRCP。
 LE Audio：LC3 单播媒体和麦克风发送、音频广播接收、BASS/PAST、VCS/MICS。
-在设置→高级音频设置中开启 LE Audio；LHDC 5.0 可在首页选择。
+首页媒体编码右侧的齿轮打开“连接与编码”，选择 LE Audio 偏好、允许的经典编码与首选。每个经典编码旁的小齿轮可设置其采样率及可用的位深、码率或质量上限，自动保存。实际格式仍由双方能力协商，设备卡片显示结果。
+修改经典编码设置后，在发送设备蓝牙设置中断开电脑耳机再重新连接。修改 LE 连接偏好后，先在 BlueHead 点“停止接收”→“开始接收”，再重新连接发送设备。首页会显示待重连提示，不执行单设备编码热切换。
 语音和 LE Audio 编码自动协商；蓝牙版本号不能保证协议能力，应用必须支持并选择蓝牙麦克风。
 一次向一个设备发送麦克风。不提供广播发送、LC3plus、aptX Adaptive/Lossless、LHDC 可选无损/AR/JAS/META 扩展或全部可选 GAF 应用角色。
 

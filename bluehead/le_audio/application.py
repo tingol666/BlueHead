@@ -21,7 +21,7 @@ from .audio_controls import AudioControls
 from .discovery import AudioAdvertisement, HEADSET_APPEARANCE, announcement, roles
 from .peer_control import PeerAudioControl
 from .service_cache import ServiceCache
-from ..protocol import Format
+from ..protocol import Format, format_metadata
 from ..errors import Retirement
 
 
@@ -86,7 +86,7 @@ class LeMediaSession:
         return dict(
             codec="lc3",
             rate=self.format.rate,
-            channels=self.format.channels,
+            **format_metadata(self.format),
             selected=self.allowed,
             bitrate=sum(value.get("bitrate", 0) for value in states),
             frames=sum(value.get("frames", 0) for value in states),
@@ -431,7 +431,7 @@ class LeAudioApplication:
                     key=key,
                     codec="lc3",
                     rate=session.format.rate,
-                    channels=session.format.channels,
+                    **format_metadata(session.format),
                     audio_transport="le",
                 )
                 self.emit('le_audio_discovery', key=key, phase='channel_ready',
@@ -451,6 +451,7 @@ class LeAudioApplication:
             active=active,
             codec="lc3",
             rate=record.codec.rate,
+            **format_metadata(Format('lc3', record.codec.rate, record.codec.channels)),
             message="正在使用电脑麦克风" if active else "电脑麦克风已停止发送",
         )
         self.receiver.last_voice_at = time.monotonic()
@@ -473,6 +474,7 @@ class LeAudioApplication:
                 active=value.get("active", False),
                 codec="lc3",
                 rate=record.codec.rate,
+                **format_metadata(Format('lc3', record.codec.rate, record.codec.channels)),
                 tx_bitrate=value.get("bitrate", 0),
                 rx_bitrate=sum(s.get("bitrate", 0) for s in receive),
                 rx_packets=sum(s.get("packets", 0) for s in receive),

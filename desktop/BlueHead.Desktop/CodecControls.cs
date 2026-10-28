@@ -15,9 +15,14 @@ public partial class MainWindow
     private int preferencesRequest;
     private bool preferencesAcknowledged;
     private readonly Dictionary<string, string> unavailableCodecs = [];
-    private readonly Dictionary<string, DeviceCodecWindow> codecWindows = [];
+    private readonly HashSet<string> codecReconnectDevices = [];
+    private sealed record PreferenceContext(string[] Devices, int Session);
+    private readonly Dictionary<int, PreferenceContext> pendingPreferenceReplies = [];
+    private int codecSession;
+    private string? activeStartupSettings;
+    private bool codecRestartRequired;
+    private string codecSaveError = "";
     internal CodecPolicyWindow? PolicyWindow { get; private set; }
-    internal DeviceCodecWindow? DeviceCodecFor(string key) => codecWindows.GetValueOrDefault(key);
     private void InitializeCodecControls()
     {
         settingsTimer.Tick += async (_, _) => await FlushSettings();
@@ -53,7 +58,10 @@ public partial class MainWindow
     private void QueueSettings()
     {
         settingsDirty = true; settingsTimer.Stop(); settingsTimer.Start();
+        PolicyWindow?.Synchronize(settings);
+        codecSaveError = "";
         SettingsHint.Text = "正在自动保存…";
+        UpdateCodecNotice();
     }
     internal async Task<bool> FlushSettings()
     {
@@ -66,18 +74,21 @@ public partial class MainWindow
         if (System.Text.Encoding.UTF8.GetByteCount(next.name) > 200)
         { settingsDirty = true; SettingsHint.Text = "电脑名称过长，请缩短后会自动保存。"; return false; }
         var values = new { next.name, next.calls, next.voice_single_device, next.buffer_ms, next.call_buffer_ms,
-            next.maximum_devices, next.codec, next.allowed_codecs, next.ldac_enabled, next.lhdc5_enabled,
+            next.maximum_devices, next.codec, next.allowed_codecs, next.codec_parameters, next.ldac_enabled, next.lhdc5_enabled,
             next.connection_policy, next.le_audio_enabled };
         preferencesRequest = ++requestId;
         preferencesAcknowledged = false;
+        pendingPreferenceReplies[preferencesRequest] = new(devices.Keys.ToArray(), codecSession);
+        if (pendingPreferenceReplies.Count > 128) pendingPreferenceReplies.Remove(pendingPreferenceReplies.Keys.Min());
         if (!await Send(new { command = "preferences", request_id = preferencesRequest, values }))
-        { settingsDirty = true; SettingsHint.Text = "设置尚未保存，后台恢复后会再次保存。"; return false; }
+        { pendingPreferenceReplies.Remove(preferencesRequest); settingsDirty = true; SettingsHint.Text = "设置尚未保存，后台恢复后会再次保存。"; return false; }
         try { SaveDesktopPreferences(); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         { SettingsHint.Text = "连接偏好已发送；窗口／自启动设置保存失败：" + error.Message; return false; }
-        if (offline) SettingsHint.Text = running ? "已自动保存。连接偏好下次开始接收生效；经典编码用于下次设备连接，现有连接继续播放。" : "已自动保存。";
+        if (offline) { preferencesAcknowledged = true; SettingsHint.Text = "已自动保存。编码和参数需在发送设备上断开 BlueHead 后重新连接。"; }
         else if (!preferencesAcknowledged) SettingsHint.Text = "正在自动保存…";
         UpdateMediaControls(); UpdateProtocolAvailability(); RefreshOpenHelp();
+        UpdateCodecNotice();
         return true;
     }
     private void SaveDesktopPreferences()
@@ -105,58 +116,84 @@ public partial class MainWindow
     {
         if (settings.mode == "native" || driverBusy) return;
         if (PolicyWindow != null) { PolicyWindow.Activate(); return; }
-        PolicyWindow = new(settings, unavailableCodecs, (policy, allowed, preferred) =>
+        PolicyWindow = new(settings, unavailableCodecs, (policy, allowed, preferred, parameters) =>
         {
             settings.connection_policy = policy; settings.le_audio_enabled = policy == "prefer_le";
             settings.allowed_codecs = allowed; settings.codec = preferred;
+            settings.codec_parameters = parameters;
             settings.ldac_enabled = allowed.Contains("ldac"); settings.lhdc5_enabled = allowed.Contains("lhdc5");
             ApplySettings(); QueueSettings();
         }) { Owner = this };
         PolicyWindow.Closed += async (_, _) => { PolicyWindow = null; await FlushSettings(); };
         PolicyWindow.Show();
+        UpdateCodecNotice();
     }
     private void CodecSettingsClick(object sender, RoutedEventArgs e) => OpenCodecPolicy();
-    internal void OpenDeviceCodec(DeviceCard card)
-    {
-        if (!devices.TryGetValue(card.Key, out var current) || !ReferenceEquals(card, current) || settings.mode == "native") return;
-        if (codecWindows.TryGetValue(card.Key, out var previous)) previous.Close();
-        var window = new DeviceCodecWindow(card.Key, card.Name, Send, () => ++requestId) { Owner = this };
-        codecWindows[card.Key] = window;
-        window.Closed += (_, _) => { if (codecWindows.GetValueOrDefault(card.Key) == window) codecWindows.Remove(card.Key); };
-        window.Show();
-    }
-    private void DeviceCodecClick(object sender, RoutedEventArgs e) { if (Card(sender) is { } card) OpenDeviceCodec(card); }
     private bool ApplyCodecMessage(JsonElement message)
     {
         var kind = message.Text("event");
         if (kind == "preferences")
         {
+            var reply = message.Number("request_id");
+            if (reply < 1 || reply > int.MaxValue || reply != Math.Truncate(reply)) return true;
+            pendingPreferenceReplies.TryGetValue((int)reply, out var context);
+            pendingPreferenceReplies.Remove((int)reply);
+            if (message.Flag("success") && running && context is not null && context.Session == codecSession)
+            {
+                if (message.Flag("reconnect_required")) codecReconnectDevices.UnionWith(context.Devices.Where(devices.ContainsKey));
+                if (message.Flag("restart_required")) codecRestartRequired = true;
+            }
             if (message.Number("request_id") == preferencesRequest)
             {
                 preferencesAcknowledged = true;
                 if (!settingsDirty) SettingsHint.Text = message.Text("message");
-                if (!message.Flag("success")) settingsDirty = true;
-                else FooterStatus.Text = "设置已保存 · 现有连接保持";
+                if (!message.Flag("success")) { settingsDirty = true; codecSaveError = message.Text("message"); }
+                else
+                {
+                    codecSaveError = "";
+                    FooterStatus.Text = "设置已保存";
+                }
             }
+            UpdateCodecNotice();
             return true;
         }
         if (kind == "codec_capabilities")
         {
             unavailableCodecs.Clear();
-            foreach (var row in message.GetProperty("codecs").EnumerateArray()) if (!row.Flag("available")) unavailableCodecs[row.Text("codec")] = row.Text("reason", "当前解码器不可用");
-            RefreshCodecChoices(); return true;
+            if (message.TryGetProperty("codecs", out var rows) && rows.ValueKind == JsonValueKind.Array)
+                foreach (var row in rows.EnumerateArray()) if (row.ValueKind == JsonValueKind.Object && !row.Flag("available")) unavailableCodecs[row.Text("codec")] = row.Text("reason", "当前解码器不可用");
+            RefreshCodecChoices(); PolicyWindow?.RefreshAvailability(); return true;
         }
-        if (kind is not ("codec_options" or "codec_switch" or "codec_state" or "le_audio_discovery")) return false;
+        if (kind is "codec_options" or "codec_switch") return true;
+        if (kind is not ("codec_state" or "le_audio_discovery")) return false;
         if (message.Flag("stale")) return true;
         var key = message.Text("key");
-        if (codecWindows.TryGetValue(key, out var window)) window.Receive(message);
         if (devices.TryGetValue(key, out var card))
         {
             if (kind == "codec_state") card.CodecNote = message.Text("reason");
             if (kind == "le_audio_discovery") card.CodecNote = message.Text("phase") == "streaming" ? "" : message.Text("reason");
-            if (kind == "codec_switch") { card.CodecNote = message.Text("message"); FooterStatus.Text = card.CodecNote; }
         }
         return true;
     }
-    private void EndCodecConnections() { foreach (var window in codecWindows.Values) window.Disconnected(); }
+    private string StartupSettings() => JsonSerializer.Serialize(new { settings.name, settings.calls, settings.voice_single_device, settings.buffer_ms, settings.call_buffer_ms, settings.maximum_devices, policy = settings.le_audio_enabled ? "prefer_le" : "classic" });
+    private void StartCodecSession() { codecSession++; codecReconnectDevices.Clear(); codecRestartRequired = false; activeStartupSettings = StartupSettings(); }
+    private void ResetCodecPending() { codecSession++; codecReconnectDevices.Clear(); codecRestartRequired = false; activeStartupSettings = null; pendingPreferenceReplies.Clear(); UpdateCodecNotice(); }
+    private void UpdateCodecNotice()
+    {
+        if (CodecReconnectNotice == null) return;
+        if (codecRestartRequired && activeStartupSettings == StartupSettings()) codecRestartRequired = false;
+        codecReconnectDevices.RemoveWhere(key => !devices.ContainsKey(key));
+        var reminder = codecRestartRequired ? "连接设置已保存。请先点右上角“停止接收”，再点“开始接收”，然后重新连接设备。"
+            : codecReconnectDevices.Count > 0 ? "编码设置已保存。请在发送设备的蓝牙设置中断开 BlueHead，再重新连接；当前连接仍用原格式。" : "";
+        CodecReconnectNotice.Visibility = running && settings.mode != "native" && reminder.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        CodecReconnectText.Text = reminder;
+        if (PolicyWindow != null)
+        {
+            PolicyWindow.SaveState.Text = codecSaveError.Length > 0 ? codecSaveError
+                : settingsDirty || preferencesRequest > 0 && !preferencesAcknowledged ? "正在自动保存…"
+                : reminder.Length > 0 ? reminder
+                : preferencesRequest > 0 ? "已保存。编码参数在下次设备连接生效；连接偏好在下次开始接收生效。"
+                : "修改自动保存。编码和参数需断开并重新连接设备；连接偏好需停止接收，再开始接收。";
+        }
+    }
 }

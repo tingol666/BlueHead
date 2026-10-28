@@ -134,7 +134,7 @@ internal static partial class Program
         checks["usage_help_explains_owner_features_and_switch_without_repeating_voice_guard"] = window.AudioOptionHelpPopup.IsOpen && window.AudioOptionHelpTitle.Text == "蓝牙使用方式" && window.OptionHelpPlainText.Contains("多设备同时连接") && window.OptionHelpPlainText.Contains("管理员授权") && !window.OptionHelpPlainText.Contains("通话／语音保护");
         Capture((FrameworkElement)window.AudioOptionHelpPopup.Child, Path.Combine(folder, "help-usage-popup.png"));
         Click(window.CodecHelpButton);
-        checks["codec_help_opens_from_icon_and_replaces_previous_topic"] = window.AudioOptionHelpPopup.IsOpen && window.AudioOptionHelpTitle.Text == "媒体编码" && window.OptionHelpPlainText.Contains("语音编码") && window.OptionHelpPlainText.Contains("怎样应用");
+        checks["codec_help_opens_from_icon_and_replaces_previous_topic"] = window.AudioOptionHelpPopup.IsOpen && window.AudioOptionHelpTitle.Text == "媒体编码" && window.OptionHelpPlainText.Contains("语音编码") && window.OptionHelpPlainText.Contains("重新连接");
         Capture((FrameworkElement)window.AudioOptionHelpPopup.Child, Path.Combine(folder, "help-codec-popup.png"));
         Click(window.CodecHelpButton);
         checks["clicking_same_help_icon_closes_popup"] = !window.AudioOptionHelpPopup.IsOpen;
@@ -367,7 +367,7 @@ internal static partial class Program
         checks["late_events_do_not_resurrect_disconnected_devices"] = window.State.Devices.Count == 0;
         window.ShowPage("home");
         Event("""{"event":"starting"}""");
-        window.CodecPicker.SelectedItem = window.CodecPicker.Items.OfType<System.Windows.Controls.ComboBoxItem>().First(item => Equals(item.Tag, "aac_192"));
+        window.CodecPicker.SelectedItem = window.CodecPicker.Items.OfType<System.Windows.Controls.ComboBoxItem>().First(item => Equals(item.Tag, "aac"));
         Event("""{"event":"audio_refreshing"}""");
         var beforeRefreshApply = window.SelfTestCommands.Count;
         window.ApplyCodecProfile().GetAwaiter().GetResult();
@@ -378,7 +378,7 @@ internal static partial class Program
         checks["applying_global_codec_preserves_live_receiver"] = window.SelfTestCommands.Last().Text("command") == "preferences" && window.StartButton.Content.ToString() == "停止接收";
         var savedCodec = window.SelfTestCommands.Last().GetProperty("values");
         checks["codec_preferences_do_not_overwrite_preferred_endpoint_intent"] = !savedCodec.TryGetProperty("output_endpoint_id", out _);
-        checks["codec_preferences_do_not_overwrite_audio_gains_or_playback_mode"] = savedCodec.Text("codec") == "aac_192" && !savedCodec.TryGetProperty("playback_gain", out _) && !savedCodec.TryGetProperty("media_mode", out _);
+        checks["codec_preferences_do_not_overwrite_audio_gains_or_playback_mode"] = savedCodec.Text("codec") == "aac" && !savedCodec.TryGetProperty("playback_gain", out _) && !savedCodec.TryGetProperty("media_mode", out _);
         Event("""{"event":"stopped"}""");
         Event("""{"event":"starting"}""");
         Event("""{"event":"device","key":"demo-a","state":"已连接"}""");

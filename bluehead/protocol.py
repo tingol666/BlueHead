@@ -20,6 +20,26 @@ class Format:
     depth: int = 0
 
 
+def format_metadata(fmt, configuration=None):
+    """Describe transmitted format, never the decoder's internal PCM format.
+
+    Most Bluetooth codec configurations do not signal source sample precision.
+    Their float/S16 decoder output is not evidence of a negotiated source depth.
+    """
+    channels = getattr(fmt, 'channels', 0) if fmt is not None else 0
+    codec = getattr(fmt, 'codec', '') if fmt is not None else ''
+    depth = getattr(fmt, 'depth', 0) if codec == 'lhdc5' else 0
+    depth = depth if depth in (16, 24) else 0
+    mode = {1: 'mono', 2: 'stereo'}.get(channels, 'unknown')
+    if codec == 'sbc' and configuration:
+        cap = next((item for item in configuration if isinstance(item, avdtp.MediaCodecCapabilities)), None)
+        raw = bytes(cap.media_codec_information) if cap is not None else b''
+        if raw:
+            mode = {1: 'joint_stereo', 2: 'stereo', 4: 'dual_channel', 8: 'mono'}.get(raw[0] & 15, mode)
+    return dict(channels=channels, depth=depth, channel_mode=mode,
+                depth_status='negotiated' if depth else 'not_signalled')
+
+
 def capabilities(codec: str, *, selected: bool = False):
     aac_limit = 192000 if codec == "aac_192" else 320000
     codec = "aac" if codec == "aac_192" else codec

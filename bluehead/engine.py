@@ -73,7 +73,13 @@ def validate_settings(values, *, require_transport=True):
             raise ValueError("设备音量设置无效")
         for value in gains.values():
             validate_gain(value)
-    from .codec_policy import canonical, permitted
+    from .codec_policy import canonical, parameters, permitted
+    settings.codec_parameters = parameters(settings.codec_parameters)
+    if settings.codec == 'aac_192':
+        settings.codec = 'aac'
+        details = settings.codec_parameters.setdefault('aac', dict(rate=0, depth=0, bitrate=0, quality='auto'))
+        if not details['bitrate']:
+            details['bitrate'] = 192000
     allowed = permitted(settings)
     if settings.codec != 'auto' and canonical(settings.codec) not in allowed:
         raise ValueError('首选编码必须先在“允许的编码”中启用')
@@ -100,7 +106,9 @@ class Engine:
         if path.exists():
             try:
                 values = json.loads(path.read_text("utf-8"))
-                self.settings = Settings(**{k: v for k, v in values.items() if k in {f.name for f in fields(Settings)}})
+                self.settings = validate_settings(
+                    {k: v for k, v in values.items() if k in {f.name for f in fields(Settings)}},
+                    require_transport=False)
             except (OSError, ValueError, TypeError):
                 logging.exception("Settings could not be loaded")
 
@@ -294,18 +302,9 @@ class Engine:
                                   "play", "pause", "play_pause", "stop", "next", "previous"):
                 raise ValueError("不支持的设备操作")
             self.runner.action(operation, str(message.get("key", ""))[:200])
-        elif action in ('codec_options', 'codec_switch'):
-            from .codec_sessions import validate
-            values = validate(message, switch=action == 'codec_switch')
-            if not running or self.settings.mode == 'native':
-                self.emit(action, key=values['key'], request_id=values['request_id'],
-                          success=False, done=True, phase='failed',
-                          message='请先使用 BlueHead 专用蓝牙开始接收，并在这台设备上播放媒体。')
-            else:
-                self.runner.action(action, values)
         elif action == 'preferences':
             patch = message.get('values')
-            allowed = {'codec', 'allowed_codecs', 'ldac_enabled', 'lhdc5_enabled', 'connection_policy',
+            allowed = {'codec', 'allowed_codecs', 'codec_parameters', 'ldac_enabled', 'lhdc5_enabled', 'connection_policy',
                        'le_audio_enabled', 'name', 'maximum_devices', 'buffer_ms', 'call_buffer_ms',
                        'calls', 'voice_single_device'}
             if not isinstance(patch, dict) or set(patch) - allowed:
@@ -324,11 +323,19 @@ class Engine:
                     return
             if running:
                 live = {name: getattr(next_settings, name) for name in (
-                    'codec', 'allowed_codecs', 'ldac_enabled', 'lhdc5_enabled')}
+                    'codec', 'allowed_codecs', 'codec_parameters', 'ldac_enabled', 'lhdc5_enabled')}
                 self.runner.action('codec_preferences', live)
+            reconnect_required = running and any(getattr(previous_settings, name) != getattr(next_settings, name)
+                for name in ('codec', 'allowed_codecs', 'codec_parameters', 'ldac_enabled', 'lhdc5_enabled'))
+            restart_required = running and any(getattr(previous_settings, name) != getattr(next_settings, name)
+                for name in ('connection_policy', 'le_audio_enabled', 'name', 'maximum_devices', 'buffer_ms',
+                             'call_buffer_ms', 'calls', 'voice_single_device'))
             self.emit('preferences', success=True, settings=asdict(next_settings),
                       request_id=message.get('request_id', 0), deferred=running,
-                      message='已自动保存；连接设置在下次开始接收时生效。' if running else '已自动保存。')
+                      reconnect_required=reconnect_required, restart_required=restart_required,
+                      message='已保存；请点击“停止接收”，再点击“开始接收”使新设置生效。' if restart_required else
+                              '已保存；请在发送设备的蓝牙设置中断开 BlueHead 后重新连接，使用新的媒体编码设置。'
+                              if reconnect_required else '已自动保存。')
         elif action == "gain":
             gain = validate_gain(message.get("gain", 1))
             key = str(message.get("key", ""))[:200]

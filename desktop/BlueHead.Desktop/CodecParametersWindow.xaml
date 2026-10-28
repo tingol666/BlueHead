@@ -1,0 +1,18 @@
+<Window x:Class="BlueHead.Desktop.CodecParametersWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+ Title="编码参数 · BlueHead" Width="400" SizeToContent="Height" ResizeMode="NoResize" WindowStartupLocation="CenterOwner" ShowInTaskbar="False" Background="#F6F9F8" Foreground="{StaticResource Ink}">
+ <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel Margin="20,16">
+  <TextBlock x:Name="CodecTitle" FontSize="19" FontWeight="SemiBold"/>
+  <TextBlock Text="对此编码统一设置，重新连接设备后生效。" Style="{StaticResource Caption}" Margin="0,5,0,14"/>
+  <Border Style="{StaticResource Card}" Padding="12"><StackPanel>
+   <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+    <StackPanel x:Name="RateRow" Grid.ColumnSpan="3"><TextBlock Text="采样率"/><ComboBox x:Name="Rate" Margin="0,6,0,0" AutomationProperties.Name="此编码的采样率"/></StackPanel>
+    <StackPanel x:Name="DepthRow" Grid.Column="2" Visibility="Collapsed"><TextBlock Text="样本位数"/><ComboBox x:Name="Depth" Margin="0,6,0,0" AutomationProperties.Name="此编码的样本位数"/></StackPanel>
+   </Grid>
+   <StackPanel x:Name="BitrateRow" Margin="0,12,0,0" Visibility="Collapsed"><TextBlock Text="码率上限"/><ComboBox x:Name="Bitrate" Margin="0,6,0,0" AutomationProperties.Name="AAC 码率上限"/></StackPanel>
+   <StackPanel x:Name="QualityRow" Margin="0,12,0,0" Visibility="Collapsed"><TextBlock Text="质量范围"/><ComboBox x:Name="Quality" Margin="0,6,0,0" AutomationProperties.Name="此编码的质量范围"/></StackPanel>
+   <TextBlock x:Name="QualityReason" Style="{StaticResource Caption}" Margin="0,10,0,0"/>
+  </StackPanel></Border>
+  <TextBlock Text="采样率是传输协商参数，不会把声音升采样来伪装高清。双方没有共同格式时，发送设备可能选择其它已允许的编码；设备卡片显示实际结果。" Style="{StaticResource Caption}" Margin="0,12,0,12"/>
+  <DockPanel LastChildFill="False"><ui:Button x:Name="ResetButton" Content="恢复自动" Click="ResetClick" Padding="9,5"/><ui:Button x:Name="SaveButton" DockPanel.Dock="Right" Content="保存参数" Click="SaveClick" Appearance="Primary" Padding="12,5"/></DockPanel>
+ </StackPanel></ScrollViewer>
+</Window>

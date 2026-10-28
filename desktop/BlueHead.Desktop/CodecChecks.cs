@@ -118,7 +118,7 @@ internal static partial class Program
         parameters = saved.GetProperty("values").GetProperty("codec_parameters");
         checks["separate_codec_settings_do_not_overwrite_each_other"] = parameters.GetProperty("aac").Number("bitrate") == 192000 && parameters.GetProperty("aac").Text("quality") == "balanced" && parameters.GetProperty("lhdc5").Number("rate") == 96000;
         var aacChoice = window.CodecPicker.Items.OfType<ComboBoxItem>().Single(item => Equals(item.Tag, "aac"));
-        checks["home_reference_bitrate_updates_after_saving_codec_parameters"] = Equals(aacChoice.Content, "AAC · 约192 kb/s") && ((TextBlock)((ToolTip)aacChoice.ToolTip).Content).Text.Contains("不是当前连接的实测值");
+        checks["aac_picker_stays_concise_while_saved_parameters_remain_visible"] = Equals(aacChoice.Content, "AAC") && policy.SummaryFor("aac").Contains("192 kb/s") && parameters.GetProperty("lhdc5").Number("rate") == 96000;
         checks["aac_has_one_preference_entry_with_independent_bitrate_settings"] = window.CodecPicker.Items.OfType<ComboBoxItem>().Count(item => CodecPolicyWindow.Canonical(item.Tag?.ToString() ?? "") == "aac") == 1;
         Message(new { protocol = 1, @event = "preferences", request_id = saved.Number("request_id"), success = true, reconnect_required = true, restart_required = false, message = "已保存，请重新连接。" });
         Capture(policy, Path.Combine(folder, "connection-codec-policy.png"));

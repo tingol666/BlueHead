@@ -75,12 +75,13 @@ internal static class CodecBitrateLimits
         var canonical = CodecPolicyWindow.Canonical(codec);
         var name = CodecPolicyWindow.Codecs.FirstOrDefault(item => item.Code == canonical).Name;
         if (name is null) return codec;
+        if (canonical is "aac" or "sbc") return name;
         return name + " · 约" + Range(CommonRangeKbps(codec, Parameters(codec, values))) + " kb/s";
     }
 
     internal static string Description(string codec, IReadOnlyDictionary<string, CodecParameters>? values)
     {
-        if (codec == "auto") return "优先协商双方可用的高清媒体编码。选项中的数字是常用码率参考，不是当前连接的实测值。实际码率请看设备卡片。";
+        if (codec == "auto") return "优先协商双方可用的高清媒体编码。部分选项中的数字是常用码率参考，不是当前连接的实测值。实际码率请看设备卡片。";
         var value = Parameters(codec, values);
         var canonical = CodecPolicyWindow.Canonical(codec);
         var explanation = canonical switch
@@ -92,6 +93,7 @@ internal static class CodecBitrateLimits
             "lhdc5" => "这里显示常用音质档位的范围；发送设备自动调整带宽时，码率还可能更低。采样率或样本位数不会固定其码率，实际档位由发送设备选择。",
             _ => "实际格式由双方协商。"
         };
-        return "常用码率参考：约 " + Range(CommonRangeKbps(codec, value)) + " kb/s，不是当前连接的实测值。\n" + explanation + "\n实际码率请看设备卡片。点击媒体编码右侧的设置按钮可调节参数；修改后断开并重新连接设备生效。不同编码的码率不能直接用来比较音质。";
+        var reference = canonical is "aac" or "sbc" ? "" : "常用码率参考：约 " + Range(CommonRangeKbps(codec, value)) + " kb/s，不是当前连接的实测值。\n";
+        return reference + explanation + "\n实际码率请看设备卡片。点击媒体编码右侧的设置按钮可调节参数；修改后断开并重新连接设备生效。不同编码的码率不能直接用来比较音质。";
     }
 }

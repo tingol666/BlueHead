@@ -47,12 +47,19 @@ internal static partial class Program
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(image));
         using var stream = File.Create(path); encoder.Save(stream);
     }
-    private static void Pump(int milliseconds = 80)
+    private static void Pump(int milliseconds = 80, [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
     {
         var frame = new DispatcherFrame();
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(milliseconds) };
-        timer.Tick += (_, _) => { timer.Stop(); frame.Continue = false; };
-        timer.Start(); Dispatcher.PushFrame(frame);
+        var dispatcher = Dispatcher.CurrentDispatcher;
+        var trace = Environment.GetEnvironmentVariable("BLUEHEAD_UI_TRACE") == "1";
+        if (trace) Console.WriteLine($"UI wait {line}: start ({milliseconds} ms)");
+        // Keep the diagnostic clock independent of dispatcher timer delivery.
+        // Posting a Send operation also wakes an otherwise quiet virtual desktop.
+        using (var timer = new System.Threading.Timer(_ =>
+            dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(() => frame.Continue = false)),
+            null, milliseconds, Timeout.Infinite))
+            Dispatcher.PushFrame(frame);
+        if (trace) Console.WriteLine($"UI wait {line}: complete");
     }
     private static int SelfTest(Application app, string folder)
     {
@@ -227,10 +234,7 @@ internal static partial class Program
         var advancedHeader = window.AdvancedAudio.Template.FindName("HeaderButton", window.AdvancedAudio) as FrameworkElement;
         checks["advanced_settings_has_large_full_width_entry"] = advancedHeader is { ActualHeight: >= 60 } && advancedHeader.ActualWidth > 500;
         window.ShowAdvancedAudio();
-        var frame = new DispatcherFrame();
-        var renderTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
-        renderTimer.Tick += (_, _) => { renderTimer.Stop(); frame.Continue = false; };
-        renderTimer.Start(); Dispatcher.PushFrame(frame);
+        Pump(350);
         checks["advanced_mixer_explanation_secondary"] = window.AdvancedAudio.IsExpanded && window.MediaBufferPicker.IsVisible && !window.SystemAudioToggle.IsVisible;
         Capture(window, Path.Combine(folder, "advanced-mix.png"));
         window.AdvancedAudio.IsExpanded = false;

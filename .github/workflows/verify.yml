@@ -59,6 +59,8 @@ jobs:
           dotnet build desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj -c Release -p:RestoreLockedMode=true
       - name: Built-in desktop diagnostics
         shell: pwsh
+        env:
+          BLUEHEAD_UI_TRACE: '1'
         run: |
           # Hosted runners have virtual displays. Use WPF's documented software
           # rasterizer for deterministic snapshots; this affects only this VM.

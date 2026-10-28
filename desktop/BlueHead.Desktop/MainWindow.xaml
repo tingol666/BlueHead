@@ -99,7 +99,16 @@
 
           <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,6,0"><TextBlock x:Name="MediaCodecLabel" Text="媒体编码" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/><ui:Button x:Name="CodecHelpButton" Content="ⓘ" Tag="codec" Click="AudioOptionHelpClick" Padding="2,0" MinHeight="20" FontSize="15" Background="Transparent" BorderThickness="0" Foreground="{StaticResource AudioAccent}" Margin="3,0,0,0" ToolTip="点击了解媒体编码用途和选择建议" AutomationProperties.Name="媒体编码说明，点击查看"/></StackPanel>
 
-          <ComboBox x:Name="CodecPicker" Grid.Column="4" SelectedIndex="0" SelectionChanged="CodecChanged" AutomationProperties.Name="媒体编码与码率" ToolTipService.ShowOnDisabled="True"><ComboBox.ToolTip><ToolTip><TextBlock x:Name="CodecHint" Text="优先协商可用高清媒体编码；多设备断续时可切换 AAC。仅影响媒体播放，语音编码自动协商。" MaxWidth="320"/></ToolTip></ComboBox.ToolTip><ComboBoxItem Content="自动 · 优先高清" Tag="auto"/><ComboBoxItem Content="aptX HD · 高清" Tag="aptx_hd"/><ComboBoxItem Content="aptX" Tag="aptx"/><ComboBoxItem Content="AAC" Tag="aac"/><ComboBoxItem Content="SBC · 兼容优先" Tag="sbc"/><ComboBoxItem Content="LDAC · 高清" Tag="ldac"/><ComboBoxItem Content="LHDC 5.0 · 高清" Tag="lhdc5"/></ComboBox>
+          <ComboBox x:Name="CodecPicker" Grid.Column="4" FontSize="12" SelectedIndex="0" SelectionChanged="CodecChanged" AutomationProperties.Name="媒体编码与参考码率" ToolTipService.ShowOnDisabled="True">
+           <ComboBox.ToolTip><ToolTip><TextBlock x:Name="CodecHint" Text="优先协商可用高清媒体编码；多设备断续时可切换 AAC。仅影响媒体播放，语音编码自动协商。" MaxWidth="320"/></ToolTip></ComboBox.ToolTip>
+           <ComboBoxItem Content="自动 · 优先高清" Tag="auto"/>
+           <ComboBoxItem Content="LHDC 5.0" Tag="lhdc5"/>
+           <ComboBoxItem Content="LDAC" Tag="ldac"/>
+           <ComboBoxItem Content="aptX HD" Tag="aptx_hd"/>
+           <ComboBoxItem Content="aptX" Tag="aptx"/>
+           <ComboBoxItem Content="AAC" Tag="aac"/>
+           <ComboBoxItem Content="SBC" Tag="sbc"/>
+          </ComboBox>
 
           <TextBlock x:Name="SharedCodecValue" Grid.Column="4" Text="Windows 自动选择" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Visibility="Collapsed"/>
 

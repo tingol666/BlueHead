@@ -12,6 +12,7 @@ internal static partial class Program
     private static void CodecChecks(MainWindow window, Dictionary<string, bool> checks, string folder, Action<string> receive)
     {
         CodecBitrateChecks(checks);
+        checks["home_codec_order_matches_connection_codec_settings"] = window.CodecPicker.Items.OfType<ComboBoxItem>().Select(item => item.Tag?.ToString()).SequenceEqual(new[] { "auto" }.Concat(CodecPolicyWindow.Codecs.Select(item => item.Code)));
         var fresh = new EngineSettings();
         checks["fresh_install_allows_every_available_classic_codec"] = fresh.ldac_enabled && fresh.lhdc5_enabled && CodecPolicyWindow.Allowed(fresh).SetEquals(CodecPolicyWindow.Codecs.Select(item => item.Code));
         var disabled = JsonSerializer.Deserialize<EngineSettings>("{\"ldac_enabled\":false,\"lhdc5_enabled\":false}")!;
@@ -58,6 +59,16 @@ internal static partial class Program
         checks["codec_settings_chinese_tooltip_uses_text_font_and_fits"] = tooltipText.Text == "连接与编码：LE Audio 偏好、允许的编码与首选编码" && tooltip.FontFamily.Source.Contains("Microsoft YaHei UI") && tooltipText.FontFamily.Source.Contains("Microsoft YaHei UI") && tooltipText.ActualWidth > 150 && tooltipText.ActualHeight >= 13;
         CaptureControl(tooltip, "codec-settings-tooltip.png");
         tooltip.IsOpen = false; Pump();
+        checks["codec_reference_labels_fit_compact_home_picker"] = window.CodecPicker.Items.OfType<ComboBoxItem>().All(item =>
+        {
+            var label = new TextBlock { Text = item.Content?.ToString(), FontFamily = window.CodecPicker.FontFamily, FontSize = window.CodecPicker.FontSize, TextWrapping = TextWrapping.NoWrap };
+            label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            return label.DesiredSize.Width <= window.CodecPicker.ActualWidth - 35;
+        });
+        window.CodecPicker.IsDropDownOpen = true; Pump();
+        var codecList = (System.Windows.Controls.Primitives.Popup)window.CodecPicker.Template.FindName("PART_Popup", window.CodecPicker);
+        CaptureControl((FrameworkElement)codecList.Child, "codec-choice-list.png");
+        window.CodecPicker.IsDropDownOpen = false; Pump();
         int Stops() => window.SelfTestCommands.Count(item => item.Text("command") == "stop");
         var stops = Stops();
         Click(window.CodecSettingsButton);
@@ -107,7 +118,7 @@ internal static partial class Program
         parameters = saved.GetProperty("values").GetProperty("codec_parameters");
         checks["separate_codec_settings_do_not_overwrite_each_other"] = parameters.GetProperty("aac").Number("bitrate") == 192000 && parameters.GetProperty("aac").Text("quality") == "balanced" && parameters.GetProperty("lhdc5").Number("rate") == 96000;
         var aacChoice = window.CodecPicker.Items.OfType<ComboBoxItem>().Single(item => Equals(item.Tag, "aac"));
-        checks["home_theoretical_bitrate_updates_after_saving_codec_parameters"] = Equals(aacChoice.Content, "AAC · ≤192 kb/s") && ((TextBlock)((ToolTip)aacChoice.ToolTip).Content).Text.Contains("不是正在播放的实际码率");
+        checks["home_reference_bitrate_updates_after_saving_codec_parameters"] = Equals(aacChoice.Content, "AAC · 约192 kb/s") && ((TextBlock)((ToolTip)aacChoice.ToolTip).Content).Text.Contains("不是当前连接的实测值");
         checks["aac_has_one_preference_entry_with_independent_bitrate_settings"] = window.CodecPicker.Items.OfType<ComboBoxItem>().Count(item => CodecPolicyWindow.Canonical(item.Tag?.ToString() ?? "") == "aac") == 1;
         Message(new { protocol = 1, @event = "preferences", request_id = saved.Number("request_id"), success = true, reconnect_required = true, restart_required = false, message = "已保存，请重新连接。" });
         Capture(policy, Path.Combine(folder, "connection-codec-policy.png"));

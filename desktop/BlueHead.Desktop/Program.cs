@@ -69,6 +69,19 @@ internal static partial class Program
         Directory.CreateDirectory(folder);
         var checks = new Dictionary<string, bool>();
         var window = new MainWindow(true); app.MainWindow = window;
+        bool WaitForCommand(int start, Func<JsonElement, bool> expected)
+        {
+            // Virtual displays may deliver a WPF timer after its nominal due
+            // time. Observe this operation's command instead of sleeping for
+            // only 40 ms longer than the production debounce interval.
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            do
+            {
+                Pump(40);
+                if (window.SelfTestCommands.Skip(start).Any(expected)) return true;
+            } while (elapsed.ElapsedMilliseconds < 2000);
+            return false;
+        }
         checks["sidebar_and_help_use_build_version"] = window.SidebarVersion.Text == AppVersion.Label && window.HelpVersion.Text == AppVersion.Title;
         checks["diagnostics_use_build_version"] = JsonSerializer.SerializeToElement(window.CreateDiagnosticsReport()).Text("version") == AppVersion.Number;
         using (var correct = JsonDocument.Parse(JsonSerializer.Serialize(new { version = AppVersion.Number }))) EngineClient.ValidateVersion(correct.RootElement);
@@ -304,10 +317,10 @@ internal static partial class Program
             checks["device_mute_paths_are_independent"] = window.State.Devices[0].Volume == 0 && window.State.Devices[0].UplinkVolume == 0;
             down.ToggleSilence(); up.ToggleSilence();
             checks["device_unmute_restores_both_previous_levels"] = window.State.Devices[0].Volume == 175 && window.State.Devices[0].UplinkVolume == 130;
-            down.ToggleSilence(); Pump(160);
-            checks["device_mute_sends_zero_to_matching_engine_route"] = window.SelfTestCommands.Any(command => command.Text("command") == "gain" && command.Text("key") == "demo-phone" && command.Text("direction") == "down" && command.Number("gain") == 0);
-            down.ToggleSilence(); Pump(160);
-            checks["device_unmute_sends_restored_gain"] = window.SelfTestCommands.Last(command => command.Text("command") == "gain" && command.Text("direction") == "down").Number("gain") == 1.75;
+            var firstGainCommand = window.SelfTestCommands.Count; down.ToggleSilence();
+            checks["device_mute_sends_zero_to_matching_engine_route"] = WaitForCommand(firstGainCommand, command => command.Text("command") == "gain" && command.Text("key") == "demo-phone" && command.Text("direction") == "down" && command.Number("gain") == 0);
+            firstGainCommand = window.SelfTestCommands.Count; down.ToggleSilence();
+            checks["device_unmute_sends_restored_gain"] = WaitForCommand(firstGainCommand, command => command.Text("command") == "gain" && command.Text("key") == "demo-phone" && command.Text("direction") == "down" && command.Number("gain") == 1.75);
             down.IsOpen = true; Pump(); down.EditorSlider.Value = 200; Pump();
             checks["popup_slider_updates_bound_device_only"] = window.State.Devices[0].Volume == 200 && window.State.Devices[0].UplinkVolume == 130;
             down.ResetLevel(); Pump();
@@ -320,10 +333,11 @@ internal static partial class Program
         }
         window.Notice.Visibility = Visibility.Collapsed;
         Event("""{"event":"status","message":"已就绪：在移动设备蓝牙列表连接 BlueHead PC"}""");
-        window.PlaybackGain.Value = 145; window.PlaybackGain.ToggleSilence(); Pump(160);
-        checks["master_mute_sends_zero_to_engine"] = window.SelfTestCommands.Any(command => command.Text("command") == "master_gain" && command.Text("bus") == "playback" && command.Number("gain") == 0);
-        window.PlaybackGain.ToggleSilence(); Pump(160);
-        checks["master_unmute_sends_restored_gain"] = window.SelfTestCommands.Last(command => command.Text("command") == "master_gain" && command.Text("bus") == "playback").Number("gain") == 1.45;
+        var firstMasterCommand = window.SelfTestCommands.Count;
+        window.PlaybackGain.Value = 145; window.PlaybackGain.ToggleSilence();
+        checks["master_mute_sends_zero_to_engine"] = WaitForCommand(firstMasterCommand, command => command.Text("command") == "master_gain" && command.Text("bus") == "playback" && command.Number("gain") == 0);
+        firstMasterCommand = window.SelfTestCommands.Count; window.PlaybackGain.ToggleSilence();
+        checks["master_unmute_sends_restored_gain"] = WaitForCommand(firstMasterCommand, command => command.Text("command") == "master_gain" && command.Text("bus") == "playback" && command.Number("gain") == 1.45);
         window.Width = window.MinWidth; window.Height = window.MinHeight; Pump();
         checks["minimum_window_keeps_all_master_controls_inside"] = window.MasterControls.Children.OfType<AudioLevel>().Where(level => level.IsVisible).All(level => level.ActualWidth > 150 && level.TranslatePoint(new(0, 0), window).X + level.ActualWidth <= window.ActualWidth);
         Capture(window, Path.Combine(folder, "home-minimum.png"));

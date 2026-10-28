@@ -2,6 +2,8 @@ using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 
 namespace BlueHead.Desktop;
 
@@ -9,10 +11,35 @@ internal static partial class Program
 {
     private static void CodecChecks(MainWindow window, Dictionary<string, bool> checks, string folder, Action<string> receive)
     {
+        int CaptureControl(FrameworkElement element, string name)
+        {
+            element.UpdateLayout();
+            var width = (int)Math.Ceiling(element.ActualWidth);
+            var height = (int)Math.Ceiling(element.ActualHeight);
+            var visual = new DrawingVisual();
+            using (var drawing = visual.RenderOpen()) drawing.DrawRectangle(new VisualBrush(element), null, new Rect(0, 0, width, height));
+            var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+            bitmap.Render(visual);
+            var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
+            using (var output = File.Create(Path.Combine(folder, name))) encoder.Save(output);
+            var pixels = new byte[width * height * 4]; bitmap.CopyPixels(pixels, width * 4, 0);
+            return Enumerable.Range(0, width * height).Count(index => pixels[index * 4 + 3] != 0);
+        }
         void Click(System.Windows.Controls.Primitives.ButtonBase button) { button.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent)); Pump(); }
         void Message(object message) => receive(JsonSerializer.Serialize(message));
         receive("""{"event":"stopped"}""");
         window.ShowPage("home");
+        var gear = (Viewbox)window.CodecSettingsButton.Content;
+        var outline = (System.Windows.Shapes.Path)gear.Child;
+        checks["codec_settings_icon_is_visible_vector_without_font_dependency"] = outline.Data.Bounds.Width > 18 && outline.Data.Bounds.Height > 18 && outline.Fill is System.Windows.Media.SolidColorBrush && gear.ActualWidth == 16 && gear.ActualHeight == 16 && !window.CodecSettingsButton.FontFamily.Source.Contains("Icons");
+        checks["codec_settings_vector_produces_visible_pixels"] = CaptureControl(window.CodecSettingsButton, "codec-settings-vector.png") > 30;
+        var tooltip = (ToolTip)window.CodecSettingsButton.ToolTip;
+        tooltip.PlacementTarget = window.CodecSettingsButton;
+        tooltip.IsOpen = true; Pump();
+        var tooltipText = (TextBlock)tooltip.Content;
+        checks["codec_settings_chinese_tooltip_uses_text_font_and_fits"] = tooltipText.Text == "连接与编码：LE Audio 偏好、允许的编码与首选编码" && tooltip.FontFamily.Source.Contains("Microsoft YaHei UI") && tooltipText.FontFamily.Source.Contains("Microsoft YaHei UI") && tooltipText.ActualWidth > 150 && tooltipText.ActualHeight >= 13;
+        CaptureControl(tooltip, "codec-settings-tooltip.png");
+        tooltip.IsOpen = false; Pump();
         int Stops() => window.SelfTestCommands.Count(item => item.Text("command") == "stop");
         var stops = Stops();
         Click(window.CodecSettingsButton);

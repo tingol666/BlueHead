@@ -2,17 +2,21 @@
  * The unchanged legacy renderer remains an offline comparison oracle.
  */
 API int bh_mix_continuity(Mixer *m, int index, int enabled, uint32_t minimum, uint32_t maximum) {
-  if (!m || index < 0 || index >= INPUTS || minimum > maximum ||
-      (uint64_t)maximum * atomic_load(&m->input[index].source_rate) >
-          (uint64_t)m->input[index].maximum * BHT_RATE)
+  if (!m || index < 0 || index >= INPUTS || minimum > maximum)
     return -1;
   Input *s = &m->input[index];
+  EnterCriticalSection(&s->producer);
   uint32_t rate = atomic_load(&s->source_rate);
+  if ((uint64_t)maximum * rate > (uint64_t)s->maximum * BHT_RATE) {
+    LeaveCriticalSection(&s->producer);
+    return -1;
+  }
   minimum = (uint32_t)bht_scale(minimum, BHT_RATE, rate);
   maximum = (uint32_t)bht_scale(maximum, BHT_RATE, rate);
   atomic_store(&s->continuity_min, minimum);
   atomic_store(&s->continuity_max, maximum);
   atomic_store_explicit(&s->continuity_mode, !!enabled, memory_order_release);
+  LeaveCriticalSection(&s->producer);
   if (enabled)
     atomic_store(&m->enhanced, 1);
   else {
@@ -64,6 +68,7 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
     double native_count = count * kernel->ratio;
     double canonical_count = (double)count * BHT_RATE / route->rate;
     if (s->render_rate != route->rate) {
+      atomic_store_explicit(&s->consumer_ready, 0, memory_order_release);
       s->render_rate = route->rate;
       s->quality.rate = route->rate;
       s->quality.lookahead = route->lookahead;
@@ -71,6 +76,7 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
       bhq_source_clear(&s->quality);
       bhc_reset(&s->continuity);
       bhc_rate(&s->continuity, route->rate);
+      s->repair_remaining=s->repair_total=0;
     }
     s->presentation_fraction += canonical_count;
     uint64_t presented = (uint64_t)s->presentation_fraction;
@@ -86,6 +92,7 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
     if (trim > w)
       trim = w;
     unsigned epoch = atomic_load_explicit(&s->epoch, memory_order_acquire);
+    unsigned control_generation = atomic_load(&s->control_generation);
     if (trim > s->cursor || epoch != s->seen_epoch) {
       if (trim > s->cursor) {
         if (epoch == s->seen_epoch)
@@ -100,6 +107,8 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
       s->adaptive_target = s->target;
       s->adaptive_decay = 0;
       s->seen_epoch = epoch;
+      s->repair_checked=s->cursor;
+      s->repair_remaining=s->repair_total=s->repair_waiting=0;
       s->starve_frames = s->deficit_frames = 0;
       uint64_t concealed = s->continuity.concealed, silent = s->continuity.silent,
                merged = s->continuity.merged;
@@ -117,13 +126,26 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
       uint64_t expired = (uint64_t)s->deadline_debt;
       if (expired > s->available)
         expired = s->available;
+      /* Only a missing presentation interval owns this debt. An estimated or
+       * omitted compressed duration cannot prove real PCM beyond its fence is
+       * obsolete. Scan only the bounded expiry range, never the normal path.
+       * Include its endpoint to avoid carrying fractional debt past a fence. */
+      uint64_t boundary=first_pcm_boundary(s,s->cursor,expired+(expired<s->available));
+      int barrier=boundary!=UINT64_MAX;
+      if (barrier) expired=boundary-s->cursor;
       s->cursor += expired;
       s->available -= expired;
       s->deadline_debt -= expired;
       atomic_fetch_add(&s->expired, expired);
       if (expired)
         s->history_count = 0;
-      if (s->deadline_debt < 1) {
+      if (barrier) {
+        s->phase=s->deadline_debt=0;
+        if (s->last_fence!=s->cursor) {
+          atomic_fetch_add(&s->fence_reanchors,1);
+          s->last_fence=s->cursor;
+        }
+      } else if (s->deadline_debt < 1) {
         s->phase = s->deadline_debt;
         s->deadline_debt = 0;
       }
@@ -165,7 +187,7 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
     if (s->buffering && s->available < observed_target) {
       atomic_fetch_add(&s->prefill, presented);
       atomic_fetch_add(&s->presentation, presented);
-      atomic_store_explicit(&s->read, s->cursor, memory_order_release);
+      consumer_publish(s, epoch, control_generation, 0, 0);
       bhq_source(&s->quality, m->scratch, m->accumulated, m->delayed, count, gain);
       atomic_fetch_sub(&s->readers, 1);
       continue;
@@ -173,6 +195,17 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
     if (s->buffering) {
       if (framed && s->recover_late && s->available > observed_target + native_count) {
         uint64_t expired = s->available - observed_target;
+        /* A recovery target is not evidence that newly fenced genuine PCM
+         * is obsolete. Retire only the old interval before the same barrier
+         * respected by ordinary presentation-debt repayment above. */
+        uint64_t boundary=first_pcm_boundary(s,s->cursor,expired+(expired<s->available));
+        if(boundary!=UINT64_MAX) {
+          expired=boundary-s->cursor;
+          if(s->last_fence!=boundary) {
+            atomic_fetch_add(&s->fence_reanchors,1);
+            s->last_fence=boundary;
+          }
+        }
         s->cursor += expired;
         s->available -= expired;
         s->history_count = 0;
@@ -218,6 +251,19 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
       prepare_boundary(m, s, kernel);
     uint32_t produced = prefix;
     double position = s->phase;
+    /* Quality is applied in a batched pass below. Mirror only its tiny control
+     * trajectory so an event later in this callback sees its own predecessor,
+     * rather than the gain left at the start of a large callback. The actual
+     * gain state, delay and PCM pass remain unchanged. */
+    uint64_t repair_limit=atomic_load_explicit(&s->repair_highwater,memory_order_relaxed);
+    if(repair_limit>w) repair_limit=w;
+    int repair_work=s->repair_remaining || s->repair_waiting || repair_limit>s->repair_checked;
+    BhGainRamp audible_gain={0}, audible_master={0};
+    if(repair_work) {
+      audible_gain=s->quality.gain;audible_master=m->quality.master;
+      bhq_target(&audible_gain,gain,route->ramp);
+      bhq_target(&audible_master,master,route->ramp);
+    }
     for (; produced < count && (uint64_t)position < s->available; produced++, position += ratio) {
       int offset = (int)position;
       double fraction = position - offset;
@@ -225,21 +271,36 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
       int filtered = kernel->ratio > 1 || fraction != 0;
       if (filtered && (uint64_t)offset + kernel->taps - kernel->centre - 1 >= s->available)
         break; /* Missing future support is a deadline gap, never a repeated edge sample. */
+      /* Event time is the actual source centre, never future filter support.
+       * A muted/closed route has no audible predecessor to bridge from. */
+      /* Repeated rational steps can land a few ulps before an integer in a
+       * large callback. Normalize only event identity using the same dust
+       * tolerance as the existing end-of-callback cursor; PCM interpolation
+       * continues to use its unchanged fraction and filter coefficients. */
+      if(repair_work) {
+        int audible=enhanced && gain>0 && master>0 && s->gate>0 &&
+                    audible_gain.value>0 && audible_master.value>0;
+        double event_position=position, event_nearest=nearbyint(event_position);
+        if(fabs(event_position-event_nearest)<1e-9) event_position=event_nearest;
+        repair_boundaries(s,route,s->cursor+(uint64_t)event_position,audible);
+      }
       if (filtered)
         interpolate_stereo(kernel, s, offset, fraction, in);
       else {
         in[0] = sample(s, offset, 0);
         in[1] = sample(s, offset, 1);
       }
-      if (enhanced)
+      if (enhanced) {
+        if(repair_work) repair_sample(s,route,in);
         bhc_real(&s->continuity, in, value);
-      else {
+      } else {
         value[0] = in[0];
         value[1] = in[1];
       }
       float g = continuity_gate(s, gate_target);
       m->scratch[produced * 2] = value[0] * g;
       m->scratch[produced * 2 + 1] = value[1] * g;
+      if(repair_work) {bhq_gain(&audible_gain);bhq_gain(&audible_master);}
     }
     double nearest = nearbyint(position);
     if (fabs(position - nearest) < 1e-9)
@@ -247,6 +308,8 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
     uint32_t consumed = (uint32_t)position;
     if (consumed > s->available)
       consumed = (uint32_t)s->available;
+    if(repair_work) repair_released(s,s->cursor+consumed);
+    else if(s->repair_checked<s->cursor+consumed) s->repair_checked=s->cursor+consumed;
     save_history(s, consumed);
     s->cursor += consumed;
     s->available -= consumed;
@@ -254,6 +317,9 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
     s->rendered += canonical_count;
     atomic_fetch_add(&s->presentation, presented);
     if (produced < count) {
+      /* The deadline owner takes over after a real underflow. Never resume an
+       * unfinished repair window on top of that owner's recovery merge. */
+      s->repair_remaining=s->repair_total=0;
       atomic_fetch_add(&m->underruns, 1);
       atomic_fetch_add(&s->underruns, 1);
       uint32_t missing = count - produced;
@@ -314,8 +380,15 @@ static int render_continuity(Mixer *m, MixRoute *route, float *output, uint32_t 
     if (ppm > 1000)
       ppm = 1000;
     atomic_store(&s->drift_view, (unsigned)llround(ppm + 1000));
+    int was_ready = atomic_load(&s->consumer_ready) &&
+                    atomic_load(&s->consumer_epoch) == epoch &&
+                    atomic_load(&s->consumer_generation) == control_generation;
     bhq_source(&s->quality, m->scratch, m->accumulated, m->delayed, count, gain);
-    atomic_store_explicit(&s->read, s->cursor, memory_order_release);
+    uint32_t support = ratio != 1 || s->phase != 0 || kernel->ratio > 1
+                           ? kernel->taps - kernel->centre - 1 : 0;
+    consumer_publish(s, epoch, control_generation, support,
+                     !s->buffering && (consumed != 0 || was_ready) &&
+                     atomic_load(&s->enabled) && atomic_load(&s->connected));
     atomic_fetch_sub(&s->readers, 1);
   }
   uint64_t before = m->quality.limited;

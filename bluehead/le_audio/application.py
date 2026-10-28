@@ -13,12 +13,13 @@ from types import SimpleNamespace
 
 from bumble import avdtp, hci, gatt
 from bumble.core import PhysicalTransport
-from .profile import ControllerSupport, create_services, CommonAudioService
+from .profile import ControllerSupport, create_services, CommonAudioService, device_information
 from .native_bridge import NativeStreamBridge
 from .broadcast_receiver import BroadcastReceiver, NativeBroadcastSink
 from .bass_service import BroadcastScanService
 from .audio_controls import AudioControls
-from .discovery import AudioAdvertisement, HEADSET_APPEARANCE, announcement, roles
+from .discovery import AudioAdvertisement, HEADSET_APPEARANCE, announcement, legacy_announcement, roles
+from .progress import ConnectionProgress
 from .peer_control import PeerAudioControl
 from .service_cache import ServiceCache
 from ..protocol import Format, format_metadata
@@ -125,8 +126,15 @@ class LeAudioApplication:
         self.closed = False
         self.advertise_lock = asyncio.Lock()
         self.announcer = AudioAdvertisement(device)
+        self.dual_mode = receiver.settings.connection_policy != 'le_only'
+        self.progress = ConnectionProgress(self)
+        host = getattr(device, 'host', None)
+        sets = getattr(host, 'number_of_supported_advertising_sets', 0)
+        self.compat_announcer = AudioAdvertisement(device, legacy=True) if type(sets) is int and sets >= 2 else None
+        self.compat_failed = False
         self.peer_controls = PeerAudioControl(self)
-        self.bonded = False
+        self.reconnect_target = None
+        self.reconnect_timer = None
         self.failure = asyncio.get_running_loop().create_future()
         self.bridge = NativeStreamBridge(
             self.client,
@@ -184,6 +192,7 @@ class LeAudioApplication:
             self.bundle.streams.admit = self.admitted
             self.bundle.streams.control.delay_caps = self.budget.capabilities
             self.bundle.streams.peer_activity = self.peer_controls.start
+            self.bundle.streams.discovery_activity = self.progress.mark
         if self.broadcast:
             self.broadcast.failure = self.controller_failed
         if self.bass:
@@ -209,6 +218,7 @@ class LeAudioApplication:
         self.controls.admit = self.admitted
         services = list(self.bundle.services) if self.bundle else [CommonAudioService()]
         services.extend(self.controls.services)
+        services.append(device_information())
         if self.bass:
             services.append(self.bass)
         host = getattr(device, 'host', None)
@@ -268,9 +278,9 @@ class LeAudioApplication:
             return None
         app = cls(receiver, device, support)
         try:
-            if device.keystore:
-                app.bonded = bool(await device.keystore.get_all())
-            await app.advertise()
+            # The Receiver first publishes this application as the connection
+            # owner, then opens discovery. A connection cannot arrive in the
+            # await between starting advertising and assigning receiver.le_audio.
             return app
         except BaseException:
             await app.close()
@@ -366,17 +376,18 @@ class LeAudioApplication:
         self.identities[id(connection)] = key
 
         def lost(reason):
-            self.disconnected(connection)
+            self.disconnected(connection, reason=reason)
 
         def paired(keys):
-            self.bonded = True
+            connection._bluehead_bonded = True
             self.identity_changed(connection)
             self.peer_controls.start(connection)
             self.service_cache.ready(connection)
 
         def encrypted():
             if self.admitted(connection):
-                self.emit('le_audio_discovery', key=str(connection.peer_address), phase='encrypted')
+                if getattr(connection, 'encryption', False):
+                    self.progress.mark(connection, 'encrypted')
                 self.peer_controls.start(connection)
                 self.service_cache.ready(connection)
 
@@ -387,15 +398,33 @@ class LeAudioApplication:
                                (connection, 'connection_encryption_change', encrypted)))
         if first:
             self.emit("device", key=key, state="已连接，等待音频")
-        self.emit('le_audio_discovery', key=key, phase='connected',
-                  reason='已建立低功耗连接，正在等待设备配置 LC3 音频。')
+        self.progress.connected(connection)
+        self.receiver.spawn_control(self.remember_peer(connection))
         self.peer_controls.start(connection)
         self.service_cache.ready(connection)
         self.receiver.spawn_control(self.advertise())
 
-    def disconnected(self, connection):
+    async def remember_peer(self, connection):
+        if await self.service_cache.bonded(connection) and self.admitted(connection):
+            connection._bluehead_bonded = True
+
+    def end_reconnect(self):
+        self.reconnect_target = None
+        self.reconnect_timer = None
+        if not self.closed:
+            self.receiver.spawn_control(self.advertise())
+
+    def disconnected(self, connection, *, reason=None):
         if self.connections.pop(id(connection), None) is None:
             return
+        # Targeted announcements solicit an actually bonded link-loss peer.
+        # An unrelated old key must never change every new device's pairing.
+        if getattr(connection, '_bluehead_bonded', False) and reason in (0x08, 0x22):
+            self.reconnect_target = str(connection.peer_address)
+            if self.reconnect_timer:
+                self.reconnect_timer.cancel()
+            self.reconnect_timer = asyncio.get_running_loop().call_later(5, self.end_reconnect)
+        self.progress.disconnected(connection)
         self.peer_controls.disconnected(connection)
         self.service_cache.disconnected(connection)
         for source, event, callback in tuple(self.listeners):
@@ -434,8 +463,7 @@ class LeAudioApplication:
                     **format_metadata(session.format),
                     audio_transport="le",
                 )
-                self.emit('le_audio_discovery', key=key, phase='channel_ready',
-                          reason='LE Audio 音频通道已建立，等待发送设备传来 LC3 音频。')
+                self.progress.mark(record.owner, 'channel_ready')
         elif session is not None:
             session.records.pop(record.key, None)
             if not session.records:
@@ -445,6 +473,8 @@ class LeAudioApplication:
                 self.receiver.update_media_gates()
 
     async def source_changed(self, record, active):
+        if active:
+            self.progress.mark(record.token.owner, 'channel_ready')
         self.emit(
             "call_audio",
             key=record.device_key,
@@ -497,11 +527,23 @@ class LeAudioApplication:
         )
         ad = announcement(self.receiver.settings.name, receive=bool(self.bundle),
                           transmit=self.support.transmit and self.receiver.settings.calls,
-                          broadcast=bool(self.bass), targeted=self.bonded,
-                          tmap_roles=self.tmap_roles)
-        await asyncio.wait_for(
-            self.announcer.update(allowed, ad), 3
-        )
+                          broadcast=bool(self.bass), targeted=self.reconnect_target is not None,
+                          tmap_roles=self.tmap_roles, dual_mode=self.dual_mode)
+        await asyncio.wait_for(self.announcer.update(allowed, ad), 3)
+        if self.compat_announcer is not None and not self.compat_failed:
+            wire, response = legacy_announcement(self.receiver.settings.name, receive=bool(self.bundle),
+                transmit=self.support.transmit and self.receiver.settings.calls,
+                broadcast=bool(self.bass), dual_mode=self.dual_mode)
+            try:
+                await asyncio.wait_for(self.compat_announcer.update(allowed, wire, response), 3)
+            except hci.HCI_Error as error:
+                # The additional legacy PDU is optional; retain the mandatory
+                # extended BAP announcement on stricter controllers.
+                self.compat_failed = True
+                await asyncio.wait_for(self.compat_announcer.close(), 3)
+                self.emit('le_audio_discovery', phase='advertising', reason_code='extended_only',
+                          reason='LE Audio 扩展广播可用；适配器未接受额外的兼容发现广播。',
+                          controller_status=int(error.error_code))
 
     async def disconnect(self, key):
         await asyncio.gather(
@@ -516,6 +558,10 @@ class LeAudioApplication:
         if self.closed:
             return
         self.closed = True
+        self.progress.close()
+        if self.reconnect_timer:
+            self.reconnect_timer.cancel()
+            self.reconnect_timer = None
         if (
             self.receiver.voice_protection
             and getattr(self.receiver.voice_protection, "before_prepare", None) == self.prepare_voice
@@ -525,6 +571,8 @@ class LeAudioApplication:
         await retirement.async_call(self.peer_controls.close)
         await retirement.async_call(self.service_cache.close)
         await retirement.async_call(self.announcer.close)
+        if self.compat_announcer is not None:
+            await retirement.async_call(self.compat_announcer.close)
         await retirement.async_call(self.controls.close)
         if self.bass:
             await retirement.async_call(self.bass.close)

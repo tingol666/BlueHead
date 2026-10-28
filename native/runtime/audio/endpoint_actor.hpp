@@ -45,7 +45,20 @@ class EndpointActor {
     bool force = false;
     uint32_t simulated_rate = 48000;
   };
+  struct PreparedAudioPublication {
+    std::string selection, wanted, retry, actual;
+    std::map<uint64_t,json>::node_type result;
+    explicit PreparedAudioPublication(const AudioJob &job)
+        : selection(job.endpoint),wanted(job.endpoint),retry(job.endpoint) {
+      std::map<uint64_t,json> staged;
+      if(job.direction=="system")
+        staged.emplace(job.id,json{{"done",true},{"success",true}});
+      else staged.emplace(job.id,json{{"done",true},{"success",true},{"endpoint_id",job.endpoint}});
+      result=staged.extract(job.id);
+    }
+  };
   std::atomic<uint64_t> bridge_frames{0}, system_frames{0}, bridge_errors{0};
+  std::atomic<uint64_t> diagnostic_errors{0};
   std::mutex bridge_mutex;
   BhDeviceContext *context = nullptr;
   BhAudioDevice *output = nullptr, *capture = nullptr;
@@ -115,11 +128,8 @@ private:
     wchar_t id[512]{};
     return stream && api.bh_device_endpoint(stream, id, 512) == 0 ? utf8(id) : std::string();
   }
-  void protect_system_route(bool rendering, const std::string &actual) {
-    if (!system_wanted || system_selection.empty())
-      return;
-    if (!source_conflicts(system_selection, rendering, actual))
-      return;
+  void protect_system_route(bool conflict) {
+    if(!conflict) return;
     std::lock_guard<std::mutex> bridge(bridge_mutex);
     system_isolated = false;
     system_blocked = true;
@@ -133,6 +143,27 @@ private:
     audio_results[j.id] = result;
     while (audio_results.size() > 64)
       audio_results.erase(audio_results.begin());
+  }
+  /* Caller holds audio_mutex, after releasing bridge_mutex. Every owned
+   * string and map node was allocated before publication; integer comparison,
+   * equal-allocator node transfer and JSON/string swaps cannot allocate. */
+  void publish_success(const AudioJob &job,PreparedAudioPublication &prepared) noexcept {
+    int direction=direction_id(job.direction);
+    auto &selection=direction==0?output_selection:direction==1?input_selection:system_selection;
+    selection.swap(prepared.selection);
+    if(direction==0) output_actual.swap(prepared.actual);
+    if(direction<2 && !job.automatic) {
+      wanted_endpoint[direction].swap(prepared.wanted);
+      retry_endpoint[direction].swap(prepared.retry);
+    }
+    auto found=audio_results.find(job.id);
+    if(found==audio_results.end()) audio_results.insert(std::move(prepared.result));
+    else found->second.swap(prepared.result.mapped());
+    while(audio_results.size()>64) audio_results.erase(audio_results.begin());
+  }
+  void refresh_device_diagnostics() noexcept {
+    try {cache_device_diagnostics();}
+    catch(const std::exception &) {diagnostic_errors++;}
   }
   Fault device_fault(int code) {
     switch (api.bh_device_error_category(code)) {
@@ -204,7 +235,7 @@ private:
         } catch (const std::exception &e) {
           audio_failed(job, Fault::internal, 0, e.what());
         }
-        cache_device_diagnostics();
+        refresh_device_diagnostics();
         {
           std::lock_guard<std::mutex> lock(audio_mutex);
           preparing_audio[direction_id(job.direction)] = false;
@@ -216,30 +247,26 @@ private:
         audio_deadline = ticks() + frequency() * 12;
         try {
           check_devices();
-          cache_device_diagnostics();
         } catch (const std::exception &) {
           bridge_errors++;
         }
+        refresh_device_diagnostics();
         audio_deadline = 0;
       }
     }
     audio_deadline = ticks() + frequency() * 12;
+    BhAudioDevice *retired_capture=nullptr;
+    void *retired_loop=nullptr,*retired_converter=nullptr;
     {
       std::lock_guard<std::mutex> lock(bridge_mutex);
-      if (capture) {
-        api.bh_device_close(capture);
-        capture = nullptr;
-      }
-      if (loop_capture) {
-        if (api.bh_loop_close(loop_capture) != 1)
-          TerminateProcess(GetCurrentProcess(), ERROR_TIMEOUT);
-        loop_capture = nullptr;
-      }
-      if (loop_converter) {
-        api.bh_capture_free(loop_converter);
-        loop_converter = nullptr;
-      }
+      retired_capture=capture;capture=nullptr;
+      retired_loop=loop_capture;loop_capture=nullptr;
+      retired_converter=loop_converter;loop_converter=nullptr;
     }
+    if(retired_capture) api.bh_device_close(retired_capture);
+    if(retired_loop && api.bh_loop_close(retired_loop)!=1)
+      TerminateProcess(GetCurrentProcess(),ERROR_TIMEOUT);
+    if(retired_converter) api.bh_capture_free(retired_converter);
     if (output) {
       api.bh_device_close(output);
       output = nullptr;
@@ -255,6 +282,103 @@ private:
     audio_deadline = 0;
     if (SUCCEEDED(apartment))
       CoUninitialize();
+  }
+  /* Only publication owns the bridge. Candidate open/start/reset, kernel/PCM
+   * preparation, retries and resource retirement stay on this control owner. */
+  void switch_capture(const AudioJob &job, BhAudioDevice *candidate,
+                      PreparedAudioPublication &publication) {
+    auto close_device=[this](BhAudioDevice *p) {if(p) api.bh_device_close(p);};
+    auto free_plan=[this](BhUpSourcePlan *p) {if(p) api.bh_up_source_plan_free(p);};
+    std::unique_ptr<BhAudioDevice,decltype(close_device)> incoming(candidate,close_device);
+    std::unique_ptr<BhUpSourcePlan,decltype(free_plan)> plan(nullptr,free_plan);
+    uint32_t rate=capture_rate; // Written only by this audio-control owner.
+    if(candidate) {
+      BhDeviceStats format{};format.size=sizeof(format);
+      if(api.bh_device_stats(candidate,&format)!=0 || !format.output_rate)
+        throw AudioFailure(Fault::format,-205,"Cannot read native microphone format");
+      rate=format.output_rate;
+    }
+    auto deadline=ticks()+frequency()*8;
+    BhAudioDevice *old=nullptr;
+    std::unique_ptr<BhAudioDevice,decltype(close_device)> retired(nullptr,close_device);
+    while(!quitting && ticks()<deadline) {
+      {
+        std::lock_guard<std::mutex> state(audio_mutex);
+        if(latest_job[1]!=job.id ||
+           (job.voice_generation && job.voice_generation!=voice_epoch)) {
+          audio_results[job.id]={{"done",true},{"success",false},{"cancelled",true}};
+          return;
+        }
+      }
+      if(!plan) {
+        int error=BH_FORMAT_INVALID;
+        plan.reset(api.bh_up_source_prepare(uplink,0,rate,BH_FORMAT_RETIRE_SOURCE,&error));
+        if(!plan) {
+          if(error==BH_FORMAT_STALE) {Sleep(1);continue;}
+          throw AudioFailure(error==BH_FORMAT_MEMORY?Fault::memory:Fault::format,
+                             -205,"Cannot prepare native microphone format");
+        }
+      }
+      {
+        std::lock_guard<std::mutex> state(audio_mutex);
+        if(quitting || latest_job[1]!=job.id ||
+           (job.voice_generation && job.voice_generation!=voice_epoch)) {
+          audio_results[job.id]={{"done",true},{"success",false},{"cancelled",true}};
+          return;
+        }
+      }
+      // A private candidate has no PCM publisher yet. Stop after every failed
+      // commit (outside the bridge): miniaudio resets its private capture FIFO,
+      // so a long BUSY retry cannot later publish old microphone samples.
+      int started=candidate?api.bh_device_start(candidate):0;
+      if(started!=0)
+        throw AudioFailure(device_fault(started),started,"New microphone endpoint could not start");
+      int result=BH_FORMAT_BUSY;
+      bool cancelled=false;
+      {
+        std::unique_lock<std::mutex> state(audio_mutex);
+        cancelled=quitting || latest_job[1]!=job.id ||
+                  (job.voice_generation && job.voice_generation!=voice_epoch);
+        if(!cancelled) {
+          {
+            std::unique_lock<std::mutex> bridge(bridge_mutex,std::try_to_lock);
+            if(bridge.owns_lock()) {
+              result=api.bh_up_source_try_commit(plan.get());
+              if(result==BH_FORMAT_COMMITTED) {
+                old=capture;capture=incoming.release();capture_rate=rate;
+                microphone_active=job.start;microphone_fault=false;
+              }
+            }
+          }
+          if(result==BH_FORMAT_COMMITTED) {
+            retired.reset(old);old=nullptr;
+            capture_wanted=job.start;
+            publish_success(job,publication);
+          }
+        } else audio_results[job.id]={{"done",true},{"success",false},{"cancelled",true}};
+      }
+      if(result==BH_FORMAT_COMMITTED) {
+        plan.reset(); // May release large retired kernels; no bridge/state lock.
+        retired.reset();
+        recovery[1].success(seconds());
+        return;
+      }
+      if(candidate) {
+        int stopped=api.bh_device_stop(candidate);
+        if(stopped!=0)
+          throw AudioFailure(device_fault(stopped),stopped,"Candidate microphone could not reset");
+      }
+      if(cancelled) return;
+      if(result==BH_FORMAT_STALE) plan.reset();
+      else if(result!=BH_FORMAT_BUSY)
+        throw AudioFailure(Fault::format,-205,"Microphone format transaction was rejected");
+      Sleep(1);
+    }
+    if(quitting) {
+      finish(job,{{"done",true},{"success",false},{"cancelled",true}});
+      return;
+    }
+    throw AudioFailure(Fault::timeout,ERROR_TIMEOUT,"Microphone format is busy; previous route remains active");
   }
   void execute_audio(const AudioJob &job) {
     {
@@ -288,6 +412,7 @@ private:
     }
     if (!job.automatic || job.force)
       route_recovery.manual();
+    PreparedAudioPublication publication(job);
     if (job.direction == "system") {
       void *candidate = nullptr, *converter = nullptr;
       DWORD error = 0;
@@ -338,22 +463,20 @@ private:
         old_converter = loop_converter;
         loop_capture = candidate;
         loop_converter = converter;
-        system_selection = job.endpoint;
         system_isolated = true;
         system_blocked = false;
+        system_active=job.start;
+        system_fault=false;
         api.bh_up_clear(uplink, 1);
       }
-      audio_results[job.id] = {{"done", true}, {"success", true}};
+      publish_success(job,publication);
       system_wanted = job.start;
       commit_lock.unlock();
       if (old && api.bh_loop_close(old) != 1)
         TerminateProcess(GetCurrentProcess(), ERROR_TIMEOUT);
       if (old_converter)
         api.bh_capture_free(old_converter);
-      system_active = job.start;
-      system_fault = false;
       recovery[2].success(seconds());
-      finish(job, {{"done", true}, {"success", true}});
       return;
     }
     bool render = job.direction == "output";
@@ -395,6 +518,16 @@ private:
     }
     if (candidate && !render)
       api.bh_device_ready_event(candidate, bridge_wake);
+    if(!render) {
+      switch_capture(job,candidate,publication);
+      return;
+    }
+    auto close_device=[this](BhAudioDevice *p) {if(p)api.bh_device_close(p);};
+    std::unique_ptr<BhAudioDevice,decltype(close_device)> incoming(candidate,close_device);
+    std::unique_ptr<BhAudioDevice,decltype(close_device)> retired(nullptr,close_device);
+    publication.actual=job.simulated?job.endpoint:actual_endpoint(candidate);
+    bool system_conflict=system_wanted && !system_selection.empty() &&
+                        source_conflicts(system_selection,candidate!=nullptr,publication.actual);
     bool cancelled = false;
     std::unique_lock<std::mutex> commit_lock(audio_mutex);
     {
@@ -403,8 +536,7 @@ private:
     }
     if (cancelled) {
       commit_lock.unlock();
-      if (candidate)
-        api.bh_device_close(candidate);
+      incoming.reset();
       finish(job, {{"done", true}, {"success", false}, {"cancelled", true}});
       return;
     }
@@ -413,64 +545,27 @@ private:
       old = output;
       int stopped = old ? api.bh_device_stop(old) : 0;
       if (stopped != 0) {
-        if (candidate)
-          api.bh_device_close(candidate);
         throw AudioFailure(device_fault(stopped), stopped,
                            "Previous playback endpoint did not stop; new consumer was not started");
       }
       // Windows endpoint loopback includes every renderer. Close its publish
       // gate and purge uplink PCM BEFORE a conflicting renderer can start.
-      auto candidate_identity = job.simulated ? job.endpoint : actual_endpoint(candidate);
-      protect_system_route(candidate != nullptr, candidate_identity);
+      protect_system_route(system_conflict);
       int started = candidate ? api.bh_device_start(candidate) : 0;
       if (started != 0) {
         if (old && api.bh_device_start(old) != 0)
           bridge_errors++;
-        api.bh_device_close(candidate);
         throw AudioFailure(device_fault(started), started, "New playback endpoint could not start");
       }
-      output = candidate;
-      output_actual = candidate_identity;
+      output = incoming.release();
+      retired.reset(old);old=nullptr;
       output_active = job.start;
-      output_selection = job.endpoint;
       output_wanted = job.start;
-      if (!job.automatic)
-        wanted_endpoint[0] = retry_endpoint[0] = job.endpoint;
-    } else {
-      int started = candidate ? api.bh_device_start(candidate) : 0;
-      if (started != 0) {
-        api.bh_device_close(candidate);
-        throw AudioFailure(device_fault(started), started,
-                           "New microphone endpoint could not start");
-      }
-      {
-        std::lock_guard<std::mutex> lock(bridge_mutex);
-        BhDeviceStats format{};
-        format.size = sizeof(format);
-        if (candidate && (api.bh_device_stats(candidate, &format) != 0 ||
-                          api.bh_up_source_rate(uplink, 0, format.output_rate) != 0)) {
-          api.bh_device_close(candidate);
-          throw AudioFailure(Fault::format, -205, "Cannot prepare native microphone format");
-        }
-        old = capture;
-        capture = candidate;
-        if (candidate)
-          capture_rate = format.output_rate;
-        api.bh_up_clear(uplink, 0);
-        microphone_active = job.start;
-        microphone_fault = false;
-      }
-      input_selection = job.endpoint;
-      capture_wanted = job.start;
-      if (!job.automatic)
-        wanted_endpoint[1] = retry_endpoint[1] = job.endpoint;
     }
     recovery[render ? 0 : 1].success(seconds());
-    audio_results[job.id] = {{"done", true}, {"success", true}, {"endpoint_id", job.endpoint}};
+    publish_success(job,publication);
     commit_lock.unlock();
-    if (old)
-      api.bh_device_close(old);
-    finish(job, {{"done", true}, {"success", true}, {"endpoint_id", job.endpoint}});
+    retired.reset();
   }
   std::string default_output, default_input;
   bool inventory_known = false;
@@ -735,6 +830,13 @@ public:
   }
   // Same offline device callback as test_capture, callable by the exclusive
   // native replay without a Python producer. No physical microphone is opened.
+  void offline_render(float *pcm, uint32_t frames) {
+    require(offline && frames && frames <= 48064, "Offline render quantum required");
+    std::lock_guard<std::mutex> lock(audio_mutex);
+    require(output != nullptr, "Offline output endpoint has not been prepared");
+    require(api.bh_device_offline_process(output, nullptr, pcm, frames) == 0,
+            "Offline output callback failed");
+  }
   void offline_capture(uint32_t frames, uint64_t position = 0) {
     require(offline && frames && frames<=4800,"Invalid offline capture quantum");
     std::lock_guard<std::mutex> lock(bridge_mutex);
@@ -886,6 +988,7 @@ public:
             {"microphone_frames", bridge_frames.load()},
             {"system_frames", system_frames.load()},
             {"bridge_errors", bridge_errors.load()},
+            {"diagnostic_errors", diagnostic_errors.load()},
             {"device_reopens", device_reopens.load()}};
   }
 };

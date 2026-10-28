@@ -207,7 +207,7 @@ public partial class MainWindow
         settings.call_buffer_ms = int.Parse((CallBufferPicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "30");
         settings.maximum_devices = int.Parse((MaximumPicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "3");
         settings.le_audio_enabled = LeAudioToggle.IsChecked == true;
-        settings.connection_policy = settings.le_audio_enabled ? "prefer_le" : "classic";
+        settings.connection_policy = settings.le_audio_enabled ? ((ConnectionPolicyPicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() is "le_only" ? "le_only" : "prefer_le") : "classic";
         return settings;
     }
     private void ApplySettings()
@@ -216,7 +216,7 @@ public partial class MainWindow
         NameEntry.Text = settings.name; CallsToggle.IsChecked = settings.calls;
         VoiceProtectionToggle.IsChecked = settings.voice_single_device;
         LeAudioToggle.IsChecked = settings.le_audio_enabled;
-        SelectTag(ConnectionPolicyPicker, settings.le_audio_enabled ? "prefer_le" : "classic");
+        SelectTag(ConnectionPolicyPicker, CodecPolicyWindow.Policy(settings));
         SelectTag(CodecPicker, settings.codec); RefreshCodecChoices(); SelectTag(PlaybackModePicker, settings.media_mode); SelectTag(ModePicker, settings.mode); SelectTag(HomeModePicker, settings.mode);
         SelectTag(MediaBufferPicker, settings.buffer_ms.ToString()); SelectTag(CallBufferPicker, settings.call_buffer_ms.ToString());
         SelectTag(MaximumPicker, settings.maximum_devices.ToString());

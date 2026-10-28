@@ -5,6 +5,7 @@
 #include "lhdc5_media.h"
 #include "audio_continuity.h"
 #include "audio_float.h"
+#include "audio_gap_policy.h"
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdlib.h>
@@ -12,29 +13,154 @@
 #define BHL_QUEUE 48064u
 #define BHL_FRAGMENT 65535u
 #define BHL_MAX_FRAMES 32u
+typedef struct {
+  uint8_t data[BHL_FRAGMENT];
+  uint32_t size, timestamp, ssrc;
+  uint16_t sequence;
+  uint8_t count;
+  uint64_t started;
+} BhLhdcReplacement;
 struct BhLhdc5Media {
   bh_lhdc5_stream *decoder;
   BhContinuity continuity;
   uint32_t rate, samples, read, queued;
-  int have_sequence, have_timestamp, have_ssrc, recovering;
-  uint16_t sequence, successful_sequence;
-  uint32_t expected_timestamp, previous_timestamp, previous_frames, ssrc;
+  int have_sequence, have_ssrc, recovering, packet_admitted;
+  uint16_t sequence, fragment_sequence;
+  uint32_t ssrc;
+  uint32_t free_source, remaining_source, active_free, active_remaining;
+  int context_pending, context_active, pending_fence, drain_uncertain;
+  BhDurationProfile duration;
   uint32_t fragment_size, fragment_timestamp, fragment_ssrc;
-  uint8_t fragment_count;
-  uint64_t stats[12], accounted_loss, fragment_started;
+  uint8_t fragment_count, fragment_damaged;
+  uint64_t stats[24], missing_sdus, fragment_started;
   uint8_t fragment[BHL_FRAGMENT];
+  BhLhdcReplacement replacement;
   float queue[BHL_QUEUE * 2], decoded[1920];
+  uint8_t fence[BHL_QUEUE];
 };
 static uint32_t bhl_be32(const uint8_t *p) { return (uint32_t)p[0]<<24 | (uint32_t)p[1]<<16 | (uint32_t)p[2]<<8 | p[3]; }
+static void bhl_clear_fragment(BhLhdc5Media *m) {
+  m->fragment_size = m->fragment_count = m->fragment_damaged = 0;
+}
+/* A fragmented SDU owns one missing-duration debt, regardless of how many
+ * RTP fragments were lost, expired, rejected or later delivered as tails. */
+static void bhl_damage_fragment(BhLhdc5Media *m) {
+  if (m->fragment_count && !m->fragment_damaged) ++m->missing_sdus;
+  m->fragment_damaged = 1;
+  m->fragment_size = 0;
+}
+static void bhl_abandon_fragment(BhLhdc5Media *m) {
+  bhl_damage_fragment(m);
+  bhl_clear_fragment(m);
+}
 static void bhl_discontinuity(BhLhdc5Media *m) {
   bh_lhdc5_reset(m->decoder);
   bhc_reset(&m->continuity); bhc_rate(&m->continuity, m->rate);
-  m->read = m->queued = 0; m->have_timestamp = 0; m->recovering = 0;
+  m->read = m->queued = 0; m->recovering = 0;
+  m->pending_fence = m->drain_uncertain = 0;
+  bhg_reset(&m->duration);
+  m->missing_sdus = 0;
+  bhl_clear_fragment(m);
+  m->replacement.count = m->replacement.size = 0;
   m->stats[11]++;
 }
-static int bhl_invalid(BhLhdc5Media *m) {
-  m->stats[9]++; m->fragment_size = m->fragment_count = 0;
+static int bhl_reject(BhLhdc5Media *m) {
+  /* Unadmitted data never owns the live stream, its fragments or PCM. */
+  m->stats[9]++;
   return -1;
+}
+static int bhl_invalid_sdu(BhLhdc5Media *m) {
+  if (m->packet_admitted) ++m->missing_sdus;
+  return bhl_reject(m);
+}
+static int bhl_invalid_fragment(BhLhdc5Media *m) {
+  bhl_damage_fragment(m);
+  if (m->fragment_count == 1) bhl_clear_fragment(m);
+  return bhl_reject(m);
+}
+/* Classify a sequence gap before changing fragment identity. Missing slots
+ * belonging to a known fragment countdown charge that SDU once; only slots
+ * outside it become independent unknown SDUs. Actual RTP loss stays a separate
+ * diagnostic count. Unknown SDU duration is estimated only at recovery. */
+static uint32_t bhl_sequence_gap(BhLhdc5Media *m, uint16_t distance) {
+  uint32_t lost = distance - 1u, covered = 0;
+  m->stats[5] += lost;
+  if (m->fragment_count) {
+    uint32_t remaining = m->fragment_count - 1u;
+    covered = lost < remaining ? lost : remaining;
+    if (covered) bhl_damage_fragment(m);
+    if (distance >= m->fragment_count) bhl_abandon_fragment(m);
+  }
+  m->missing_sdus += lost - covered;
+  return lost - covered;
+}
+/* A replacement stream has its own fixed-size provisional assembly. Until its
+ * full SDU passes framing validation, none of its sequence, loss, timeout or
+ * payload events may change the live stream. No decoder is opened or run twice.
+ * Return 1 for a complete candidate, 0 for pending/duplicate, -1 for rejected. */
+static int bhl_stage_replacement(BhLhdc5Media *m, uint8_t flags, uint16_t sequence,
+                                 uint32_t timestamp, uint32_t ssrc,
+                                 const uint8_t **payload, uint32_t *bytes) {
+  BhLhdcReplacement *s = &m->replacement;
+  uint8_t count = flags & 15;
+  uint16_t distance = 1;
+  /* A provisional epoch has no authority after its assembly deadline. Retire
+   * it before comparing sequence numbers so a peer can restart at any value. */
+  if (s->count && GetTickCount64() - s->started > 180)
+    s->count = s->size = 0;
+  if (s->count && s->ssrc == ssrc) {
+    distance = (uint16_t)(sequence - s->sequence);
+    if (!distance || distance >= 0x8000) return 0;
+  }
+  if (flags & 0x40) {
+    if (count < 2 || flags & 0x20) return bhl_reject(m);
+    s->size = 0; s->count = count;
+    s->timestamp = timestamp; s->ssrc = ssrc; s->started = GetTickCount64();
+  } else {
+    if (!s->count || s->ssrc != ssrc || s->timestamp != timestamp || distance != 1 ||
+        !count || count + 1 != s->count || ((count == 1) != ((flags & 0x20) != 0)) ||
+        GetTickCount64() - s->started > 180) {
+      if (s->ssrc == ssrc) s->count = s->size = 0;
+      return bhl_reject(m);
+    }
+    s->count = count;
+  }
+  if (*bytes > BHL_FRAGMENT - s->size) {
+    s->count = s->size = 0;
+    return bhl_reject(m);
+  }
+  memcpy(s->data + s->size, *payload, *bytes); s->size += *bytes;
+  s->sequence = sequence;
+  if (count > 1) return 0;
+  *payload = s->data; *bytes = s->size;
+  s->count = s->size = 0;
+  return 1;
+}
+/* Only admitted SDU evidence can own missing PCM. RTP timestamps are used for
+ * fragment identity, never to fabricate duration or retire genuine decoder
+ * state/PCM. Verified SSRC changes and explicit lifecycle boundaries reset the
+ * stream; changing sender metadata does not create a second audio clock. */
+static void bhl_uncertain_boundary(BhLhdc5Media *m) {
+  m->pending_fence = m->drain_uncertain = 1;
+}
+static uint32_t bhl_gap(BhLhdc5Media *m, uint32_t current_source_frames) {
+  if (!m->missing_sdus) return 0;
+  BhGapEvidence evidence = {0, m->missing_sdus};
+  BhGapContext context = {m->rate, m->rate/5u, m->rate/25u, 0, 0, 0};
+  if (m->context_active) {
+    uint32_t capacity = m->active_free < m->active_remaining ?
+                        m->active_free : m->active_remaining;
+    capacity = capacity > current_source_frames ? capacity-current_source_frames : 0;
+    if (context.exact_budget > capacity) context.exact_budget = capacity;
+    if (context.estimated_budget > capacity) context.estimated_budget = capacity;
+  }
+  BhGapPlan plan = bhg_plan(&m->duration, evidence, context);
+  m->missing_sdus = 0; /* One boundary consumes every SDU, including omitted estimates. */
+  m->stats[21] += plan.estimated_source_frames;
+  m->stats[22] += plan.omitted_unknown_sdus;
+  if (plan.estimated_source_frames || plan.omitted_unknown_sdus || plan.omitted_exact_frames)
+    bhl_uncertain_boundary(m);
+  return plan.estimated_source_frames;
 }
 BH_LHDC_API void bh_lhdc5_media_destroy(BhLhdc5Media *m) {
   if (m) { bh_lhdc5_destroy(m->decoder); free(m); }
@@ -53,10 +179,19 @@ static void bhl_put(BhLhdc5Media *m, const float *pcm, uint32_t n, int real) {
   if (m->queued + n > BHL_QUEUE) {
     uint32_t skip = m->queued + n - BHL_QUEUE;
     m->read = (m->read + skip) % BHL_QUEUE; m->queued -= skip; m->stats[8] += skip;
+    /* The original fence may be among dropped slots. Conservatively fence the
+     * first retained queued PCM; this exceptional prefix can be synthetic. */
+    m->drain_uncertain = 1;
+    if (m->queued) m->fence[m->read] = 1;
+    else m->pending_fence = 1;
   }
   for (uint32_t i = 0; i < n; ++i) {
     uint32_t at = (m->read + m->queued) % BHL_QUEUE;
     float *out = m->queue + at * 2;
+    m->fence[at] = 0;
+    if (real && m->pending_fence) {
+      m->fence[at] = 1; m->pending_fence = 0; m->drain_uncertain = 1;
+    }
     if (real) bhc_real(&m->continuity, pcm + i*2, out);
     else bhc_missing(&m->continuity, out);
     ++m->queued;
@@ -65,112 +200,182 @@ static void bhl_put(BhLhdc5Media *m, const float *pcm, uint32_t n, int real) {
 }
 static int bhl_feed(BhLhdc5Media *m, const uint8_t *data, uint32_t n) {
   if (!m || !data) return -1;
+  m->packet_admitted = 0;
   m->stats[1] += n;
-  if (n < 15 || n > 65535 || data[0] >> 6 != 2) return bhl_invalid(m);
+  if (n < 15 || n > 65535 || data[0] >> 6 != 2) return bhl_reject(m);
   uint32_t start = 12u + 4u * (data[0] & 15), end = n;
-  if (start > end) return bhl_invalid(m);
+  if (start > end) return bhl_reject(m);
   if (data[0] & 0x10) {
-    if (end - start < 4) return bhl_invalid(m);
+    if (end - start < 4) return bhl_reject(m);
     uint32_t words = (uint32_t)data[start+2]<<8 | data[start+3];
     start += 4 + 4*words;
   }
-  if (start >= end) return bhl_invalid(m);
+  if (start >= end) return bhl_reject(m);
   if (data[0] & 0x20) {
     uint32_t pad = data[n-1];
-    if (!pad || pad > end - start) return bhl_invalid(m);
+    if (!pad || pad > end - start) return bhl_reject(m);
     end -= pad;
   }
-  if (end - start < 2) return bhl_invalid(m);
+  if (end - start < 2) return bhl_reject(m);
   uint16_t sequence = (uint16_t)((uint16_t)data[2]<<8 | data[3]);
   uint32_t timestamp = bhl_be32(data+4), ssrc = bhl_be32(data+8);
-  if (m->have_ssrc && m->ssrc != ssrc) {
-    bhl_discontinuity(m); m->have_sequence = 0; m->fragment_count = m->fragment_size = 0;
-  }
-  m->have_ssrc = 1; m->ssrc = ssrc;
-  if (m->have_sequence) {
-    uint16_t distance = (uint16_t)(sequence - m->sequence);
-    if (!distance || distance >= 0x8000) return 0;
-    if (distance > 1) {
-      m->stats[5] += distance - 1;
-      m->fragment_count = m->fragment_size = 0;
-    }
-  }
-  m->have_sequence = 1; m->sequence = sequence;
   uint8_t flags = data[start++];
   const uint8_t *payload = data + start;
   uint32_t bytes = end - start;
-  if (flags & 0x80) {
-    uint8_t count = flags & 15;
-    if (flags & 0x40) {
-      if (count < 2 || flags & 0x20) return bhl_invalid(m);
-      m->fragment_size = 0; m->fragment_count = count;
-      m->fragment_timestamp = timestamp; m->fragment_ssrc = ssrc; m->fragment_started = GetTickCount64();
-    } else {
-      if (!m->fragment_count || count + 1 != m->fragment_count || !count ||
-          ((count == 1) != ((flags & 0x20) != 0)) ||
-          timestamp != m->fragment_timestamp || ssrc != m->fragment_ssrc ||
-          GetTickCount64() - m->fragment_started > 180) return bhl_invalid(m);
-      m->fragment_count = count;
+  int new_stream = !m->have_ssrc || m->ssrc != ssrc;
+  if (!m->have_ssrc && m->fragment_count && GetTickCount64() - m->fragment_started > 180) {
+    bhl_clear_fragment(m);
+    m->missing_sdus = 0;
+  }
+  /* Fresh decoders use the main assembly provisionally. Concurrent foreign
+   * fragments get independent staging so they cannot overwrite live state. */
+  if ((flags & 0x80) && new_stream &&
+      (m->have_ssrc || (m->fragment_count && m->fragment_ssrc != ssrc))) {
+    int staged = bhl_stage_replacement(m, flags, sequence, timestamp, ssrc, &payload, &bytes);
+    if (staged <= 0) return staged;
+  } else {
+    uint16_t distance = 1;
+    int provisional = !m->have_ssrc && m->fragment_count && m->fragment_ssrc == ssrc;
+    int known_sequence = (!new_stream && m->have_sequence) || provisional;
+    if (known_sequence) {
+      uint16_t previous = provisional ? m->fragment_sequence : m->sequence;
+      distance = (uint16_t)(sequence - previous);
+      if (!distance || distance >= 0x8000) return 0;
     }
-    if (bytes > BHL_FRAGMENT - m->fragment_size) return bhl_invalid(m);
-    memcpy(m->fragment + m->fragment_size, payload, bytes); m->fragment_size += bytes;
-    if (count > 1) return 0;
-    payload = m->fragment; bytes = m->fragment_size;
-    m->fragment_size = m->fragment_count = 0;
-  } else m->fragment_size = m->fragment_count = 0;
+    uint32_t unknown_lost = 0;
+    if (!new_stream || provisional) {
+      if (known_sequence) unknown_lost = bhl_sequence_gap(m, distance);
+      if (!new_stream) { m->have_sequence = 1; m->sequence = sequence; }
+      m->packet_admitted = 1;
+    }
+    if (flags & 0x80) {
+      uint8_t count = flags & 15;
+      if (flags & 0x40) {
+        bhl_abandon_fragment(m);
+        if (count < 2 || flags & 0x20) return bhl_invalid_sdu(m);
+        m->fragment_count = count;
+        m->fragment_timestamp = timestamp; m->fragment_ssrc = ssrc; m->fragment_started = GetTickCount64();
+        m->fragment_sequence = sequence;
+      } else {
+        int related = m->fragment_count && timestamp == m->fragment_timestamp &&
+                      ssrc == m->fragment_ssrc;
+        int continuous = related && count && distance < m->fragment_count &&
+                         count == m->fragment_count - distance &&
+                         ((count == 1) == ((flags & 0x20) != 0));
+        if (!continuous) {
+          if (related) bhl_damage_fragment(m);
+          else {
+            bhl_abandon_fragment(m);
+            /* An unobserved first fragment and its orphan tail describe one
+             * missing SDU, not a network-loss debt plus a second payload debt. */
+            if (!unknown_lost) ++m->missing_sdus;
+          }
+          m->fragment_count = count;
+          m->fragment_damaged = 1;
+          m->fragment_size = 0;
+          m->fragment_timestamp = timestamp; m->fragment_ssrc = ssrc;
+          m->fragment_sequence = sequence;
+          if (count <= 1) bhl_clear_fragment(m);
+          return bhl_reject(m);
+        }
+        m->fragment_count = count;
+        m->fragment_sequence = sequence;
+        if (GetTickCount64() - m->fragment_started > 180 || m->fragment_damaged)
+          return bhl_invalid_fragment(m);
+      }
+      if (bytes > BHL_FRAGMENT - m->fragment_size) return bhl_invalid_fragment(m);
+      memcpy(m->fragment + m->fragment_size, payload, bytes); m->fragment_size += bytes;
+      if (count > 1) return 0;
+      payload = m->fragment; bytes = m->fragment_size;
+      bhl_clear_fragment(m);
+    } else if (!new_stream) bhl_abandon_fragment(m);
+  }
   // LHDC V5 has a sequence/marker byte before self-delimiting frame headers.
   // The generic A2DP nibble above is NOT a trustworthy codec frame count.
-  if (bytes < 5) return bhl_invalid(m);
+  if (bytes < 5) return bhl_invalid_sdu(m);
   uint32_t at = 1, count = 0, positions[BHL_MAX_FRAMES], lengths[BHL_MAX_FRAMES];
   while (at < bytes) {
-    if (bytes - at < 4 || count == BHL_MAX_FRAMES) return bhl_invalid(m);
+    if (bytes - at < 4 || count == BHL_MAX_FRAMES) return bhl_invalid_sdu(m);
     uint32_t size = (((uint32_t)payload[at] | (uint32_t)payload[at+1]<<8) & 1023u)*2u + 2u;
-    if (size < 4 || size > bytes - at) return bhl_invalid(m);
+    if (size < 4 || size > bytes - at) return bhl_invalid_sdu(m);
     positions[count] = at; lengths[count++] = size; at += size;
   }
-  if (!count || at != bytes) return bhl_invalid(m);
-  int32_t missing = m->have_timestamp ? (int32_t)(timestamp - m->expected_timestamp) : 0;
-  if (m->have_timestamp && timestamp == m->previous_timestamp) {
-    uint64_t lost = m->stats[5] - m->accounted_loss;
-    if (lost)
-      missing = (int32_t)fmin((double)lost * m->previous_frames, m->rate);
-    else missing = 0;
+  if (!count || at != bytes) return bhl_invalid_sdu(m);
+  /* A valid RTP header alone cannot retire the current stream. Commit a new
+   * SSRC only after its complete payload has passed structural validation;
+   * malformed foreign packets must not clear queued PCM or poison sequence. */
+  if (new_stream) {
+    if (m->have_ssrc) bhl_discontinuity(m);
+    else bhl_clear_fragment(m);
+    m->have_ssrc = m->have_sequence = m->packet_admitted = 1;
+    m->ssrc = ssrc; m->sequence = sequence;
   }
-  if (missing < 0 || missing > (int32_t)(m->rate/25)) {
-    bhl_discontinuity(m); missing = 0;
-  }
+  uint32_t current_source_frames = count*m->samples;
+  uint32_t missing = bhl_gap(m, current_source_frames);
+  int current_plc_fits = !m->context_active ||
+                        (m->active_free >= current_source_frames &&
+                         m->active_remaining >= current_source_frames);
   if (missing > 0) {
-    bh_lhdc5_reset(m->decoder);
-    bhl_put(m, NULL, (uint32_t)missing, 0); m->recovering = 1;
+    bhl_put(m, NULL, missing, 0); m->recovering = 1;
   }
+  uint64_t errors_before = m->stats[3];
   for (uint32_t i=0; i<count; ++i) {
     m->stats[2] += lengths[i];
     int result = bh_lhdc5_decode(m->decoder, payload+positions[i], lengths[i], m->decoded, m->samples);
     if (result != (int)m->samples) {
       m->stats[3]++; m->recovering = 1;
-      bhl_put(m, NULL, m->samples, 0);
+      if (current_plc_fits) {
+        bhl_put(m, NULL, m->samples, 0);
+        m->stats[20] += m->samples;
+      } else {
+        m->stats[23] += m->samples; bhl_uncertain_boundary(m);
+      }
     } else {
       bhl_put(m, m->decoded, m->samples, 1);
       if (m->recovering) { m->stats[4]++; m->recovering = 0; }
     }
   }
-  m->previous_frames = count*m->samples; m->previous_timestamp = timestamp;
-  m->expected_timestamp = timestamp + m->previous_frames;
-  m->successful_sequence = sequence; m->have_timestamp = 1; m->accounted_loss = m->stats[5];
+  if (m->stats[3] == errors_before) bhg_observe(&m->duration, count*m->samples);
   return 0;
 }
 BH_LHDC_API int bh_lhdc5_media_feed(BhLhdc5Media *m, const uint8_t *data, uint32_t n) {
-  unsigned state = bh_float_enter(); int result = bhl_feed(m,data,n); bh_float_leave(state); return result;
+  if (m) {
+    m->context_active = m->context_pending;
+    m->active_free = m->free_source; m->active_remaining = m->remaining_source;
+    m->context_pending = 0;
+  }
+  unsigned state = bh_float_enter(); int result = bhl_feed(m,data,n); bh_float_leave(state);
+  if (m) m->context_active = 0;
+  return result;
 }
-BH_LHDC_API uint32_t bh_lhdc5_media_read(BhLhdc5Media *m, float *out, uint32_t n) {
+BH_LHDC_API void bh_lhdc5_media_gap_context(BhLhdc5Media *m, uint32_t free_frames,
+                                         uint32_t remaining_frames) {
+  if (!m) return;
+  m->free_source = free_frames; m->remaining_source = remaining_frames;
+  m->context_pending = 1;
+}
+BH_LHDC_API int bh_lhdc5_media_drain_confidence(BhLhdc5Media *m) {
+  return m ? m->drain_uncertain : 0;
+}
+BH_LHDC_API uint32_t bh_lhdc5_media_read_fenced(BhLhdc5Media *m, float *out,
+                                            uint8_t *fence, uint32_t n) {
   if (!m || !out) return 0;
   if (n > m->queued) n = m->queued;
   uint32_t first = n < BHL_QUEUE - m->read ? n : BHL_QUEUE - m->read;
   memcpy(out, m->queue + m->read*2, first*2*sizeof(float));
   memcpy(out+first*2, m->queue, (n-first)*2*sizeof(float));
-  m->read = (m->read+n)%BHL_QUEUE; m->queued -= n; return n;
+  if (fence) {
+    memcpy(fence, m->fence+m->read, first);
+    memcpy(fence+first, m->fence, n-first);
+  }
+  m->read = (m->read+n)%BHL_QUEUE; m->queued -= n;
+  if (n && !m->queued) m->drain_uncertain = 0;
+  return n;
+}
+BH_LHDC_API uint32_t bh_lhdc5_media_read(BhLhdc5Media *m, float *out, uint32_t n) {
+  return bh_lhdc5_media_read_fenced(m, out, NULL, n);
 }
 BH_LHDC_API uint64_t bh_lhdc5_media_value(BhLhdc5Media *m, int field) {
-  if (!m || field<0 || field>=12) return 0;
+  if (!m || field<0 || field>=24) return 0;
   return field==6 ? (uint64_t)m->recovering : field==7 ? m->queued : m->stats[field];
 }

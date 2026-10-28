@@ -4,6 +4,13 @@ from dataclasses import dataclass
 from bumble import gatt, hci
 from bumble.profiles import bap, pacs
 from .services import AudioStreamService
+from bumble.profiles.device_information_service import DeviceInformationService
+from .. import __version__
+
+
+def device_information():
+    return DeviceInformationService(manufacturer_name='BlueHead', model_number='BlueHead Virtual Headset',
+                                    software_revision=__version__)
 
 
 @dataclass(frozen=True)

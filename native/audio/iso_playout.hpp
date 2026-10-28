@@ -10,7 +10,10 @@ class IsoPlayout {
   uint32_t concealed = 0, limit = 0;
   bool sequenced = false, recovering = false;
 public:
-  struct Decision { bool accept = false, reset = false, expired = false; uint32_t gap = 0; };
+  struct Decision {
+    bool accept = false, reset = false, expired = false;
+    uint32_t gap = 0, omitted_gap = 0;
+  };
   bool configure(uint64_t period, uint64_t wait, uint64_t age, uint32_t maximum_conceal) {
     if (!period || wait > age || period > age || !maximum_conceal || maximum_conceal > 8) return false;
     interval = period; grace = wait; maximum_age = age; limit = maximum_conceal;
@@ -18,7 +21,11 @@ public:
     return true;
   }
   void invalidate() { recovering = true; due = 0; }
-  uint64_t deadline() const { return due; }
+  // The receiver supplies a presentation horizon. A past transport timer alone
+  // cannot retire a still-useful packet or manufacture prefill audio.
+  uint64_t deadline(uint64_t seal_not_before=0) const {
+    return due && due<seal_not_before?seal_not_before:due;
+  }
   bool sequenced_value() const {return sequenced;}
   uint16_t next_sequence() const {return uint16_t(previous+1);}
   void reanchor() {recovering=true;sequenced=false;due=0;concealed=0;}
@@ -33,10 +40,10 @@ public:
     bool reset = recovering || distance - 1u > limit;
     previous = sequence; sequenced = true; recovering = false; concealed = 0;
     due = arrival + interval + grace;
-    return {true, reset, false, reset ? 0u : distance - 1u};
+    return {true, reset, false, reset ? 0u : distance - 1u, reset ? distance - 1u : 0u};
   }
-  bool missing(uint64_t now) {
-    if (!due || now < due) return false;
+  bool missing(uint64_t now,uint64_t seal_not_before=0) {
+    if (!due || now < due || now<seal_not_before) return false;
     if (concealed >= limit || now - due > maximum_age) { invalidate(); return false; }
     previous++; concealed++; due += interval;
     return true;

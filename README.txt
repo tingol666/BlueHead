@@ -1,4 +1,4 @@
-BlueHead 2.1.5 / Windows 10 and 11 x64
+BlueHead 2.1.6 / Windows 10 and 11 x64
 https://github.com/tingol666/BlueHead
 
 把 Windows 电脑作为蓝牙耳机：收听设备媒体，将电脑麦克风发回设备。
@@ -18,6 +18,7 @@ A2DP：SBC/AAC/aptX/aptX HD、实验 LDAC、LHDC 5.0。
 首次安装默认启用全部可用编码，可在“连接与编码”中调整；升级保留已有的选择。传输持续不稳定时，按首页提示改用较低码率编码（如 AAC）并重新连接。
 HFP：CVSD/mSBC/LC3-SWB。iPhone/iPad 标准 AAC/SBC、HFP、AVRCP。
 LE Audio：LC3 单播媒体和麦克风发送、音频广播接收、BASS/PAST、VCS/MICS。
+手机没有 LE Audio 选项时，打开“连接与编码”内的“LE 配对指南”：选择“仅 LE Audio / LC3”，停止并重新开始接收，再在手机上忽略旧 BlueHead 条目后重新配对。指南也说明 Android 许可名单开关。
 首页媒体编码右侧的齿轮打开“连接与编码”，选择 LE Audio 偏好、允许的经典编码与首选。每个经典编码旁的小齿轮可设置其采样率及可用的位深、码率或质量上限，自动保存。实际格式仍由双方能力协商，设备卡片显示结果。
 修改经典编码设置后，在发送设备蓝牙设置中断开电脑耳机再重新连接。修改 LE 连接偏好后，先在 BlueHead 点“停止接收”→“开始接收”，再重新连接发送设备。首页会显示待重连提示，不执行单设备编码热切换。
 语音和 LE Audio 编码自动协商；蓝牙版本号不能保证协议能力，应用必须支持并选择蓝牙麦克风。

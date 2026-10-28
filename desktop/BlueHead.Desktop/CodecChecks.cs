@@ -180,5 +180,17 @@ internal static partial class Program
         checks["codec_settings_never_disconnect_or_restart_active_connections"] = Stops() == stops && window.SelfTestCommands.All(item => item.Text("command") != "device_action" || item.Text("action") != "disconnect");
         receive("""{"event":"stopped"}""");
         checks["receiver_stop_clears_pending_connection_reminders"] = window.CodecReconnectNotice.Visibility == Visibility.Collapsed;
+        window.OpenCodecPolicy(); Pump(); policy = window.PolicyWindow!;
+        policy.PolicyPicker.SelectedIndex = 2; window.FlushSettings().GetAwaiter().GetResult();
+        checks["le_only_policy_survives_settings_read_and_sync"] = window.LeAudioToggle.IsChecked == true && window.ConnectionPolicyPicker.SelectedIndex == 2 && window.SelfTestCommands.Last(item => item.Text("command") == "preferences").GetProperty("values").Text("connection_policy") == "le_only";
+        checks["le_only_clarifies_classic_codec_controls_do_not_apply"] = !policy.ClassicCodecPanel.IsEnabled && policy.PolicyExplanation.Text.Contains("不开放经典蓝牙");
+        Click(policy.PairingGuideButton); Pump();
+        var guide = window.PairingGuideWindow!;
+        checks["pairing_guide_names_concrete_controls_and_android_allowlist"] = guide.GuideText.Contains("停止接收") && guide.GuideText.Contains("忽略设备") && guide.GuideText.Contains("许可名单") && guide.GuideText.Contains("仅 LE Audio");
+        checks["pairing_guide_is_compact_and_does_not_restart_receiver"] = guide.ActualWidth <= 500 && guide.ActualHeight <= 650 && Stops() == stops;
+        Capture(guide, Path.Combine(folder, "le-pairing-guide.png")); guide.Close();
+        Capture(policy, Path.Combine(folder, "le-only-codec-policy.png"));
+        policy.PolicyPicker.SelectedIndex = 0; window.FlushSettings().GetAwaiter().GetResult();
+        policy.Close(); Pump();
     }
 }

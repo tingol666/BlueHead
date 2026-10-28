@@ -9,6 +9,7 @@
 #include <math.h>
 #include <stdatomic.h>
 #include "audio_timeline.h"
+#include "audio_format_plan.h"
 #define API __declspec(dllexport)
 #define LIMIT 34560u
 typedef struct {
@@ -56,6 +57,8 @@ typedef struct {
   Mixer *clock;
   MixRoute *route;
   atomic_uint source_rate[2];
+  atomic_ullong source_revision[2];
+  atomic_uint references, closing;
   int input[2];
   float stereo[LIMIT];
   int16_t a[LIMIT / 2], b[LIMIT / 2];
@@ -76,6 +79,10 @@ API Uplink *bh_up_create(void) {
   atomic_init(&u->excess[1], 0);
   atomic_init(&u->source_rate[0], 48000);
   atomic_init(&u->source_rate[1], 48000);
+  atomic_init(&u->source_revision[0], 1);
+  atomic_init(&u->source_revision[1], 1);
+  atomic_init(&u->references, 1);
+  atomic_init(&u->closing, 0);
   u->rate = 16000;
   u->clock = bh_mix_create();
   if (!u->clock) {
@@ -101,13 +108,16 @@ API Uplink *bh_up_create(void) {
   }
   return u;
 }
-API void bh_up_free(Uplink *u) {
-  if (u) {
+static void release_uplink(Uplink *u) {
+  if (atomic_fetch_sub_explicit(&u->references,1,memory_order_acq_rel)==1) {
     bh_mix_route_free(u->route);
     bh_mix_free(u->clock);
     DeleteCriticalSection(&u->lock);
     free(u);
   }
+}
+API void bh_up_free(Uplink *u) {
+  if (u && !atomic_exchange(&u->closing,1)) release_uplink(u);
 }
 /* Control-side format contracts. Output changes require the voice consumer
  * stopped; a source change uses the mixer's per-source reader lease. */
@@ -121,16 +131,87 @@ API int bh_up_output_rate(Uplink *u, uint32_t rate) {
   u->route = prepared;
   return 0;
 }
-API int bh_up_source_rate(Uplink *u, int bus, uint32_t rate) {
-  if (!u || bus < 0 || bus > 1 || bh_mix_format(u->clock, u->input[bus], rate) < 0)
-    return -1;
-  atomic_store(&u->source_rate[bus], rate);
-  atomic_store(&u->excess[bus], 0);
-  return 0;
+struct BhUpSourcePlan {
+  Uplink *owner;
+  BhMixFormatPlan *format;
+  int bus, committed;
+  uint32_t rate, old_rate, flags;
+  uint64_t revision;
+};
+API void bh_up_source_plan_free(BhUpSourcePlan *p) {
+  if(!p) return;
+  Uplink *u=p->owner;
+  bh_mix_format_plan_free(p->format);
+  free(p);
+  release_uplink(u);
+}
+API BhUpSourcePlan *bh_up_source_prepare(void *opaque,int bus,uint32_t rate,
+                                        uint32_t flags,int *error) {
+  if(error)*error=BH_FORMAT_INVALID;
+  Uplink *u=opaque;
+  if(!u || bus<0 || bus>1 || rate<8000 || rate>384000 ||
+     (flags&~BH_FORMAT_RETIRE_SOURCE)) return NULL;
+  BhUpSourcePlan *p=calloc(1,sizeof(*p));
+  if(!p) {if(error)*error=BH_FORMAT_MEMORY;return NULL;}
+  atomic_fetch_add(&u->references,1);
+  p->owner=u;p->bus=bus;p->rate=rate;p->flags=flags;
+  EnterCriticalSection(&u->lock);
+  int valid=!atomic_load(&u->closing);
+  p->revision=atomic_load(&u->source_revision[bus]);
+  p->old_rate=atomic_load(&u->source_rate[bus]);
+  int index=u->input[bus];
+  LeaveCriticalSection(&u->lock);
+  /* In particular, do not hold u->lock while the mixer allocates/prepares:
+   * legacy TX readers and unrelated capture producers share that owner. */
+  if(valid) p->format=bh_mix_format_prepare(u->clock,index,rate,flags,error);
+  if(!p->format) {
+    if(!valid && error)*error=BH_FORMAT_STALE;
+    bh_up_source_plan_free(p);return NULL;
+  }
+  return p;
+}
+API int bh_up_source_try_commit(BhUpSourcePlan *p) {
+  if(!p || p->committed) return BH_FORMAT_INVALID;
+  Uplink *u=p->owner;
+  if(!TryEnterCriticalSection(&u->lock)) return BH_FORMAT_BUSY;
+  int result=BH_FORMAT_STALE;
+  if(atomic_load(&u->closing) || p->revision!=atomic_load(&u->source_revision[p->bus]) ||
+     p->old_rate!=atomic_load(&u->source_rate[p->bus])) goto done;
+  result=bh_mix_format_try_commit(p->format);
+  if(result==BH_FORMAT_COMMITTED) {
+    if(p->rate!=p->old_rate || p->flags) {
+      atomic_store(&u->source_rate[p->bus],p->rate);
+      atomic_store(&u->excess[p->bus],0);
+      Ring *r=p->bus?&u->system:&u->mic;
+      r->read=r->size=0;
+      atomic_fetch_add(&u->source_revision[p->bus],1);
+    }
+    p->committed=1;
+  }
+done:
+  LeaveCriticalSection(&u->lock);return result;
+}
+API int bh_up_source_rate(Uplink *u,int bus,uint32_t rate) {
+  if(!u) return -1;
+  atomic_fetch_add(&u->references,1);
+  int output=-1;
+  for(unsigned attempt=0;attempt<8;++attempt) {
+    int error;
+    BhUpSourcePlan *p=bh_up_source_prepare(u,bus,rate,0,&error);
+    if(!p) break;
+    int result;
+    while((result=bh_up_source_try_commit(p))==BH_FORMAT_BUSY) Sleep(0);
+    bh_up_source_plan_free(p);
+    if(result==BH_FORMAT_COMMITTED) {output=0;break;}
+    if(result!=BH_FORMAT_STALE || atomic_load(&u->closing)) break;
+  }
+  release_uplink(u);
+  return output;
 }
 static void reset_bus(Uplink *u, int bus) {
   bh_mix_clear(u->clock, u->input[bus]);
   atomic_store(&u->excess[bus], 0);
+  atomic_fetch_add(&u->source_revision[bus],1);
 }
 API void bh_up_clear(Uplink *u, int bus) {
   if (!u)

@@ -43,8 +43,8 @@ def validate_settings(values, *, require_transport=True):
         transport_target(settings.transport)
     if settings.codec not in ("auto", "sbc", "aac", "aac_192", "aptx", "aptx_hd", "ldac", "lhdc5"):
         raise ValueError("未知媒体编码")
-    if settings.connection_policy not in ('prefer_le', 'classic'):
-        raise ValueError('请选择优先 LE Audio / LC3 或仅经典蓝牙')
+    if settings.connection_policy not in ('prefer_le', 'le_only', 'classic'):
+        raise ValueError('请选择有效的蓝牙音频连接方式')
     if settings.media_mode not in ("single", "mix"):
         raise ValueError("未知出声方式")
     if not isinstance(settings.name, str) or not settings.name.strip() or len(settings.name.encode("utf-8")) > 200:

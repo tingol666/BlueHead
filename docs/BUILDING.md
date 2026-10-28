@@ -41,7 +41,7 @@ dotnet publish desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj -c Rel
 ## 安装包与绿色版
 
 ```powershell
-.venv\Scripts\python.exe tools/build_release.py --output ../releases/2.1.5
+.venv\Scripts\python.exe tools/build_release.py --output ../releases/2.1.6
 ```
 
 输出必须是新目录。此入口完成原生构建、许可证清点、桌面／驱动工具发布、冻结控制后台和装配；不会部署到日常目录。已构建各部分时，可显式传入 `--assemble-only --desktop ... --helper ... --engine ...`，输入必须都是同一源码版本。
@@ -49,8 +49,8 @@ dotnet publish desktop/BlueHead.DriverHelper/BlueHead.DriverHelper.csproj -c Rel
 在输出目录写入 `VALIDATION.md`，记录真实执行的命令、结果、构建版本、包检查与尚未覆盖的设备验收。不能把历史通过数量、虚拟时钟或待做项目冒充当前实测。然后：
 
 ```powershell
-.venv\Scripts\python.exe tools/audit_package.py ../releases/2.1.5/BlueHead --report work/package-audit.json
-.venv\Scripts\python.exe tools/finalize_release.py ../releases/2.1.5 --nsis 'C:\Program Files (x86)\NSIS\makensis.exe'
+.venv\Scripts\python.exe tools/audit_package.py ../releases/2.1.6/BlueHead --report work/package-audit.json
+.venv\Scripts\python.exe tools/finalize_release.py ../releases/2.1.6 --nsis 'C:\Program Files (x86)\NSIS\makensis.exe'
 ```
 
 生成 Setup EXE、Portable ZIP、Source ZIP、验证说明及 `SHA256SUMS.txt`。绿色版加 `portable.flag`，数据保存在自身 `data/`；安装版使用 `%LocalAppData%\BlueHead\data`。源码 ZIP 与 Git 当前树采用相同公开清单，`tools/audit_sources.py` 检查边界。私钥、驱动备份、配对、工具链、本地测试和缓存不发布。

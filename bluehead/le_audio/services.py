@@ -34,6 +34,7 @@ class AudioStreamService(gatt.TemplateService):
         self.device, self.bridge, self.notify_engine = device, bridge, emit
         self.admit = lambda owner: True
         self.peer_activity = lambda owner: None
+        self.discovery_activity = lambda owner, phase: None
         self.control = StreamControl(
             maximum_peers, microphone=microphone, source_octets=source_octets, source_blocks=source_blocks
         )
@@ -104,6 +105,7 @@ class AudioStreamService(gatt.TemplateService):
         if not self.current(owner) or not getattr(owner, "encryption", False):
             raise att.ATT_Error(att.ATT_INSUFFICIENT_ENCRYPTION_ERROR)
         self.peer_activity(owner)
+        self.discovery_activity(owner, "services")
         identity = id(owner)
         if identity not in self.watched:
             try:
@@ -140,6 +142,8 @@ class AudioStreamService(gatt.TemplateService):
                 if not self.current(owner):
                     return
                 result = self.control.write(owner, bytes(data), secured=bool(owner.encryption))
+                if any(endpoint.codec is not None for endpoint in self.control.peer(owner).pool.endpoints.values()):
+                    self.discovery_activity(owner, 'configured')
                 await self.notify(owner, self.control_point, result.response)
                 for ase, value in result.notifications:
                     await self.notify(owner, self.ases[ase], value)

@@ -28,6 +28,15 @@ private:
   uint32_t anchor_stamp=0;
   uint16_t anchor_sequence=0,previous=0;
   static bool ahead(uint16_t a,uint16_t b) {auto d=uint16_t(a-b);return d && d<0x8000;}
+  bool later_missing_lane(const Slot &selected) const {
+    const auto missing=uint8_t(3u&~selected.present);
+    // feed receives complete, sequence-admitted SDUs from the per-CIS
+    // assembler. A later SDU on the missing lane proves the older one can no
+    // longer be admitted. A later packet on the already-present lane does not.
+    for(const auto &slot:slots)
+      if((slot.present&missing) && ahead(slot.sequence,selected.sequence)) return true;
+    return false;
+  }
   void clear() {for(auto &slot:slots)slot.present=slot.valid=0;}
   void restart() {clear();anchored=published=false;restarting=true;counters.resets++;}
 public:
@@ -71,7 +80,7 @@ public:
     for(auto &slot:slots) if(slot.present && !ahead(slot.sequence,previous)) {slot.present=slot.valid=0;counters.late++;}
   }
   bool take(uint64_t now,bool expected_valid,uint16_t expected,uint64_t due,
-            IsoSdu &out,uint8_t &valid,uint64_t &arrival) {
+            IsoSdu &out,uint8_t &valid,uint64_t &arrival,uint64_t seal_not_before=0) {
     Slot *selected=nullptr;
     for(auto &slot:slots) {
       if(!slot.present) continue;
@@ -82,6 +91,7 @@ public:
     if(!selected) return false;
     auto deadline=selected->arrival+grace;
     if(expected_valid && selected->sequence==expected && due) deadline=std::min(deadline,due);
+    if(selected->present!=3 && !later_missing_lane(*selected)) deadline=std::max(deadline,seal_not_before);
     if(selected->present!=3 && now<deadline) return false;
     out={};out.generation=epoch;out.sequence=selected->sequence;
     out.size=uint16_t(octets*blocks*2);out.discontinuity=restarting;
@@ -95,14 +105,19 @@ public:
     if(selected->present!=3 || valid!=3) counters.partial++;
     selected->present=selected->valid=0;counters.completed++;return true;
   }
-  uint64_t deadline(bool expected_valid,uint16_t expected,uint64_t due) const {
-    uint64_t result=0;
+  uint64_t deadline(bool expected_valid,uint16_t expected,uint64_t due,uint64_t seal_not_before=0) const {
+    const Slot *selected=nullptr;
     for(const auto &slot:slots) if(slot.present) {
-      auto next=slot.arrival+grace;
-      if(expected_valid && slot.sequence==expected && due) next=std::min(next,due);
-      if(!result || next<result) result=next;
+      if(published && !ahead(slot.sequence,previous)) continue;
+      if(!selected || ahead(selected->sequence,slot.sequence)) selected=&slot;
     }
-    return result;
+    // take() publishes in sequence order. A complete later pair cannot give a
+    // past wake time while the oldest partial is waiting on presentation room.
+    if(!selected) return 0;
+    auto next=selected->arrival+grace;
+    if(expected_valid && selected->sequence==expected && due) next=std::min(next,due);
+    if(selected->present!=3 && !later_missing_lane(*selected)) next=std::max(next,seal_not_before);
+    return next;
   }
 };
 } // namespace bh

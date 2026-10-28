@@ -46,26 +46,53 @@ class IsoReceiver final {
   uint64_t meter_start=0,meter_bytes=0,meter_packets=0;
   std::atomic<double> packets_per_second{0};
   std::atomic<uint64_t> malformed{0},late{0},duplicate{0},partial{0},unsynchronized{0},group_resets{0},silent_channels{0},channel_resets{0};
+  std::atomic<uint64_t> omitted_slots{0};
   bool active() const {return !stop && (handle!=0xffff || right_handle!=0xffff);}
-  void write(const float *pcm) {
+  void write(const float *pcm,const uint8_t *fence) {
     if(channels==1 && (allocation==1 || allocation==2)) {
       std::array<float,960> stereo{};
       for(uint32_t i=0;i<samples;++i) stereo[2*i+(allocation==2?1:0)]=pcm[i];
-      core.api.bh_mix_write(core.mixer,input,stereo.data(),samples);
-    } else if(channels==1) core.api.bh_mix_write_f32_mono(core.mixer,input,pcm,samples);
-    else core.api.bh_mix_write(core.mixer,input,pcm,samples);
+      core.api.bh_mix_write_fenced(core.mixer,input,stereo.data(),fence,samples);
+    } else if(channels==1) core.api.bh_mix_write_f32_mono_fenced(core.mixer,input,pcm,fence,samples);
+    else core.api.bh_mix_write_fenced(core.mixer,input,pcm,fence,samples);
   }
   void run() {
     Priority priority;
     Frame frame,joined;
     std::array<float,960> pcm{};
+    std::array<uint8_t,480> pcm_fence{};
     std::array<uint32_t,2> missing{};
     std::array<bool,2> silent{};
     uint64_t position=0;
+    bool pending_fence=false,arrival_uncertain=false;
     const uint64_t maximum_age=frequency()*(voice?90:180)/1000;
+    const uint64_t interval=frequency()*duration*blocks/1000000;
+    // Conservative decode lead, not a measured execution-time guarantee. The
+    // queue uses canonical frames even when the LC3 source rate is different.
+    const uint64_t lead=std::min(frequency()*2/1000,interval/2);
+    const uint32_t slot_samples=samples*blocks;
+    auto presentation_check=[&](uint64_t now) {
+      // Presentation time also advances during prefill. Only the explicit
+      // consumer epoch proves that this stream has actually started playing.
+      uint64_t queued=0;
+      if(!core.api.bh_mix_playout_frames(core.mixer,input,&queued)) return now+interval;
+      auto inventory=queued*frequency()/BHT_RATE;
+      if(inventory<=lead) return now;
+      return now+std::min(interval,std::max(uint64_t(1),inventory-lead));
+    };
+    auto budget=[&](uint64_t arrival) {
+      uint32_t free=0,remaining=0;
+      core.api.bh_mix_gap_budget(core.mixer,input,rate,arrival,&free,&remaining);
+      return std::min(free,remaining);
+    };
+    auto omit=[&](uint32_t count) {
+      if(count) {omitted_slots+=count;pending_fence=arrival_uncertain=true;}
+    };
     auto reset=[&] {
       if(api->reset(decoder)<0) {errors++;timeline.invalidate();return false;}
-      core.api.bh_mix_clear(core.mixer,input);resets++;position=0;missing.fill(0);silent.fill(false);return true;
+      // Decoder recovery is not a new PCM epoch. Keep all genuine queued
+      // samples and the published source position; fence only the new seam.
+      resets++;missing.fill(0);silent.fill(false);pending_fence=arrival_uncertain=true;return true;
     };
     auto decode=[&](const uint8_t *data,uint32_t bytes,uint64_t arrival,uint8_t valid) {
       int result;
@@ -90,7 +117,10 @@ class IsoReceiver final {
       if(result) concealed++;
       if(!active()) return false;
       if(arrival && age_ticks(arrival)>maximum_age) {expired++;timeline.invalidate();return false;}
-      write(pcm.data());frames+=samples;position+=samples;return true;
+      pcm_fence[0]=valid && pending_fence?1:0;
+      write(pcm.data(),pcm_fence.data());
+      if(valid) pending_fence=false;
+      frames+=samples;position+=samples;return true;
     };
     auto process=[&](const Frame &item) {
       if(!active() || item.sdu.generation!=epoch) return;
@@ -98,17 +128,30 @@ class IsoReceiver final {
       auto decision=timeline.observe(item.sdu.sequence,item.arrival,ticks());
       if(decision.expired) expired++;
       if(!decision.accept || (decision.reset && !reset())) return;
-      bool valid=true;
-      for(uint32_t i=0;i<decision.gap*blocks && !stop;++i)
-        if(!decode(nullptr,0,item.arrival,0)) {valid=false;break;}
-      if(!valid || stop) return;
       uint32_t frame_bytes=octets*channels;
       bool erased=item.sdu.status!=0 || item.sdu.size!=frame_bytes*blocks;
       if(!item.sdu.status && erased) errors++;
       uint8_t mask=erased?0:uint8_t(item.valid&((1u<<channels)-1u));
+      auto available=budget(item.arrival);
+      // Reserve the complete current SDU before adding any preceding PLC.
+      // Slot durations are fixed by the configured LC3 format, never inferred
+      // from arrival jitter or controller timestamp differences.
+      auto gap_budget=available>slot_samples?available-slot_samples:0;
+      uint32_t gap=decision.gap;
+      omit(decision.omitted_gap);
+      if(uint64_t(gap)*slot_samples>gap_budget) {omit(gap);gap=0;}
+      bool valid=true;
+      for(uint32_t i=0;i<gap*blocks && !stop;++i)
+        if(!decode(nullptr,0,item.arrival,0)) {valid=false;break;}
+      if(!valid || stop) return;
+      if(!mask && available<uint64_t(gap+1)*slot_samples) {omit(1);return;}
       for(uint32_t i=0;i<blocks && !stop;++i)
         if(!decode(mask?item.sdu.bytes.data()+i*frame_bytes:nullptr,mask?frame_bytes:0,item.arrival,mask)) break;
-      if(active()) core.api.bh_mix_observe(core.mixer,input,bht_scale(position,rate,BHT_RATE),item.arrival);
+      if(active()) {
+        core.api.bh_mix_observe_confident(core.mixer,input,bht_scale(position,rate,BHT_RATE),item.arrival,
+                                          arrival_uncertain || pending_fence);
+        if(mask) arrival_uncertain=false;
+      }
     };
     while(!stop) {
       auto pause=stall.exchange(0);
@@ -120,8 +163,9 @@ class IsoReceiver final {
       }
       if(split) {
         for(unsigned batch=0;batch<8 && !stop;++batch) {
-          if(!group.take(ticks(),timeline.sequenced_value(),timeline.next_sequence(),timeline.deadline(),
-                         joined.sdu,joined.valid,joined.arrival)) break;
+          auto now=ticks(),check_at=presentation_check(now);
+          if(!group.take(now,timeline.sequenced_value(),timeline.next_sequence(),timeline.deadline(),
+                         joined.sdu,joined.valid,joined.arrival,check_at)) break;
           process(joined);
         }
         partial=group.counters.partial;unsynchronized=group.counters.unsynchronized;group_resets=group.counters.resets;
@@ -129,14 +173,16 @@ class IsoReceiver final {
       }
       if(received) continue;
       auto expected=timeline.next_sequence();
-      if(active() && timeline.missing(ticks())) {
+      auto now=ticks(),check_at=presentation_check(now);
+      if(active() && timeline.missing(now,check_at)) {
         if(split) group.concealed(expected);
-        for(uint32_t i=0;i<blocks && !stop;++i) if(!decode(nullptr,0,0,0)) break;
+        if(budget(now)<slot_samples) omit(1);
+        else for(uint32_t i=0;i<blocks && !stop;++i) if(!decode(nullptr,0,0,0)) break;
         continue;
       }
-      auto due=timeline.deadline();
+      auto due=timeline.deadline(check_at);
       if(split) {
-        auto channel_due=group.deadline(timeline.sequenced_value(),timeline.next_sequence(),due);
+        auto channel_due=group.deadline(timeline.sequenced_value(),timeline.next_sequence(),timeline.deadline(),check_at);
         if(channel_due && (!due || channel_due<due)) due=channel_due;
       }
       if(due) timer->wait(due,wake);
@@ -174,6 +220,7 @@ public:
     api=std::move(functions);decoder=prepared.release();
     packets=drops=errors=frames=concealed=resets=expired=malformed=late=duplicate=0;
     partial=unsynchronized=group_resets=silent_channels=channel_resets=0;
+    omitted_slots=0;
     coded_bytes=last_packet=bitrate=group_expired=group_late=0;meter_start=meter_bytes=meter_packets=0;packets_per_second=0;failed=false;timer=std::move(prepared_timer);
     require(timeline.configure(frequency()*duration*blocks/1000000,frequency()*wait_us/1000000,
                               frequency()*(voice?90:180)/1000,std::min(8u,std::max(1u,40000u/(duration*blocks)))),"Invalid ISO playout clock");
@@ -233,6 +280,7 @@ public:
             {"frames",frames.load()},{"concealed_blocks",concealed.load()},{"resets",resets.load()},{"expired",expired.load()},
             {"partial_channels",partial.load()},{"unsynchronized",unsynchronized.load()},{"group_resets",group_resets.load()},
             {"silent_channels",silent_channels.load()},{"channel_resets",channel_resets.load()},
+            {"omitted_slots",omitted_slots.load()},
             {"group_expired",group_expired.load()},{"group_late",group_late.load()},
             {"coded_bytes",coded_bytes.load()},{"bitrate",active() && last_packet && age_ticks(last_packet.load())<frequency()/2?bitrate.load():0},
             {"packets_per_second",active() && last_packet && age_ticks(last_packet.load())<frequency()/2?packets_per_second.load():0},

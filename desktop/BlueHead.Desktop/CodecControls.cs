@@ -34,7 +34,7 @@ public partial class MainWindow
     private void SetPolicyControls(string policy)
     {
         var previous = applying; applying = true;
-        LeAudioToggle.IsChecked = policy == "prefer_le"; SelectTag(ConnectionPolicyPicker, policy);
+        LeAudioToggle.IsChecked = policy != "classic"; SelectTag(ConnectionPolicyPicker, policy);
         applying = previous;
     }
     private void SettingsEdited(object sender, RoutedEventArgs e)
@@ -114,12 +114,13 @@ public partial class MainWindow
         if (PolicyWindow != null) { PolicyWindow.Activate(); return; }
         PolicyWindow = new(settings, unavailableCodecs, (policy, allowed, preferred, parameters) =>
         {
-            settings.connection_policy = policy; settings.le_audio_enabled = policy == "prefer_le";
+            settings.connection_policy = policy; settings.le_audio_enabled = policy != "classic";
             settings.allowed_codecs = allowed; settings.codec = preferred;
             settings.codec_parameters = parameters;
             settings.ldac_enabled = allowed.Contains("ldac"); settings.lhdc5_enabled = allowed.Contains("lhdc5");
             ApplySettings(); QueueSettings();
         }) { Owner = this };
+        PolicyWindow.PairingGuideRequested = ShowLePairingGuide;
         PolicyWindow.Closed += async (_, _) => { PolicyWindow = null; await FlushSettings(); };
         PolicyWindow.Show();
         UpdateCodecNotice();
@@ -167,11 +168,12 @@ public partial class MainWindow
         if (devices.TryGetValue(key, out var card))
         {
             if (kind == "codec_state") card.CodecNote = message.Text("reason");
-            if (kind == "le_audio_discovery") card.CodecNote = message.Text("phase") == "streaming" ? "" : message.Text("reason");
+            if (kind == "le_audio_discovery" && (message.TryGetProperty("evidence", out _) || message.Text("phase") is "streaming" or "cache_pending"))
+                card.CodecNote = message.Text("phase") == "streaming" ? "" : message.Text("reason");
         }
         return true;
     }
-    private string StartupSettings() => JsonSerializer.Serialize(new { settings.name, settings.calls, settings.voice_single_device, settings.buffer_ms, settings.call_buffer_ms, settings.maximum_devices, policy = settings.le_audio_enabled ? "prefer_le" : "classic" });
+    private string StartupSettings() => JsonSerializer.Serialize(new { settings.name, settings.calls, settings.voice_single_device, settings.buffer_ms, settings.call_buffer_ms, settings.maximum_devices, policy = CodecPolicyWindow.Policy(settings) });
     private void StartCodecSession() { codecSession++; codecReconnectDevices.Clear(); codecRestartRequired = false; activeStartupSettings = StartupSettings(); }
     private void ResetCodecPending() { codecSession++; codecReconnectDevices.Clear(); codecRestartRequired = false; activeStartupSettings = null; pendingPreferenceReplies.Clear(); UpdateCodecNotice(); }
     private void UpdateCodecNotice()

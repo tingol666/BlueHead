@@ -2,6 +2,7 @@
 #ifndef BLUEHEAD_MEDIA_ENGINE_H
 #define BLUEHEAD_MEDIA_ENGINE_H
 #include <stdint.h>
+#include "audio_pcm_boundary.h"
 #ifdef _WIN32
 #define BH_MEDIA_API __declspec(dllexport)
 #else
@@ -16,10 +17,20 @@ BH_MEDIA_API BhMedia *bh_media_create(int codec, int rate, int channels, int out
 BH_MEDIA_API void bh_media_destroy(BhMedia *);
 /* Keep AAC StreamMuxConfig on resume; discard queued PCM and packet fragments. */
 BH_MEDIA_API int bh_media_restart(BhMedia *);
+/* Same-stream codec repair. Keep queued PCM/SWR/config/transport identity;
+ * retire outstanding gap evidence once and mark the next genuine PCM with
+ * BH_PCM_BOUNDARY_DECODER_REPAIR. The actual render consumer owns its seam. */
+BH_MEDIA_API int bh_media_recover_decoder(BhMedia *);
 /* Optional 2.0.1 RTP timeline gap fill; configure on the decoder owner. */
 BH_MEDIA_API int bh_media_continuity(BhMedia *, int enabled);
 BH_MEDIA_API int bh_media_feed(BhMedia *, const uint8_t *, uint32_t size);
 BH_MEDIA_API uint32_t bh_media_read(BhMedia *, float *stereo, uint32_t frames);
+/* Typed boundaries share the actual PCM ring cursor. Ordinary uncertainty1
+ * and explicit decoder repair3 are never inferred from a stats prefix. */
+BH_MEDIA_API uint32_t bh_media_read_fenced(BhMedia *, float *, uint8_t *, uint32_t);
+BH_MEDIA_API uint32_t bh_media_drain_confidence(BhMedia *);
+/* One feed only, source-frame units. Zero means no safe compensation room. */
+BH_MEDIA_API void bh_media_gap_context(BhMedia *, uint32_t free_frames, uint32_t remaining_frames);
 BH_MEDIA_API uint32_t bh_media_drain_mixer(BhMedia *, void *mixer, int index);
 BH_MEDIA_API uint32_t bh_media_drain_mixer_at(BhMedia *, void *mixer, int index, uint64_t arrival);
 BH_MEDIA_API void bh_media_discard(BhMedia *);

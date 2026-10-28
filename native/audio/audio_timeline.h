@@ -18,11 +18,6 @@ typedef struct {
   double peak;
   int valid;
 } BhAudioArrival;
-typedef struct {
-  uint32_t previous, rate;
-  uint64_t extended;
-  int valid;
-} BhPacketClock;
 static inline uint64_t bht_scale(uint64_t frames, uint32_t from, uint32_t to) {
   return frames / from * to + frames % from * to / from;
 }
@@ -40,9 +35,9 @@ static inline double bht_clock_update(BhAudioClock *c, double available, double 
   c->average = average;
   return c->ratio;
 }
-/* Observe original producer timing, independently of when a worker drains it.
- * Timestamp gaps carry their source duration, so loss is not counted again as
- * arrival jitter. Equal positions (RTP fragments) do not create new clocks. */
+/* Observe original producer timing independently of worker drain scheduling.
+ * Only known PCM intervals can measure jitter. Estimated/omitted intervals
+ * reanchor through bht_arrival_confident; they are not an exact source clock. */
 static inline double bht_arrival(BhAudioArrival *c, uint64_t position, uint64_t arrival,
                                  uint64_t frequency) {
   if (!arrival || !frequency)
@@ -61,21 +56,13 @@ static inline double bht_arrival(BhAudioArrival *c, uint64_t position, uint64_t 
   c->valid = 1;
   return c->peak;
 }
-/* Unsigned RTP wrap is extended once; reordered old timestamps are ignored.
- * A caller resets this state at a stream/SSRC/format boundary. */
-static inline uint64_t bht_packet(BhPacketClock *c, uint32_t timestamp, uint32_t rate) {
-  if (!c->valid || c->rate != rate) {
-    c->previous = timestamp;
-    c->extended = 0;
-    c->rate = rate;
-    c->valid = 1;
-  } else {
-    int32_t delta = (int32_t)(timestamp - c->previous);
-    if (delta > 0) {
-      c->extended += (uint32_t)delta;
-      c->previous = timestamp;
-    }
-  }
-  return bht_scale(c->extended, rate, BHT_RATE);
+static inline double bht_arrival_confident(BhAudioArrival *c, uint64_t position,
+                                          uint64_t arrival, uint64_t frequency,
+                                          uint32_t uncertain) {
+  if (!uncertain) return bht_arrival(c, position, arrival, frequency);
+  if (!arrival || !frequency || (c->valid && arrival < c->arrival)) return c->peak;
+  if (c->valid) c->peak *= exp(-(double)(arrival-c->arrival)/frequency/5);
+  c->position = position; c->arrival = arrival; c->valid = 1;
+  return c->peak;
 }
 #endif

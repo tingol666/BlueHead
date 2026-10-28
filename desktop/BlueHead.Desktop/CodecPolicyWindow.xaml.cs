@@ -15,6 +15,12 @@ public partial class CodecPolicyWindow : Window
         if (settings.allowed_codecs == null) { if (settings.ldac_enabled) allowed.Add("ldac"); if (settings.lhdc5_enabled) allowed.Add("lhdc5"); }
         allowed.Add("sbc"); return allowed;
     }
+    internal static string Policy(EngineSettings settings) => settings.connection_policy is "prefer_le" or "le_only" or "classic" ? settings.connection_policy : settings.le_audio_enabled ? "prefer_le" : "classic";
+    internal static string PolicyLabel(string policy) => policy == "le_only" ? "仅 LE Audio / LC3" : policy == "prefer_le" ? "优先 LE Audio / LC3" : "仅经典蓝牙";
+    private string SelectedPolicy => (PolicyPicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "classic";
+    internal Action? PairingGuideRequested { get; set; }
+    private void PairingGuideClick(object sender, RoutedEventArgs e) => PairingGuideRequested?.Invoke();
+    private void SelectPolicy(string policy) => PolicyPicker.SelectedIndex = policy == "le_only" ? 2 : policy == "prefer_le" ? 0 : 1;
     private readonly Action<string, List<string>, string, Dictionary<string, CodecParameters>> changed;
     private readonly Dictionary<string, CheckBox> checks = [];
     private readonly Dictionary<string, TextBlock> summaries = [];
@@ -33,7 +39,7 @@ public partial class CodecPolicyWindow : Window
         InitializeComponent(); this.changed = changed; this.unavailable = unavailable;
         allowed = Allowed(settings); preferred = Canonical(settings.codec); parameters = CodecParameters.CopyAll(settings.codec_parameters);
         MaxHeight = Math.Max(300, SystemParameters.WorkArea.Height - 48);
-        PolicyPicker.SelectedIndex = settings.le_audio_enabled ? 0 : 1;
+        SelectPolicy(Policy(settings));
         foreach (var (code, name) in Codecs)
         {
             var check = new CheckBox { Content = name + (code == "sbc" ? " · 兼容必需" : unavailable.ContainsKey(code) ? " · 当前不可用" : ""), Tag = code,
@@ -57,9 +63,13 @@ public partial class CodecPolicyWindow : Window
     private void Refresh()
     {
         var previous = applying; applying = true;
-        PolicyExplanation.Text = PolicyPicker.SelectedIndex == 0
-            ? "双方支持并开启 LE Audio 时使用 LC3；未建立 LE 音频时继续使用经典蓝牙。"
-            : "关闭 LE Audio，使用下方双方支持的经典蓝牙媒体与语音。";
+        PolicyExplanation.Text = SelectedPolicy switch
+        {
+            "le_only" => "只接受 LE Audio / LC3，不开放经典蓝牙媒体与语音。适合 LE 配对；更改后需停止再开始接收，并在发送设备上忽略 BlueHead 后重新配对。",
+            "prefer_le" => "同时提供经典蓝牙和 LE Audio。设备实际传来 LC3 时优先播放；否则保留经典音频。手机没有 LE Audio 选项时，先按下方指南配对。",
+            _ => "关闭 LE Audio 与广播，使用下方双方支持的经典蓝牙媒体和语音。"
+        };
+        ClassicCodecPanel.IsEnabled = SelectedPolicy != "le_only";
         foreach (var (code, name) in Codecs)
         {
             checks[code].Content = name + (code == "sbc" ? " · 兼容必需" : unavailable.ContainsKey(code) ? " · 当前不可用" : "");
@@ -90,12 +100,12 @@ public partial class CodecPolicyWindow : Window
     {
         var next = Allowed(settings);
         var sameParameters = parameters.Count == settings.codec_parameters.Count && parameters.All(item => settings.codec_parameters.TryGetValue(item.Key, out var value) && item.Value.rate == value.rate && item.Value.depth == value.depth && item.Value.bitrate == value.bitrate && item.Value.quality == value.quality);
-        if (allowed.SetEquals(next) && preferred == Canonical(settings.codec) && (PolicyPicker.SelectedIndex == 0) == settings.le_audio_enabled && sameParameters) return;
+        if (allowed.SetEquals(next) && preferred == Canonical(settings.codec) && SelectedPolicy == Policy(settings) && sameParameters) return;
         applying = true;
         allowed.Clear(); allowed.UnionWith(next); preferred = Canonical(settings.codec);
         parameters.Clear(); foreach (var item in CodecParameters.CopyAll(settings.codec_parameters)) parameters[item.Key] = item.Value;
         foreach (var item in checks) item.Value.IsChecked = allowed.Contains(item.Key);
-        PolicyPicker.SelectedIndex = settings.le_audio_enabled ? 0 : 1;
+        SelectPolicy(Policy(settings));
         Refresh(); applying = false;
     }
     internal void OpenParameters(string code)
@@ -107,7 +117,7 @@ public partial class CodecPolicyWindow : Window
         editor.Closed += (_, _) => { if (ParametersWindow == editor) ParametersWindow = null; };
         editor.Show();
     }
-    private void Commit() { if (!applying) changed(PolicyPicker.SelectedIndex == 0 ? "prefer_le" : "classic", allowed.ToList(), preferred, CodecParameters.CopyAll(parameters)); }
+    private void Commit() { if (!applying) changed(SelectedPolicy, allowed.ToList(), preferred, CodecParameters.CopyAll(parameters)); }
     private void PolicyChanged(object sender, SelectionChangedEventArgs e) { if (applying) return; Refresh(); Commit(); }
     private void PreferenceChanged(object sender, SelectionChangedEventArgs e) { if (applying) return; preferred = (PreferencePicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "auto"; Commit(); }
     private void CodecChanged(object sender, RoutedEventArgs e)

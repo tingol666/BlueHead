@@ -2,12 +2,30 @@
 
 2.1.5 在原有 A2DP / HFP 链路上增加 LE Audio 单播接收、麦克风发送、广播接收，以及 LHDC 5.0 媒体解码。它们复用同一个原生后台、声音设备、音量和混音系统，不另外打开 USB 或搬运 Python PCM。
 
+## 连接方式与首次配对
+
+首页“媒体编码”右侧齿轮 → **连接与编码 → 连接偏好**，提供三个选项。设置中的 LE Audio 选项与此同步；修改自动保存，下次停止并重新开始接收时生效。
+
+| 选项 | 实际行为 | 适用情况 |
+|---|---|---|
+| 优先 LE Audio / LC3 | 同时提供经典蓝牙与 LE 服务；收到实际 LC3 音频后优先播放，未建立 LE 音频时保留经典媒体 | 已正确配对的双模设备、需要经典兼容 |
+| 仅 LE Audio / LC3 | 关闭经典音频发现与连接入口，只提供 LE Audio；不自动回退经典蓝牙 | 首次 LE 配对、排查手机一直选择经典蓝牙 |
+| 仅经典蓝牙 | 关闭 LE Audio 与广播，使用 A2DP / HFP | 不支持 LE Audio 的发送设备、日常经典音频 |
+
+“优先”是电脑提供的偏好与本地实际流选择，不是对手机系统的强制命令。只隐藏经典搜索、短暂拒绝经典连接，再按定时器全局切回双模，会让一台设备的超时影响其它设备，且不能证明 LE 配对已成功。BlueHead 不通过这种方式打断正常音频。双模每条连接分别记录配对、加密、服务读取、LC3 配置、音频通道及真实音频到达；等待超时只解释缺少哪一步，不假装已使用 LC3。
+
+若手机没有 LE Audio 选项，先选 **仅 LE Audio / LC3** 并停止、重新开始接收。在手机／平板“设置 → 蓝牙”中取消配对／忽略旧 BlueHead 条目，返回可用设备列表，重新找到同名设备并配对；打开详情中的“LE Audio／低功耗音频”（如提供），再播放音频。LC3 属于 LE Audio，不在手机的经典 A2DP 编码列表内。软件内 **LE 配对指南** 提供完整步骤。
+
+Android AOSP 提供 **绕过蓝牙 LE 音频许可名单** 开发者选项，系统属性为 `persist.bluetooth.leaudio.bypass_allow_list`。可在设备开发者选项中搜索该名称，若可用则开启，重新打开手机蓝牙并重新配对。它与“停用 LE 音频硬件分流”不同，不能赋予手机或控制器缺少的能力。厂商系统可能隐藏或另行限制它；BlueHead 无法从 Windows 读取该开关，也不会声称已经绕过了手机策略。
+
+AOSP 部分路径根据 DIS 中的型号字符串检查许可名单，单改蓝牙名称不等于改变型号。BlueHead 提供自己的标准设备信息、型号及软件版本；不以第三方厂牌、Fast Pair ID 或伪造的第二只耳机代替真实互通。仅 LE 模式也真实关闭了经典入口，广播中的能力与服务一致。改变发现方式后，手机的旧双模分类与服务缓存可能仍保留，因此需要上述重新配对步骤。
+
 ## 使用步骤
 
 ### LE Audio 媒体与电脑麦克风
 
 1. 首页选择 **BlueHead 专用（进阶）**，按“蓝牙驱动设置”的提示准备所选适配器。
-2. 点击首页媒体编码右侧的齿轮，在“连接与编码”选择 **优先 LE Audio / LC3**；或在 **设置 → 高级音频设置** 的 LE Audio 开关旁选择。两处同步、自动保存。若已在接收，先回音频中心点 **停止接收**，再点 **开始接收**，然后重新连接发送设备。
+2. 点击首页媒体编码右侧的齿轮，在“连接与编码”选择 **优先 LE Audio / LC3** 或 **仅 LE Audio / LC3**；或在 **设置 → 高级音频设置** 的 LE Audio 开关旁选择。两处同步、自动保存。若已在接收，先回音频中心点 **停止接收**，再点 **开始接收**，然后重新连接发送设备。
 3. 开关下方会分别显示这个适配器的媒体接收、麦克风发送、广播接收能力。只有实际检测支持的方向才开放服务；蓝牙 5.3、5.4 或更高的标签本身不能证明支持。
 4. 在发送设备的蓝牙设置中连接电脑耳机。若系统提供“LE Audio／低功耗音频”选项，开启它；不同设备是否开放以及选项名称由其系统决定。
 5. 播放媒体或在支持蓝牙麦克风的应用中选择蓝牙音频。设备卡片显示 **LE Audio / LC3**、实际采样率和实时码率。普通 A2DP 的媒体编码选项不会强行改变 LC3。
@@ -42,9 +60,18 @@ LHDC 的发送码率与质量档位由发送设备控制，电脑端不提供无
 | 标准控制 | VCS 共享播放音量及静音、MICS 麦克风静音；加密、当前连接身份及有效控制计数检查 |
 | LHDC 5.0 | A2DP 11 字节 vendor CIE、RTP 及 F/S/L 分片、独立原生解码进程、规范化浮点 PCM |
 
-这是上述接收端与麦克风端点的范围，不包含广播发送、所有可选 GAF 服务或助听器功能。没有声明 TMAS/TMAP、Auracast 产品认证或其他 Bluetooth 认证。LC3plus/HR、LHDC 无损／AR／JAS／META 扩展未公布；不让对端协商软件不能处理的功能。标准资料见文末。
+这是上述接收端与麦克风端点的范围，不包含广播发送、所有可选 GAF 服务或助听器功能。TMAS/TMAP 角色只按其完整依赖与适配器实际能力公布；不声明 Auracast 产品认证或其他 Bluetooth 认证。LC3plus/HR、LHDC 无损／AR／JAS／META 扩展未公布；不让对端协商软件不能处理的功能。标准资料见文末。
 
 VCS 采用标准的共享播放状态，不是每台设备各存一个标准音量。它作为独立因子作用于 LE 音频和广播，保留本地每设备 0%–200% 增益。MICS 对端静音只改变发送因子；电脑端暂停发送优先，对端无法取消它。经典 AVRCP 标准音量继续沿用原有路径。
+
+## 发现、身份与缓存
+
+- 控制器初始化期间关闭经典发现与可连接入口。只有原生能力检测、完整 GATT 数据库、设备信息和连接处理均已就绪，才开放发现；LE 广播开始前，应用连接所有者已经登记。
+- 双模使用同一公共身份，支持安全配对中的双向 CTKD 请求；LE 独立模式不发布经典音频能力。每个物理适配器使用随机生成并持久保存的本地 IRK，升级保留已有配对。
+- 标准扩展广播保留完整 BAP/CAP 服务数据；可用服务同时出现在 UUID 列表中。控制器明确报告支持至少两个广播集合时，增加同地址、31 字节范围内的兼容发现广播与名称扫描响应。额外广播不替代必需的扩展广播；不占第二个 USB/HCI 所有者。
+- 新设备使用普通音频通知。只有实际已配对设备的链路丢失才短暂使用 Targeted Announcement，随后恢复普通发现；任意历史配对记录不会让所有新设备一直处于重连通知方式。Targeted Announcement 与带指定地址的定向广播是不同概念。
+- 经典与 LE 按配对身份合并设备卡片，处理随机地址解析与配对后身份变化。Service Changed 只恢复已配对、已订阅的客户端，确认后才更新数据库摘要；无确认不假装手机已刷新缓存。
+- 一条立体声 CIS 与两条单声道 CIS 是音频拓扑；双耳独立地址与 CSIP 是设备集合拓扑。单台电脑公布左右声道能力，接收双方支持的音频拓扑，不虚构第二个物理设备或集合身份。
 
 ## 所有权、时间线与音质
 
@@ -90,3 +117,11 @@ HCI 发送与应答匹配由一个控制所有者负责；真正失去应答才�
 - 标准音量／静音：[VCS](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/77401-VCS-html5/out/en/index-en.html)、[MICS](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/22708-MICS-html5/out/en/index-en.html)。
 - 信令：[Google Bumble](https://github.com/google/bumble)，固定修订见锁文件；LC3：[Google liblc3](https://github.com/google/liblc3)，固定来源见 `vendor/liblc3`。
 - LHDC：[独立解码器](https://github.com/WillyBilly06/LHDC-V5-Decoder/tree/cf857ce1a1429965e161e54adbc3f293fd9ce273)，原始源码摘要、许可声明和构建适配记录见 `vendor/lhdc5-decoder`；原生适配器见 `native/codecs/lhdc5_stream.c`、`lhdc5_media.c`。
+
+## 发现与手机互通参考
+
+- [Bluetooth SIG：耳机发现、配对与连接指南](https://www.bluetooth.com/wp-content/uploads/2025/04/DiscoveryPairingAndConnectionForEarbuds_INFO_v1.pdf)：单设备与独立双耳、同地址广播、CTKD 的不同责任。
+- [Android LE Audio 设备建议](https://developer.android.com/develop/connectivity/bluetooth/ble-audio/overview)：双向 CTKD、音频上下文、对端媒体／通话控制服务。
+- [AOSP PhonePolicy](https://android.googlesource.com/platform/packages/modules/Bluetooth/+/b760df280c1b0313bf1c1360f4f7538a1568d2f4/android/app/src/com/android/bluetooth/btservice/PhonePolicy.java)、[许可名单开关](https://android.googlesource.com/platform/packages/apps/Settings/+/7c598253ff60f06f8e6fe046f18fd88e9daa72d3/src/com/android/settings/development/BluetoothLeAudioAllowListPreferenceController.java)、[DIS 型号读取](https://android.googlesource.com/platform/packages/modules/Bluetooth/+/e1acd8fbb8fb76907cb26130105e6942081e7946/system/btif/src/btif_dm.cc)：平台策略证据，不代表每个厂商系统实现完全相同。
+- [Zephyr BAP Unicast Server](https://github.com/zephyrproject-rtos/zephyr/blob/main/samples/bluetooth/audio/bap_unicast_server/src/main.c)、[TMAP Peripheral](https://github.com/zephyrproject-rtos/zephyr/blob/main/samples/bluetooth/audio/tmap_peripheral/src/main.c)：公开服务、UUID、广播与连接流程参考。
+- [Sony 官方 LE Audio 配对步骤](https://helpguide.sony.net/mdr/2984/v1/en/contents/TP1001872731.html)：切换连接方式后重新配对的用户流程参考。

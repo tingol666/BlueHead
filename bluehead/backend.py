@@ -17,7 +17,6 @@ from bumble import avdtp
 from bumble.a2dp import make_audio_sink_service_sdp_records
 from bumble.device import DeviceConfiguration
 from .voice_protection import GuardedDevice as Device, VoiceProtection
-from bumble.pairing import PairingConfig
 from .usb_transport import open_transport, load_libusb
 
 from .audio import Decoder, Mixer, AudioOutput
@@ -65,8 +64,23 @@ class Settings:
     def __post_init__(self):
         if self.connection_policy == "":
             self.connection_policy = 'prefer_le' if self.le_audio_enabled else 'classic'
-        elif type(self.le_audio_enabled) is bool and self.connection_policy in ('prefer_le', 'classic'):
-            self.le_audio_enabled = self.connection_policy == 'prefer_le'
+        elif type(self.le_audio_enabled) is bool and self.connection_policy in ('prefer_le', 'le_only', 'classic'):
+            self.le_audio_enabled = self.connection_policy != 'classic'
+
+
+def receiver_configuration(settings, directory):
+    config = DeviceConfiguration()
+    config.name = settings.name
+    config.class_of_device = 0x240404
+    config.classic_enabled = settings.connection_policy != 'le_only'
+    config.le_enabled = settings.le_audio_enabled
+    # HCI Write LE Host Support's old Simultaneous_LE_Host octet is
+    # unused/reserved since Core 4.1, independently of advertising flags.
+    config.le_simultaneous_enabled = False
+    # Do not expose a partial Classic identity while power_on() is running.
+    config.discoverable = config.connectable = False
+    config.keystore = 'JsonKeyStore:' + str(directory / 'pairing.json')
+    return config
 
 
 class MediaSession:
@@ -309,6 +323,11 @@ class Receiver:
         self.device = device
         self.voice_protection = VoiceProtection(device, self.emit, self.settings.voice_single_device, include_le=self.settings.le_audio_enabled)
         device.voice_protection = self.voice_protection
+        device.on("connection", self.on_connection)
+        if self.settings.connection_policy == 'le_only':
+            # A real LE-only audio personality, not a dual-mode advertisement
+            # with a misleading BR/EDR-not-supported flag.
+            return
         from .discovery import inquiry_response, add_server_record
         device.inquiry_response = inquiry_response(self.settings.name, self.settings.calls and self.classic_calls_available)
         device.sdp_service_records = {
@@ -318,7 +337,6 @@ class Receiver:
         self.avrcp = AvrcpManager(self.emit, self.set_standard_volume,
                                   lambda key: self.standard_volumes.get(key, 1.0))
         self.avrcp.attach(device)
-        device.on("connection", self.on_connection)
         listener = avdtp.Listener.for_device(device)
         listener.on("connection", self.on_protocol)
         self.listener = listener
@@ -463,8 +481,10 @@ class Receiver:
             first_flow = flowing and not getattr(lowenergy, 'flow_reported', False)
             if first_flow:
                 lowenergy.flow_reported = True
-                self.emit('le_audio_discovery', key=key, phase='streaming',
-                          reason='正在接收并解码 LE Audio / LC3 音频。')
+                self.le_audio.progress.streaming(key)
+            elif not flowing and getattr(lowenergy, 'flow_reported', False):
+                lowenergy.flow_reported = False
+                self.le_audio.progress.idle(key)
             if classic is None or classic.closed:
                 if first_flow and current is lowenergy:
                     self.emit('codec_state', key=key, phase='streaming',
@@ -672,7 +692,8 @@ class Receiver:
         sessions, calls = self.media_sessions(), self.calls
         return [{"key": key, "media": sessions[key].snapshot() if key in sessions else {},
                  "call": (self.le_audio.call_snapshot(key) if self.le_audio else {}) or (calls.snapshot(key) if calls else {}),
-                 "volumes": self.settings.device_volumes.get(key, {"down": 1.0, "up": 1.0})}
+                 "volumes": self.settings.device_volumes.get(key, {"down": 1.0, "up": 1.0}),
+                 "le_discovery": self.le_audio.progress.snapshot(key) if self.le_audio else {}}
                 for key in self.connection_keys()]
 
     async def telemetry(self, devices_complete=True):
@@ -708,6 +729,9 @@ class Receiver:
             if self.le_audio:
                 self.le_audio.connected(connection)
             return
+        if self.settings.connection_policy == 'le_only':
+            self.spawn_control(connection.disconnect())
+            return
         key = str(connection.peer_address)
         current = self.connections.get(key)
         if current is connection:
@@ -720,6 +744,8 @@ class Receiver:
             return
         self.connections[key] = connection
         self.emit("device", key=key, state="已连接，等待音频")
+        if self.le_audio:
+            self.le_audio.progress.connected(connection, le=False)
         async def read_name():
             try:
                 name = await asyncio.wait_for(self.device.request_remote_name(connection.peer_address), 3)
@@ -735,7 +761,9 @@ class Receiver:
     def disconnected(self, key, connection=None):
         if connection is not None and self.connections.get(key) is not connection:
             return
-        self.connections.pop(key, None)
+        removed = self.connections.pop(key, None)
+        if self.le_audio and removed is not None:
+            self.le_audio.progress.disconnected(removed)
         peer = self.codec_peers.pop(key, None)
         if peer:
             peer.close()
@@ -884,8 +912,9 @@ class Receiver:
 
     async def advertise(self):
         if self.device and not self.stop_event.is_set():
-            await self.device.set_discoverable(True)
-            await self.device.set_connectable(True)
+            if self.settings.connection_policy != 'le_only':
+                await self.device.set_discoverable(True)
+                await self.device.set_connectable(True)
             if self.le_audio:
                 await self.le_audio.advertise()
 
@@ -900,7 +929,8 @@ class Receiver:
                 from .controller_health import ControllerInitializationTimeout
                 raise ControllerInitializationTimeout('蓝牙适配器启动超时，未收到完整初始化响应；请打开“蓝牙驱动设置”，点击右下方的“修复专用蓝牙”。') from None
             from .discovery import update_inquiry_power
-            await update_inquiry_power(device, config.name, self.settings.calls and self.classic_calls_available)
+            if config.classic_enabled:
+                await update_inquiry_power(device, config.name, self.settings.calls and self.classic_calls_available)
             # Dual-mode peers must not discover a Classic-only identity before
             # LE services and the validated Class-of-Device are ready.
             if not self.settings.le_audio_enabled:
@@ -966,7 +996,7 @@ class Receiver:
         if not self.settings.transport.startswith(("usb:", "usb-id:")):
             raise ValueError("请选择一个 USB 蓝牙适配器；程序不会自动更改驱动")
         transport_spec = self.settings.transport
-        if self.settings.calls and "+sco=" not in transport_spec:
+        if self.settings.calls and self.settings.connection_policy != 'le_only' and "+sco=" not in transport_spec:
             # Bumble leaves the USB voice interface disabled unless requested.
             # Auto-selection follows CVSD/mSBC setup and releases its bandwidth
             # again when the call ends.
@@ -993,17 +1023,13 @@ class Receiver:
                 session.push_async_exit(self.retire)
                 if not await self.prepare_native_transport(transport):
                     return
-                config = DeviceConfiguration()
-                config.name = self.settings.name
-                config.class_of_device = 0x240404  # audio/video wearable headset
-                config.classic_enabled = True
-                config.le_enabled = self.settings.le_audio_enabled
-                config.keystore = "JsonKeyStore:" + str(self.directory / "pairing.json")
+                config = receiver_configuration(self.settings, self.directory)
                 device = Device.from_config_with_hci(config, transport.source, transport.sink)
                 # Numeric comparison is not meaningful on a headset; pair on the phone.
-                device.pairing_config_factory = lambda _: PairingConfig(
-                    mitm=False, sc=True, bonding=True,
-                    identity_address_type=PairingConfig.AddressType.PUBLIC)
+                from .le_audio.security import AudioPairingSession, pairing_config
+                device.smp_session_proxy = AudioPairingSession
+                device.pairing_config_factory = lambda _: pairing_config(
+                    dual_mode=config.classic_enabled and config.le_enabled)
                 self.attach(device)
                 output_factory = AudioOutput
                 if getattr(self.mixer, "remote", False):
@@ -1014,9 +1040,13 @@ class Receiver:
                 if not await self.initialize_transport(device, config, transport):
                     return
                 if self.settings.le_audio_enabled:
+                    from .le_audio.security import prepare_identity
+                    await prepare_identity(device, self.directory)
                     from .le_audio.application import LeAudioApplication
                     self.le_audio = await LeAudioApplication.prepare(self, device, transport)
-                    if self.le_audio:
+                    if self.settings.connection_policy == 'le_only' and (not self.le_audio or not self.le_audio.support.receive):
+                        raise OSError('所选适配器当前不能接收 LE Audio。请打开首页媒体编码右侧的设置，选择“仅经典蓝牙”，再停止并重新开始接收；或更换支持 LE Audio 的适配器。')
+                    if self.le_audio and config.classic_enabled:
                         from .le_audio.discovery import class_of_device
                         from bumble import hci
                         await device.send_sync_command(hci.HCI_Write_Class_Of_Device_Command(

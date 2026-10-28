@@ -32,22 +32,27 @@ public:
   BhMedia *decoder = nullptr;
   std::unique_ptr<IsolatedMediaWorker> isolated;
   std::unique_ptr<float[]> isolated_pcm;
+  std::unique_ptr<uint8_t[]> isolated_fence;
   double isolated_retry = 0;
-  std::array<uint64_t, 12> isolated_seen{};
+  std::array<uint64_t, 24> isolated_seen{};
   bool isolated_pending_reset = false;
   Spsc<Packet, 16> queue;
   Handle wake{CreateEventW(nullptr, FALSE, FALSE, nullptr)};
   std::thread worker;
   std::atomic<bool> stop{false}, paused{true}, restart{false};
   std::atomic<uint32_t> stall{0}, commit_stall{0}, isolated_fault{0};
-  BhPacketClock packet_clock{};
   std::atomic<uint32_t> handle{0xffff}, cid{0xffff}, epoch{1}, producers{0};
   uint32_t lease = 0;
   std::atomic<uint64_t> packets{0}, drops{0}, decoded{0}, errors{0}, coded{0}, lost{0},
       recoveries{0}, last_packet{0}, last_decoded{0}, concealed{0}, timeline_resets{0};
   std::atomic<uint64_t> expired_packets{0}, decoder_restarts{0}, malformed_packets{0};
+  std::atomic<uint64_t> producer_position_frames{0};
+  std::atomic<uint64_t> gap_exact_source{0},gap_estimated_source{0},gap_omitted_unknown{0},
+      gap_omitted_exact_source{0};
   DecoderRecovery failure;
   bool recovery_restart = false;
+  bool decoder_repair = false;
+  double decoder_repair_after = 0;
   double restart_after = 0;
   uint32_t codec = 0, rate = 0, channels = 0, depth = 16;
   std::string key;
@@ -64,6 +69,8 @@ public:
     meter_start = meter_bytes = meter_packets = 0;
     bitrate = 0;
     packets_per_second = 0;
+    producer_position_frames = 0;
+    gap_exact_source=gap_estimated_source=gap_omitted_unknown=gap_omitted_exact_source=0;
   }
   void retire() {
     handle = cid = 0xffff;
@@ -79,6 +86,7 @@ public:
     }
     isolated.reset();
     isolated_pcm.reset();
+    isolated_fence.reset();
     Packet discard;
     while (queue.pop(discard)) {
     };
@@ -92,9 +100,11 @@ public:
         nullptr, core.api.bh_media_destroy);
     std::unique_ptr<IsolatedMediaWorker> prepared_isolated;
     std::unique_ptr<float[]> prepared_pcm;
+    std::unique_ptr<uint8_t[]> prepared_fence;
     if (code == 5 || code == 6) {
       prepared_isolated = std::make_unique<IsolatedMediaWorker>(core.assets, hz, ch, code, bits);
       prepared_pcm = std::make_unique<float[]>(48064 * 2);
+      prepared_fence = std::make_unique<uint8_t[]>(48064);
     } else {
       prepared.reset(core.api.bh_media_create(code, hz, ch, hz));
       require(prepared != nullptr, "Native media codec unavailable");
@@ -110,9 +120,10 @@ public:
     }
     retire();
     codec = code;
-    packet_clock = {};
     failure = {};
     recovery_restart = false;
+    decoder_repair = false;
+    decoder_repair_after = 0;
     restart_after = 0;
     expired_packets = decoder_restarts = malformed_packets = 0;
     rate = hz;
@@ -124,6 +135,7 @@ public:
     isolated_seen.fill(0);
     isolated_pending_reset = false;
     isolated_pcm = std::move(prepared_pcm);
+    isolated_fence = std::move(prepared_fence);
     guard_reset = true;
     protected_audio = false;
     core.api.bh_mix_clear(core.mixer, input);
@@ -182,7 +194,9 @@ public:
         if (restart && seconds() < restart_after)
           continue;
         if (restart.exchange(false)) {
-          packet_clock = {};
+          decoder_repair = false; // Explicit/expired source retirement wins.
+          decoder_repair_after = 0;
+          producer_position_frames = 0;
           meter_start = meter_bytes = meter_packets = 0;
           bitrate = 0;
           packets_per_second = 0;
@@ -199,6 +213,16 @@ public:
             decoder_restarts++;
             recovery_restart = false;
           }
+        } else if (decoder_repair && decoder) {
+          if (seconds() < decoder_repair_after) continue;
+          if (core.api.bh_media_recover_decoder(decoder) < 0) {
+            errors++;
+            decoder_repair_after = seconds() + 1;
+            continue;
+          }
+          decoder_repair = false;
+          decoder_repair_after = 0;
+          decoder_restarts++;
         }
         if (codec == 5 || codec == 6) {
           try {
@@ -209,8 +233,11 @@ public:
               isolated_seen.fill(0);
             }
             if(auto fault=isolated_fault.exchange(0)) isolated->inject_fault(fault);
-            uint64_t stats[12]{};
-            uint32_t frames = isolated->feed(p.data.data(), p.size, isolated_pcm.get(), stats);
+            uint32_t free_frames=0, remaining_frames=0, uncertain=0;
+            core.api.bh_mix_gap_budget(core.mixer,input,rate,p.arrival,&free_frames,&remaining_frames);
+            uint64_t stats[24]{};
+            uint32_t frames = isolated->feed(p.data.data(), p.size, isolated_pcm.get(),
+                                             isolated_fence.get(),stats,free_frames,remaining_frames,uncertain);
             auto delta = [&](size_t field) {
               return stats[field] >= isolated_seen[field] ? stats[field] - isolated_seen[field]
                                                       : stats[field];
@@ -223,6 +250,8 @@ public:
             malformed_packets += delta(9);
             concealed += delta(10);
             timeline_resets += delta(11);
+            gap_exact_source+=delta(20); gap_estimated_source+=delta(21);
+            gap_omitted_unknown+=delta(22); gap_omitted_exact_source+=delta(23);
             isolated_pending_reset = isolated_pending_reset || delta(11) != 0;
             std::copy(std::begin(stats), std::end(stats), isolated_seen.begin());
             core.pause(commit_stall);
@@ -230,18 +259,18 @@ public:
             if (!paused && p.epoch == epoch && !past_deadline(p)) {
               update_guard(p.arrival, genuine, newly_lost, failed);
               if (isolated_pending_reset) {
-                packet_clock = {};
                 core.api.bh_mix_clear(core.mixer, input);
                 isolated_pending_reset = false;
               }
               if (frames) {
-                if (p.size >= 12 && (p.data[0] >> 6) == 2) {
-                  uint32_t stamp = (uint32_t(p.data[4]) << 24) | (uint32_t(p.data[5]) << 16) |
-                                   (uint32_t(p.data[6]) << 8) | p.data[7];
-                  core.api.bh_mix_observe(core.mixer, input, bht_packet(&packet_clock, stamp, rate),
-                                          p.arrival);
-                }
-                core.api.bh_mix_write(core.mixer, input, isolated_pcm.get(), frames);
+                // The decoded END position is trustworthy only across known
+                // intervals. Estimates/omissions carry their explicit fence
+                // and reanchor arrival confidence; they never train jitter as
+                // if their synthetic duration were an exact sample clock.
+                auto position = bht_scale(stats[0] + stats[10], rate, BHT_RATE);
+                producer_position_frames = position;
+                core.api.bh_mix_observe_confident(core.mixer,input,position,p.arrival,uncertain);
+                core.api.bh_mix_write_fenced(core.mixer,input,isolated_pcm.get(),isolated_fence.get(),frames);
                 decoded += genuine;
                 if (genuine)
                   last_decoded = ticks();
@@ -259,6 +288,9 @@ public:
              before_errors = core.api.bh_media_value(decoder, 3),
              before_lost = core.api.bh_media_value(decoder, 5),
              before_malformed = core.api.bh_media_value(decoder, 9);
+        uint32_t free_frames=0, remaining_frames=0;
+        core.api.bh_mix_gap_budget(core.mixer,input,rate,p.arrival,&free_frames,&remaining_frames);
+        core.api.bh_media_gap_context(decoder,free_frames,remaining_frames);
         int result = core.api.bh_media_feed(decoder, p.data.data(), p.size);
         core.pause(commit_stall);
         auto real_frames = core.api.bh_media_value(decoder, 0) - before_frames;
@@ -269,8 +301,7 @@ public:
         auto malformed = core.api.bh_media_value(decoder, 9) - before_malformed;
         malformed_packets += malformed;
         if (failure.observe(seconds(), failed != 0, malformed != 0, real_frames)) {
-          recovery_restart = true;
-          restart = true;
+          decoder_repair = true;
         }
         std::lock_guard<std::mutex> commit(commit_mutex);
         if (!paused && p.epoch == epoch && !past_deadline(p)) {
@@ -288,6 +319,10 @@ public:
         concealed = core.api.bh_media_value(decoder, 10);
         timeline_resets = core.api.bh_media_value(decoder, 11);
         recoveries = core.api.bh_media_value(decoder, 4);
+        gap_exact_source=core.api.bh_media_value(decoder,20);
+        gap_estimated_source=core.api.bh_media_value(decoder,21);
+        gap_omitted_unknown=core.api.bh_media_value(decoder,22);
+        gap_omitted_exact_source=core.api.bh_media_value(decoder,23);
       }
     }
   }
@@ -326,6 +361,12 @@ public:
             {"expired_packets", expired_packets.load()},
             {"decoder_restarts", decoder_restarts.load()},
             {"malformed_packets", malformed_packets.load()},
+            {"producer_position_frames", producer_position_frames.load()},
+            {"gap_source_rate",rate},
+            {"gap_exact_source_frames",gap_exact_source.load()},
+            {"gap_estimated_source_frames",gap_estimated_source.load()},
+            {"gap_omitted_unknown_units",gap_omitted_unknown.load()},
+            {"gap_omitted_exact_source_frames",gap_omitted_exact_source.load()},
             {"recoveries", recoveries.load()},
             {"protected", protected_audio.load()},
             {"playing", !paused && recent && decoded_age < frequency() * 3 / 2},

@@ -24,6 +24,9 @@ class AudioGraph final : public HciTarget {
 public:
   Api api; // First member: DLLs outlive every resource, including constructor failure.
 private:
+#ifdef BLUEHEAD_TX_PROBE
+  friend struct VoiceTxProbe;
+#endif
   LinkIdentity link_identities;
   NativeResource mixer_owner, uplink_owner;
   bool offline = false, enhance_audio = true;
@@ -36,7 +39,7 @@ private:
   json replay_result = json::object();
   std::unique_ptr<HciDispatch> test_dispatch;
   std::unique_ptr<HciLinks> test_link_lifetime;
-  std::atomic<uint32_t> voice_stall{0}, voice_commit_stall{0};
+  std::atomic<uint32_t> voice_stall{0}, voice_commit_stall{0}, voice_tx_encode_stall{0};
   std::atomic<uint64_t> injected_stalls{0};
   void test_pause(std::atomic<uint32_t> &request) {
     auto ms = request.exchange(0);
@@ -49,6 +52,7 @@ private:
   }
   struct Wire {
     uint32_t size = 0, epoch = 0;
+    uint64_t encoded_at = 0;
     std::array<uint8_t, 120> bytes{};
   };
   std::unique_ptr<MediaServices> media_services;
@@ -75,6 +79,10 @@ private:
   std::atomic<uint64_t> voice_rx_packets{0}, voice_tx_packets{0}, voice_plc{0},
       voice_decode_errors{0}, voice_rx_bytes{0}, voice_tx_bytes{0}, voice_frames{0};
   std::atomic<uint64_t> voice_expired_packets{0}, voice_rx_resets{0};
+  std::atomic<uint64_t> voice_clock_reanchors{0};
+  std::atomic<uint64_t> voice_tx_expired_frames{0}, voice_tx_expired_bytes{0},
+      voice_tx_retired_frames{0}, voice_tx_retired_bytes{0}, voice_tx_last_encoded_at{0},
+      voice_tx_max_expired_age{0};
   std::atomic<float> microphone_gain{1}, system_gain{1}, device_gain{1};
   std::atomic<float> playback_gain{1};
   std::array<uint64_t, 3> master_revisions{};
@@ -96,10 +104,14 @@ private:
     SmallPacket p;
     Wire wire;
     std::array<float, 11520> pcm{};
+    std::array<uint8_t, 11520> pcm_fence{};
     Timer timer;
     uint32_t consecutive_missing = 0;
     uint64_t expected = 0;
     uint64_t source_position = 0;
+    uint64_t last_underruns = 0;
+    uint64_t last_h2_complete_receipt = 0;
+    bool h2_unknown = false;
     uint32_t pcm_rate = api.bh_voice_pcm_rate(voice);
     uint32_t frame_samples = pcm_rate * 75 / 10000;
     bool rx_recovery = false;
@@ -132,8 +144,32 @@ private:
           voice_rx_resets++;
           consecutive_missing = 0;
           source_position = 0;
+          last_underruns = 0;
+          last_h2_complete_receipt = 0;
+          h2_unknown = false;
           if (voice_input >= 0)
             api.bh_mix_clear(mixer, voice_input);
+        }
+        /* CVSD's genuine-frame fence protects samples without declaring every
+         * ordinary byte interval uncertain. Actual callback shortage or an
+         * original-receipt hole reanchors its otherwise useful arrival clock. */
+        uint64_t underruns = voice_input >= 0 ? api.bh_mix_value(mixer, voice_input, 3) : 0;
+        bool receipt_hole = voice_codec == BH_VOICE_CVSD && expected &&
+                            p.arrival > expected + frame_ticks;
+        /* Anchor complete admitted H2 output, not individual USB fragments.
+         * Allow a full modulo-four cycle plus every frame that the current
+         * <=255-byte batch and an old partial could contain, with one spare
+         * frame. Exceeding this bound only lowers confidence; it never counts
+         * missing audio. Keeping the decoder/framing avoids a new DSP seam. */
+        uint64_t h2_window = frame_ticks * (4u + (p.size + 59u) / 60u + 1u);
+        if (voice_codec != BH_VOICE_CVSD && last_h2_complete_receipt && !h2_unknown &&
+            p.arrival > last_h2_complete_receipt &&
+            p.arrival - last_h2_complete_receipt > h2_window) {
+          if (api.bh_voice_reanchor_rx_clock(voice) < 0) {
+            voice_decode_errors++; rx_recovery = true; expected = 0; continue;
+          }
+          h2_unknown = true;
+          voice_clock_reanchors++;
         }
         int frames = api.bh_voice_push_rx(voice, p.data.data(), p.size, p.status);
         if (frames < 0) {
@@ -144,12 +180,18 @@ private:
           continue;
         }
         if (frames > 0) {
+          if (voice_codec != BH_VOICE_CVSD && api.bh_voice_rx_clock_known(voice)) {
+            last_h2_complete_receipt = p.arrival;
+            h2_unknown = false;
+          }
           if (!expected || p.arrival > expected + frame_ticks * 16)
             expected = p.arrival;
           expected = std::max(expected + frame_ticks * frames, p.arrival + frame_ticks);
           consecutive_missing = 0;
         }
-        uint32_t n = api.bh_voice_read_f32(voice, pcm.data(), pcm.size());
+        bool uncertain = api.bh_voice_drain_confidence(voice) || receipt_hole ||
+                         (voice_codec == BH_VOICE_CVSD && underruns != last_underruns);
+        uint32_t n = api.bh_voice_read_f32_fenced(voice, pcm.data(), pcm_fence.data(), pcm.size());
         test_pause(voice_commit_stall);
         if (p.epoch != voice_epoch || voice_handle == 0xffff)
           continue;
@@ -161,9 +203,11 @@ private:
         }
         if (n && voice_input >= 0) {
           source_position += n;
-          api.bh_mix_observe(mixer, voice_input, bht_scale(source_position, pcm_rate, BHT_RATE),
-                             p.arrival);
-          api.bh_mix_write_f32_mono(mixer, voice_input, pcm.data(), n);
+          api.bh_mix_observe_confident(mixer, voice_input,
+                                      bht_scale(source_position, pcm_rate, BHT_RATE),
+                                      p.arrival, uncertain);
+          api.bh_mix_write_f32_mono_fenced(mixer, voice_input, pcm.data(), pcm_fence.data(), n);
+          last_underruns = underruns;
           voice_frames += bht_scale(n, pcm_rate, BHT_RATE);
         }
         bh_voice_stats stats{};
@@ -171,15 +215,33 @@ private:
         voice_plc = stats.plc_frames;
       }
       auto now = ticks();
-      if (voice_rx_enabled && expected && now > expected + frame_ticks && voice_rx.size() == 0) {
-        uint32_t missed = static_cast<uint32_t>(
-            std::min<uint64_t>(8 - consecutive_missing, (now - expected) / frame_ticks));
+      /* Arrival silence is not a presentation deadline. In particular CVSD
+       * cannot identify a late original, so only controller erasures use its
+       * decoder PLC. H2 owns identifiable missing slots only near actual read
+       * exhaustion, after this epoch has really left initial/recovery prefill. */
+      auto presentation_check = [&](uint64_t at) {
+        uint64_t queued = 0;
+        if (voice_input < 0 || !api.bh_voice_rx_clock_known(voice) ||
+            !api.bh_mix_playout_frames(mixer, voice_input, &queued))
+          return at + frame_ticks;
+        constexpr uint64_t lead = 96; // 2 ms decode lead on the canonical 48k timeline.
+        if (queued <= lead) return at;
+        auto wait = (queued - lead) * frequency() / BHT_RATE;
+        return at + std::min(frame_ticks, std::max(frequency() / 1000, wait));
+      };
+      auto check_at = presentation_check(now);
+      if (voice_codec != BH_VOICE_CVSD && voice_rx_enabled && expected &&
+          now > expected + frame_ticks && now >= check_at && voice_rx.size() == 0) {
+        uint32_t missed = consecutive_missing < 8 ? 1u : 0u;
         if (missed) {
-          api.bh_voice_conceal(voice, missed);
-          uint32_t n = api.bh_voice_read_f32(voice, pcm.data(), pcm.size());
+          if (api.bh_voice_conceal(voice, missed) < 0) {
+            voice_decode_errors++; rx_recovery = true; expected = 0;
+            continue;
+          }
+          uint32_t n = api.bh_voice_read_f32_fenced(voice, pcm.data(), pcm_fence.data(), pcm.size());
           source_position += n;
           if (n && voice_input >= 0)
-            api.bh_mix_write_f32_mono(mixer, voice_input, pcm.data(), n);
+            api.bh_mix_write_f32_mono_fenced(mixer, voice_input, pcm.data(), pcm_fence.data(), n);
           expected += frame_ticks * missed;
           voice_plc += missed;
           consecutive_missing += missed;
@@ -188,6 +250,12 @@ private:
         }
       }
       while (!voice_stop && voice_handle != 0xffff && voice_tx.size() < 2) {
+        // This starts the encoded-send budget, not the original capture clock.
+        // Stamp before any PCM read/encode work so worker stalls cannot refresh
+        // an old encoded frame merely by completing its queue publication late.
+        wire.encoded_at = ticks();
+        test_pause(voice_tx_encode_stall);
+        if (voice_stop || voice_handle == 0xffff) break;
         api.bh_up_gain(uplink, microphone_gain.load(), system_gain.load(),
                        microphone_muted ? 0.0f : device_gain.load(), microphone_muted.load());
         if (api.bh_up_read_f32(uplink, pcm.data(), frame_samples) >= 0) {
@@ -196,15 +264,15 @@ private:
                                           wire.bytes.size());
           if (n > 0) {
             wire.size = n;
-            voice_tx.push(wire);
+            if (voice_tx.push(wire)) voice_tx_last_encoded_at = wire.encoded_at;
           } else {
             voice_decode_errors++;
             break;
           }
         }
       }
-      if (expected)
-        timer.wait(expected + frame_ticks, voice_wake);
+      if (expected && voice_codec != BH_VOICE_CVSD)
+        timer.wait(std::max(expected + frame_ticks, presentation_check(ticks())), voice_wake);
       else
         WaitForSingleObject(voice_wake, INFINITE);
     }
@@ -351,25 +419,67 @@ public:
     SetEvent(voice_wake);
     auto epoch = voice_epoch.load();
     handle = static_cast<uint16_t>(voice_handle.load());
-    if (quiesced || handle == 0xffff || capacity > 255)
+    if (quiesced || handle == 0xffff || !out || !capacity || capacity > 255)
       return 0;
+    // One monotonic admission time for prune, preflight and the entire copy.
+    // Only this USB consumer retires TX entries; the producer only appends.
+    const uint64_t now = ticks(), budget = frequency() * 90 / 1000;
+    auto retire = [&](const Wire &wire, uint32_t bytes, bool expired) {
+      if (!bytes) return;
+      if (expired) {
+        voice_tx_expired_frames++;
+        voice_tx_expired_bytes += bytes;
+        auto age = now > wire.encoded_at ? now-wire.encoded_at : 0;
+        voice_tx_max_expired_age = std::max(voice_tx_max_expired_age.load(), age);
+      } else {
+        voice_tx_retired_frames++;
+        voice_tx_retired_bytes += bytes;
+      }
+    };
     if (tx_seen_epoch != epoch) {
+      if (tx_partial.size > tx_offset)
+        retire(tx_partial, tx_partial.size-tx_offset, false);
       tx_seen_epoch = epoch;
       tx_partial.size = tx_offset = 0;
     }
     uint32_t frame = voice_codec == 1 ? 120 : 60;
-    if ((tx_partial.size - tx_offset) + voice_tx.size() * frame < capacity)
+    auto invalid = [&](const Wire &wire) {return wire.epoch != epoch || wire.size != frame;};
+    auto expired = [&](const Wire &wire) {
+      return !wire.encoded_at || (now > wire.encoded_at && now-wire.encoded_at > budget);
+    };
+    if (tx_offset >= tx_partial.size) tx_partial.size = tx_offset = 0;
+    // A submitted prefix must finish its original frame boundary (at most
+    // one 7.5ms frame of audio). Age may retire only a wholly unsent frame.
+    if (tx_partial.size && (invalid(tx_partial) || (!tx_offset && expired(tx_partial)))) {
+      retire(tx_partial, tx_partial.size-tx_offset, !invalid(tx_partial));
+      tx_partial.size = tx_offset = 0;
+    }
+    Wire next;
+    for (unsigned count = 0; count < 16 && voice_tx.peek(next); ++count) {
+      if (!invalid(next) && !expired(next)) break;
+      (void)voice_tx.pop(next);
+      retire(next, next.size, !invalid(next));
+    }
+    // Never consume a useful prefix then return zero. Acquire-published slots
+    // remain immutable until this sole consumer advances read during commit.
+    uint32_t available = tx_partial.size-tx_offset;
+    for (unsigned at = 0; at < 16 && available < capacity && voice_tx.peek(next, at); ++at) {
+      if (invalid(next) || expired(next)) break;
+      available += next.size;
+    }
+    if (available < capacity) {
+      // The entry wake may have been consumed while the queue was still full.
+      // Publish newly freed room before waking the encoder again.
+      SetEvent(voice_wake);
       return 0;
+    }
     uint32_t written = 0;
     while (written < capacity) {
       if (tx_offset == tx_partial.size) {
-        if (!voice_tx.pop(tx_partial))
-          return 0;
+        // Preflight and single-consumer ownership guarantee this pop. There
+        // is deliberately no failure/expiry branch after copying any bytes.
+        (void)voice_tx.pop(tx_partial);
         tx_offset = 0;
-        if (tx_partial.epoch != epoch) {
-          tx_partial.size = 0;
-          return 0;
-        }
       }
       uint32_t take = std::min(capacity - written, tx_partial.size - tx_offset);
       std::memcpy(out + written, tx_partial.bytes.data() + tx_offset, take);
@@ -499,6 +609,8 @@ public:
         SetEvent(voice_wake);
       } else if (direction == "voice_commit") {
         voice_commit_stall = ms;
+      } else if (direction == "voice_tx_encode") {
+        voice_tx_encode_stall = ms;
         SetEvent(voice_wake);
       } else
         throw std::runtime_error("Unknown native worker");
@@ -638,7 +750,10 @@ public:
       uint32_t frames = request.value("frames", 480u);
       require(frames > 0 && frames <= 48064, "Invalid render quantum");
       std::vector<float> pcm(frames * 2);
-      api.bh_mix_render(mixer, pcm.data(), frames, api.bh_mix_master_value(mixer));
+      if (request.value("endpoint", false)) {
+        endpoints->offline_render(pcm.data(), frames);
+      } else
+        api.bh_mix_render(mixer, pcm.data(), frames, api.bh_mix_master_value(mixer));
       double energy = 0, peak = 0;
       for (float value : pcm) {
         require(std::isfinite(value), "Nonfinite native render");
@@ -949,6 +1064,9 @@ public:
       voice_rx_packets = voice_tx_packets = voice_plc = voice_decode_errors = voice_rx_bytes =
           voice_tx_bytes = voice_frames = 0;
       voice_expired_packets = voice_rx_resets = 0;
+      voice_clock_reanchors = 0;
+      voice_tx_expired_frames = voice_tx_expired_bytes = voice_tx_retired_frames =
+          voice_tx_retired_bytes = voice_tx_last_encoded_at = voice_tx_max_expired_age = 0;
       api.bh_mix_call(mixer, id);
       api.bh_mix_clear(mixer, id);
       api.bh_mix_gate(mixer, id, true);
@@ -977,6 +1095,8 @@ public:
     json sources = json::object();
     for (const auto &pair : keys) {
       int id = pair.second;
+      uint64_t playable = 0;
+      bool playout_ready = api.bh_mix_playout_frames(mixer, id, &playable) != 0;
       sources[pair.first] = {
           {"pcm_rate", api.bh_mix_value(mixer, id, 20)},
           {"queued_frames", api.bh_mix_value(mixer, id, 0)},
@@ -992,6 +1112,9 @@ public:
           {"expanded_frames", api.bh_mix_value(mixer, id, 11)},
           {"accelerated_frames", api.bh_mix_value(mixer, id, 12)},
           {"expired_frames", api.bh_mix_value(mixer, id, 13)},
+          {"fence_reanchors", api.bh_mix_value(mixer, id, 25)},
+          {"playout_ready", playout_ready},
+          {"playable_frames", playable},
           {"gap_owner", api.bh_mix_value(mixer, id, 14)},
           {"written_frames", api.bh_mix_value(mixer, id, 15)},
           {"presented_frames", api.bh_mix_value(mixer, id, 16)},
@@ -1040,12 +1163,23 @@ public:
                      {"tx_packets", voice_tx_packets.load()},
                      {"rx_bytes", voice_rx_bytes.load()},
                      {"tx_bytes", voice_tx_bytes.load()},
+                     {"tx_expired_frames", voice_tx_expired_frames.load()},
+                     {"tx_expired_bytes", voice_tx_expired_bytes.load()},
+                     {"tx_retired_frames", voice_tx_retired_frames.load()},
+                     {"tx_retired_bytes", voice_tx_retired_bytes.load()},
+                     {"tx_last_encoded_age_ms", voice_tx_last_encoded_at.load() ?
+                         age_ticks(voice_tx_last_encoded_at.load()) * 1000.0 / frequency() : 0.0},
+                     {"tx_max_expired_age_ms", voice_tx_max_expired_age.load() * 1000.0 / frequency()},
+                     // This control snapshot is not the SPSC consumer. Clamp
+                     // its separate cursor observations to the producer's bound.
+                     {"tx_queued_frames", std::min<size_t>(2, voice_tx.size())},
                      {"decoded_frames", voice_frames.load()},
                      {"plc_frames", voice_plc.load()},
                      {"decode_errors", voice_decode_errors.load()},
                      {"pcm_rate", voice ? api.bh_voice_pcm_rate(voice) : 0},
                      {"expired_packets", voice_expired_packets.load()},
                      {"rx_resets", voice_rx_resets.load()},
+                     {"clock_reanchors", voice_clock_reanchors.load()},
                      {"active", voice_handle != 0xffff}}}};
     result.update(endpoints->snapshot());
     return result;

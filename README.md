@@ -4,7 +4,7 @@
 
 Free, open-source Bluetooth audio for Windows. Classic audio, LE Audio / LC3, broadcast reception and LHDC 5.0, with a native C/C++ audio engine. No shared Wi-Fi or mobile companion app required.
 
-[下载 2.1.5](https://github.com/tingol666/BlueHead/releases/latest) · [使用指南](docs/UI_GUIDE.md) · [协议与兼容性](docs/COMPATIBILITY.md) · [源码构建](docs/BUILDING.md) · [反馈问题](https://github.com/tingol666/BlueHead/issues)
+[下载 2.1.6](https://github.com/tingol666/BlueHead/releases/latest) · [使用指南](docs/UI_GUIDE.md) · [协议与兼容性](docs/COMPATIBILITY.md) · [源码构建](docs/BUILDING.md) · [反馈问题](https://github.com/tingol666/BlueHead/issues)
 
 ![音频中心；设备和曲目为界面演示数据](docs/images/home-demo.png)
 
@@ -67,7 +67,9 @@ BlueHead 的持续音频链路已从 Python 迁至 **C/C++**。Python 仍负责�
 | 音频广播接收 | BAP 广播、BASS/PAST、公开／带密码广播、节目选择、单 BIS 或分离立体声 |
 | 标准平台音频 | iPhone/iPad 的 AAC/SBC、HFP 和 AVRCP；Android、HarmonyOS、Windows 等以实际开放的协议和应用路由为准 |
 
-首页媒体编码右侧的齿轮打开 **连接与编码**，统一管理 **优先 LE Audio / LC3／仅经典蓝牙**、**允许的经典编码**和**首选编码**。每种经典编码旁的小齿轮可设置采样率，以及该编码支持的位深、码率或质量上限；设置自动保存并适用于之后的设备连接。实际格式仍由双方协商，不会通过升采样伪装成更高传输音质。修改经典编码设置后，在设备的蓝牙设置中断开电脑耳机再重新连接；修改 LE 连接偏好后，先在 BlueHead **停止接收 → 开始接收**，再重新连接设备。首页会提示尚待重连生效的修改，设备卡片显示实际协议、码率与回退原因。详见 [编码与连接策略](docs/CODEC_POLICY.md)、[LE Audio / LHDC](docs/LE_AUDIO.md)。
+首页媒体编码右侧的齿轮打开 **连接与编码**，统一管理 **优先 LE Audio / LC3、仅 LE Audio / LC3、仅经典蓝牙**、**允许的经典编码**和**首选编码**。每种经典编码旁的小齿轮可设置采样率，以及该编码支持的位深、码率或质量上限；设置自动保存并适用于之后的设备连接。实际格式仍由双方协商，不会通过升采样伪装成更高传输音质。修改经典编码设置后，在设备的蓝牙设置中断开电脑耳机再重新连接；修改 LE 连接偏好后，先在 BlueHead **停止接收 → 开始接收**，再重新连接设备。首页会提示尚待重连生效的修改，设备卡片显示实际协议、码率与回退原因。详见 [编码与连接策略](docs/CODEC_POLICY.md)、[LE Audio / LHDC](docs/LE_AUDIO.md)。
+
+手机没有 LE Audio 选项时，可先选择“仅 LE Audio / LC3”，停止并重新开始接收，再在手机上忽略旧配对并重新配对。设置窗口内的 **LE 配对指南** 说明具体操作及 Android 许可名单开关。双模 CTKD、同地址兼容发现、设备信息与服务缓存处理共同完成配对，实际音频卡片才是使用 LC3 的依据。
 
 蓝牙版本号不能保证 ISO、LE Audio 或特定编码能力。实际可用功能由适配器、USB 传输、固件和对端共同决定；未支持的方向不会被伪报为可用。多路高清媒体可能超过无线带宽，需要时可手动选 AAC 或单设备自动接替。
 

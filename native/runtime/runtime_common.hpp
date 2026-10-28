@@ -164,6 +164,16 @@ public:
     read.store(r + 1, std::memory_order_release);
     return true;
   }
+  /* The sole consumer may inspect an already published prefix without
+   * advancing its read cursor. Producer slots cannot be reused until pop. */
+  bool peek(T &v, size_t offset = 0) const {
+    auto r = read.load(std::memory_order_relaxed);
+    auto w = write.load(std::memory_order_acquire);
+    if (offset >= N || offset >= w - r)
+      return false;
+    v = data[(r + offset) % N];
+    return true;
+  }
   size_t size() const {
     return static_cast<size_t>(write.load(std::memory_order_acquire) -
                                read.load(std::memory_order_acquire));

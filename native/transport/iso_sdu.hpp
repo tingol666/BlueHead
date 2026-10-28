@@ -25,17 +25,30 @@ class IsoSduAssembler {
   static uint16_t read16(const uint8_t *p) {
     return static_cast<uint16_t>(p[0] | (static_cast<uint16_t>(p[1]) << 8));
   }
-  bool invalid() { ++counters.malformed; assembling = false; at = wanted = 0; return false; }
+  bool invalid(bool discard_current) {
+    ++counters.malformed;
+    if (discard_current) { assembling = false; at = wanted = 0; }
+    return false;
+  }
   void abandon() {
     if (assembling) ++counters.abandoned;
     assembling = false; at = wanted = 0;
   }
+  bool newer(uint16_t sequence, uint16_t reference) {
+    const uint16_t distance = static_cast<uint16_t>(sequence - reference);
+    if (!distance) { ++counters.duplicate; return false; }
+    if (distance >= 0x8000) { ++counters.late; return false; }
+    return true;
+  }
+  bool admit(uint16_t sequence) {
+    if (sequenced && !newer(sequence, previous)) return false;
+    return !assembling || newer(sequence, sdu.sequence);
+  }
   template<class Deliver> void complete(Deliver &deliver) {
     assembling = false;
+    // Sequence admission precedes all writes, including a new first fragment.
     if (sequenced) {
       const uint16_t distance = static_cast<uint16_t>(sdu.sequence - previous);
-      if (!distance) { ++counters.duplicate; return; }
-      if (distance >= 0x8000) { ++counters.late; return; }
       sdu.discontinuity = distance > 256;
       sdu.gap = sdu.discontinuity ? 0 : static_cast<uint16_t>(distance - 1);
     } else { sdu.discontinuity = false; sdu.gap = 0; }
@@ -55,50 +68,58 @@ public:
   void unbind() { abandon(); handle = 0xffff; generation = 0; sequenced = false; }
   /* The input excludes the H4 indicator. Only the USB owner feeds this object.
    * The callback must copy an SDU before returning if another worker consumes it.
+   * Continuation/last packets have no SDU sequence: their per-handle ordering
+   * belongs to the transport; orphan tails cannot be assigned to another SDU.
    * Possibly-invalid and lost data both become one erasure, never guessed PCM.
    * Sequence gaps are metadata; only the playout owner requests codec PLC. */
   template<class Deliver>
   bool feed(const uint8_t *p, uint32_t n, uint32_t epoch, Deliver deliver) {
     if (!generation || epoch != generation) { ++counters.stale; return false; }
-    if (!p || n < 4) return invalid();
+    if (!p || n < 4) return invalid(false);
     const uint16_t flags = read16(p), length = read16(p + 2);
     if ((flags & 0xfff) != handle) { ++counters.stale; return false; }
-    if ((flags & 0x8000) || (length & 0xc000) || length != n - 4) return invalid();
     const uint8_t boundary = (flags >> 12) & 3;
+    const bool continuation = (boundary & 1) != 0;
+    if ((flags & 0x8000) || (length & 0xc000) || length != n - 4) return invalid(continuation);
     const bool timestamp = (flags & 0x4000) != 0;
-    if ((boundary & 1) && timestamp) return invalid();
+    if (continuation && timestamp) return invalid(true);
     uint32_t pos = 4;
-    if (!(boundary & 1)) {
-      if (n < pos + (timestamp ? 8u : 4u)) return invalid();
-      abandon();
-      sdu.generation = generation; sdu.handle = handle; sdu.timestamp_present = timestamp;
-      sdu.timestamp = 0;
+    if (!continuation) {
+      if (n < pos + (timestamp ? 8u : 4u)) return invalid(false);
+      // Validate into locals before touching the current SDU. A corrupt, old or
+      // duplicate first/complete packet does not own its unfinished fragments.
+      uint32_t stamp = 0;
       if (timestamp) {
-        sdu.timestamp = static_cast<uint32_t>(p[pos]) | (static_cast<uint32_t>(p[pos+1]) << 8) |
-                        (static_cast<uint32_t>(p[pos+2]) << 16) | (static_cast<uint32_t>(p[pos+3]) << 24);
+        stamp = static_cast<uint32_t>(p[pos]) | (static_cast<uint32_t>(p[pos+1]) << 8) |
+                (static_cast<uint32_t>(p[pos+2]) << 16) | (static_cast<uint32_t>(p[pos+3]) << 24);
         pos += 4;
       }
-      sdu.sequence = read16(p + pos);
+      const uint16_t sequence = read16(p + pos);
       const uint16_t info = read16(p + pos + 2);
       pos += 4;
-      if (info & 0x3000) return invalid();
-      sdu.status = static_cast<uint8_t>(info >> 14);
-      if (sdu.status == 3) return invalid();
-      wanted = info & 0xfff;
-      sdu.size = wanted; at = 0;
-      if (wanted > limit) return invalid();
-      if (sdu.status == 2 && (boundary != 2 || wanted || n != pos)) return invalid();
-      if (boundary == 0 && (sdu.status == 2 || n - pos >= wanted)) return invalid();
+      const uint8_t status = static_cast<uint8_t>(info >> 14);
+      const uint16_t size = info & 0xfff;
+      const uint32_t fragment = n - pos;
+      if ((info & 0x3000) || status == 3 || size > limit) return invalid(false);
+      if (status == 2 && (boundary != 2 || size || fragment)) return invalid(false);
+      if ((boundary == 0 && (status == 2 || fragment >= size)) ||
+          (boundary == 2 && fragment != size)) return invalid(false);
+      if (!admit(sequence)) return true;
+      abandon();
+      sdu.generation = generation; sdu.handle = handle; sdu.timestamp_present = timestamp;
+      sdu.timestamp = stamp; sdu.sequence = sequence; sdu.status = status;
+      wanted = sdu.size = size; at = 0;
       assembling = boundary == 0;
-    } else if (!assembling) return invalid();
+    } else if (!assembling) return invalid(false);
     const uint32_t fragment = n - pos;
-    if (at > wanted || fragment > static_cast<uint32_t>(wanted - at)) return invalid();
+    if (at > wanted || fragment > static_cast<uint32_t>(wanted - at)) return invalid(true);
+    const uint32_t next = at + fragment;
+    if ((boundary == 2 || boundary == 3) ? next != wanted : next >= wanted) return invalid(true);
     if (fragment) std::memcpy(sdu.bytes.data() + at, p + pos, fragment);
-    at = static_cast<uint16_t>(at + fragment);
+    at = static_cast<uint16_t>(next);
     if (boundary == 2 || boundary == 3) {
-      if (at != wanted) return invalid();
       complete(deliver);
-    } else if (at >= wanted) return invalid();
+    }
     return true;
   }
 };

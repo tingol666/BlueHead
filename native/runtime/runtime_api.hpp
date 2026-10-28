@@ -5,6 +5,7 @@ extern "C" {
 #include "audio_device.h"
 #include "media_engine.h"
 #include "voice_engine.h"
+#include "audio_format_plan.h"
 }
 namespace bh {
 // clang-format off
@@ -16,6 +17,9 @@ namespace bh {
   X(bh_mix_remove, void, (void *, int)) \
   X(bh_mix_clear, void, (void *, int)) \
   X(bh_mix_format, int, (void *, int, uint32_t)) \
+  X(bh_mix_format_prepare, BhMixFormatPlan *, (void *, int, uint32_t, uint32_t, int *)) \
+  X(bh_mix_format_try_commit, int, (BhMixFormatPlan *)) \
+  X(bh_mix_format_plan_free, void, (BhMixFormatPlan *)) \
   X(bh_mix_gain, void, (void *, int, float)) \
   X(bh_mix_connected, void, (void *, int, int)) \
   X( bh_mix_gate, void, (void *, int, int)) \
@@ -24,16 +28,24 @@ namespace bh {
   X(bh_mix_clock_config, int, (void *, float, float)) \
   X( bh_mix_render, int, (void *, float *, uint32_t, float)) \
   X(bh_mix_write, void, (void *, int, const float *, uint32_t)) \
+  X(bh_mix_write_fenced, void, (void *, int, const float *, const uint8_t *, uint32_t)) \
   X( bh_mix_write_s16_mono, void, (void *, int, const int16_t *, uint32_t)) \
   X(bh_mix_write_f32_mono, void, (void *, int, const float *, uint32_t)) \
+  X(bh_mix_write_f32_mono_fenced, void, (void *, int, const float *, const uint8_t *, uint32_t)) \
   X(bh_mix_timeline, int, (void *, int, int)) \
   X(bh_mix_budget, int, (void *, int, uint32_t)) \
   X(bh_mix_observe, void, (void *, int, uint64_t, uint64_t)) \
+  X(bh_mix_observe_confident, void, (void *, int, uint64_t, uint64_t, uint32_t)) \
+  X(bh_mix_gap_budget, void, (void *, int, uint32_t, uint64_t, uint32_t *, uint32_t *)) \
+  X(bh_mix_playout_frames, uint32_t, (void *, int, uint64_t *)) \
   X(bh_mix_value, uint64_t, (void *, int, int)) \
   X(bh_media_create, BhMedia *, (int, int, int, int)) \
   X( bh_media_destroy, void, (BhMedia *)) \
   X(bh_media_restart, int, (BhMedia *)) \
+  X(bh_media_recover_decoder, int, (BhMedia *)) \
   X(bh_media_feed, int, (BhMedia *, const uint8_t *, uint32_t)) \
+  X(bh_media_gap_context, void, (BhMedia *, uint32_t, uint32_t)) \
+  X(bh_media_drain_confidence, uint32_t, (BhMedia *)) \
   X(bh_media_drain_mixer, uint32_t, (BhMedia *, void *, int)) \
   X(bh_media_drain_mixer_at, uint32_t, (BhMedia *, void *, int, uint64_t)) \
   X(bh_media_discard, void, (BhMedia *)) \
@@ -45,6 +57,9 @@ namespace bh {
   X(bh_up_adaptive, int, (void *, int)) \
   X(bh_up_output_rate, int, (void *, uint32_t)) \
   X(bh_up_source_rate, int, (void *, int, uint32_t)) \
+  X(bh_up_source_prepare, BhUpSourcePlan *, (void *, int, uint32_t, uint32_t, int *)) \
+  X(bh_up_source_try_commit, int, (BhUpSourcePlan *)) \
+  X(bh_up_source_plan_free, void, (BhUpSourcePlan *)) \
   X( bh_up_gain, void, (void *, float, float, float, int)) \
   X(bh_up_write, void, (void *, int, const uint8_t *, uint32_t)) \
   X(bh_up_read, int, (void *, uint8_t *, uint32_t)) \
@@ -83,6 +98,8 @@ namespace bh {
 #define VOICE_APIS(X) \
   X(bh_voice_reset_rx, int, (bh_voice *)) \
   X(bh_voice_skip_rx, int, (bh_voice *, uint32_t)) \
+  X(bh_voice_reanchor_rx_clock, int, (bh_voice *)) \
+  X(bh_voice_rx_clock_known, uint32_t, (const bh_voice *)) \
   X(bh_voice_create, bh_voice *, (uint32_t)) \
   X(bh_voice_create_at, bh_voice *, (uint32_t, uint32_t)) \
   X(bh_voice_pcm_rate, uint32_t, (const bh_voice *)) \
@@ -92,6 +109,8 @@ namespace bh {
   X(bh_voice_push_rx, int, (bh_voice *, const uint8_t *, uint32_t, uint32_t)) \
   X(bh_voice_read_pcm, uint32_t, (bh_voice *, int16_t *, uint32_t)) \
   X(bh_voice_read_f32, uint32_t, (bh_voice *, float *, uint32_t)) \
+  X(bh_voice_read_f32_fenced, uint32_t, (bh_voice *, float *, uint8_t *, uint32_t)) \
+  X(bh_voice_drain_confidence, uint32_t, (const bh_voice *)) \
   X(bh_voice_conceal, int, (bh_voice *, uint32_t)) \
   X(bh_voice_get_stats, int, (const bh_voice *, bh_voice_stats *, uint32_t))
 #define LOOP_APIS(X) \

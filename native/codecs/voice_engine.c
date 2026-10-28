@@ -40,14 +40,27 @@ struct bh_voice {
   uint32_t cvsd_samples;
   plc_state_t *plc;
   uint8_t rx[H2_BYTES], damaged[H2_BYTES], last_wire[H2_BYTES];
-  uint32_t rx_size, rx_started, rx_sequence, tx_sequence;
+  uint32_t rx_size, rx_started, rx_sequence, rx_concealed, tx_sequence;
   uint32_t queue_read, queue_size;
+  uint32_t rx_fence_pending, drain_uncertain;
+  uint32_t rx_sequence_uncertain, rx_unknown_span;
+  uint32_t rx_unacknowledged_timer;
+  uint8_t fence[PCM_QUEUE];
   float queue[PCM_QUEUE], decoded[BH_VOICE_FRAME_SAMPLES];
   bh_voice_stats stats;
 };
 
 static int valid(const bh_voice *v) { return v && v->magic == CONTEXT_MAGIC; }
 static int ready(const bh_voice *v) { return valid(v) && v->ready; }
+static void uncertain_rx_sequence(bh_voice *v, uint32_t unframed) {
+  v->rx_sequence_uncertain = 1;
+  /* This saturating extent only weakens modulo-four identity proof. It is
+   * neither an SDU count nor permission to synthesize audio. Once framing is
+   * lost, no byte count can exclude a whole unseen H2 cycle. */
+  if (unframed) v->rx_unknown_span = 4;
+  else if (v->rx_unknown_span < 4u) v->rx_unknown_span++;
+  v->rx_fence_pending = v->drain_uncertain = 1;
+}
 static int16_t quantize(float value) {
   value *= 32768.0f;
   if (!isfinite(value))
@@ -78,18 +91,33 @@ static int upsample_frame(bh_voice *v) {
   int result = speex_resampler_process_float(v->upsample, 0, low, &in, v->decoded, &out);
   return result || in != v->low_samples || out != v->frame_samples ? -3 : 0;
 }
-static void queue_pcm(bh_voice *v) {
+static void queue_pcm(bh_voice *v, uint32_t genuine) {
   uint32_t i;
+  int overrun = 0;
   if (v->queue_size + v->frame_samples > v->capacity) {
     uint32_t drop = v->frame_samples;
     v->queue_read = (v->queue_read + drop) % v->capacity;
     v->queue_size -= drop;
     v->stats.discarded_samples += drop;
     v->stats.queue_overruns++;
+    overrun = 1;
   }
-  for (i = 0; i < v->frame_samples; ++i)
+  for (i = 0; i < v->frame_samples; ++i) {
     v->queue[(v->queue_read + v->queue_size + i) % v->capacity] = v->decoded[i];
+    v->fence[(v->queue_read + v->queue_size + i) % v->capacity] = 0;
+  }
+  /* CVSD has no receive sequence: presentation debt cannot prove any genuine
+   * returned frame stale. This protection is separate from clock confidence. */
+  if (genuine && (v->codec == BH_VOICE_CVSD || v->rx_fence_pending)) {
+    v->fence[(v->queue_read + v->queue_size) % v->capacity] = 1;
+    if (v->rx_fence_pending) v->drain_uncertain = 1;
+    v->rx_fence_pending = 0;
+  }
   v->queue_size += v->frame_samples;
+  if (overrun) {
+    v->fence[v->queue_read] = 1;
+    v->drain_uncertain = 1;
+  }
   if (v->queue_size > v->stats.high_water_samples)
     v->stats.high_water_samples = v->queue_size;
 }
@@ -102,19 +130,67 @@ static int conceal_one(bh_voice *v) {
     if (upsample_frame(v))
       return -3;
   }
-  queue_pcm(v);
+  queue_pcm(v, 0);
   v->stats.plc_frames++;
   return 1;
 }
 static int receive_frame(bh_voice *v) {
-  uint32_t seq = header_sequence(v->rx), i, missing = 0, damaged = 0;
+  uint32_t seq, i, missing = 0, damaged = 0;
   int count = 0, result;
-  if (v->rx_started) {
-    if (seq == v->rx_sequence && !memcmp(v->last_wire, v->rx, H2_BYTES)) {
+  /* The raw H2 marker locates a frame, but status-damaged header bytes cannot
+   * supply duplicate/gap/epoch evidence. Do not let a plausible corrupted
+   * two-bit value become a new clock anchor. A previously committed timer
+   * slot may already cover this erasure; never publish that interval twice. */
+  if (v->damaged[0] || v->damaged[1]) {
+    uncertain_rx_sequence(v, 0);
+    v->stats.corrupt_frames++;
+    v->stats.rx_frames++;
+    if (v->rx_unacknowledged_timer) return 0;
+    return conceal_one(v);
+  }
+  seq = header_sequence(v->rx);
+  if (v->rx_sequence_uncertain) {
+    /* Keep the known occupied-slot ledger without acknowledging it through
+     * an unknown header. It can reject a late original only while a complete
+     * modulo-four cycle is still impossible; uncertainty only weakens proof.
+     * The next admitted fresh header reanchors, never guesses extra gaps. */
+    if (v->rx_started && v->rx_concealed && v->rx_concealed < 4u &&
+        v->rx_unknown_span < 4u - v->rx_concealed) {
+      uint32_t distance = (seq + 4u - v->rx_sequence) % 4u;
+      if (distance && distance <= v->rx_concealed) {
+        v->stats.duplicate_frames++;
+        return 0;
+      }
+    }
+    v->rx_concealed = v->rx_sequence_uncertain = v->rx_unknown_span = 0;
+  } else if (v->rx_started) {
+    if (v->rx_concealed < 3u && seq == v->rx_sequence &&
+        !memcmp(v->last_wire, v->rx, H2_BYTES)) {
       v->stats.duplicate_frames++;
       return 0;
     }
-    missing = (seq + 4u - ((v->rx_sequence + 1u) % 4u)) % 4u;
+    if (v->rx_concealed) {
+      /* Keep the last REAL H2 sequence separate from elapsed slots already
+       * published as PLC. Advancing rx_sequence in conceal() destroys the
+       * evidence: a late original then looks like three fresh missing frames.
+       * Within one H2 cycle, an original in an occupied slot is stale. */
+      uint32_t distance = (seq + 4u - v->rx_sequence) % 4u;
+      if (v->rx_concealed < 4u) {
+        if (distance && distance <= v->rx_concealed) {
+          v->stats.duplicate_frames++;
+          return 0;
+        }
+        missing = (distance ? distance : 4u) - 1u - v->rx_concealed;
+      }
+      /* After a full four-slot cycle, two-bit H2 cannot identify the remote
+       * epoch. Reanchor the next real frame instead of inventing another gap.
+       * The explicit PLC owner has already accounted for elapsed time. */
+      if (v->rx_concealed >= 4u)
+        v->rx_fence_pending = v->drain_uncertain = 1;
+      v->rx_concealed = 0;
+    } else {
+      missing = (seq + 4u - ((v->rx_sequence + 1u) % 4u)) % 4u;
+    }
     for (i = 0; i < missing; ++i) {
       if (conceal_one(v) < 0)
         return -3;
@@ -123,6 +199,7 @@ static int receive_frame(bh_voice *v) {
     v->stats.missing_frames += missing;
   }
   v->rx_started = 1;
+  v->rx_unacknowledged_timer = 0;
   v->rx_sequence = seq;
   memcpy(v->last_wire, v->rx, H2_BYTES);
   for (i = 0; i < H2_BYTES; ++i)
@@ -158,7 +235,7 @@ static int receive_frame(bh_voice *v) {
     v->stats.plc_frames++;
     v->stats.corrupt_frames++;
   }
-  queue_pcm(v);
+  queue_pcm(v, result == 0);
   v->stats.rx_frames++;
   return count + 1;
 }
@@ -280,7 +357,29 @@ int bh_voice_skip_rx(bh_voice *v, uint32_t wire_bytes) {
     v->cvsd_samples = v->cvsd_damaged = 0;
   }
   v->queue_read = v->queue_size = 0;
+  v->rx_fence_pending = v->drain_uncertain = 0;
+  v->rx_sequence_uncertain = v->rx_unknown_span = 0;
+  v->rx_unacknowledged_timer = 0;
+  memset(v->fence, 0, sizeof(v->fence));
   return 0;
+}
+int bh_voice_reanchor_rx_clock(bh_voice *v) {
+  if (!ready(v)) return -1;
+  /* A two-bit H2 identity cannot identify a remote cycle after a long
+   * unobserved interval. Retire only sequence confidence, never codec/framing,
+   * queued PCM or transmit state. Already published timer intervals also
+   * survive loss of identity; an unknown header cannot publish them twice. */
+  if (v->codec != BH_VOICE_CVSD) {
+    v->rx_started = v->rx_concealed = 0;
+    v->rx_sequence_uncertain = 1;
+    v->rx_unknown_span = 0;
+    v->rx_fence_pending = v->drain_uncertain = 1;
+  }
+  return 0;
+}
+uint32_t bh_voice_rx_clock_known(const bh_voice *v) {
+  return ready(v) && v->codec != BH_VOICE_CVSD && v->rx_started &&
+         !v->rx_sequence_uncertain;
 }
 int bh_voice_reset_rx(bh_voice *v) {
   if (!ready(v))
@@ -311,8 +410,12 @@ int bh_voice_reset_rx(bh_voice *v) {
   }
   v->cvsd_skip ^= v->cvsd_odd;
   v->cvsd_odd = v->cvsd_damaged = v->cvsd_samples = 0;
-  v->rx_size = v->rx_started = v->rx_sequence = 0;
+  v->rx_size = v->rx_started = v->rx_sequence = v->rx_concealed = 0;
   v->queue_read = v->queue_size = 0;
+  v->rx_fence_pending = v->drain_uncertain = 0;
+  v->rx_sequence_uncertain = v->rx_unknown_span = 0;
+  v->rx_unacknowledged_timer = 0;
+  memset(v->fence, 0, sizeof(v->fence));
   memset(v->rx, 0, sizeof(v->rx));
   memset(v->damaged, 0, sizeof(v->damaged));
   memset(v->last_wire, 0, sizeof(v->last_wire));
@@ -350,8 +453,12 @@ int bh_voice_reset(bh_voice *v) {
   if (v->plc)
     plc_init(v->plc);
   v->cvsd_odd = v->cvsd_damaged = v->cvsd_samples = v->cvsd_skip = 0;
-  v->rx_size = v->rx_started = v->rx_sequence = v->tx_sequence = 0;
+  v->rx_size = v->rx_started = v->rx_sequence = v->rx_concealed = v->tx_sequence = 0;
   v->queue_read = v->queue_size = 0;
+  v->rx_fence_pending = v->drain_uncertain = 0;
+  v->rx_sequence_uncertain = v->rx_unknown_span = 0;
+  v->rx_unacknowledged_timer = 0;
+  memset(v->fence, 0, sizeof(v->fence));
   memset(v->rx, 0, sizeof(v->rx));
   memset(v->damaged, 0, sizeof(v->damaged));
   memset(v->last_wire, 0, sizeof(v->last_wire));
@@ -460,7 +567,7 @@ static int voice_push_rx(bh_voice *v, const uint8_t *wire, uint32_t length,
           plc_good(v);
           if (upsample_frame(v))
             return -3;
-          queue_pcm(v);
+          queue_pcm(v, 1);
         }
         v->stats.rx_frames++;
         produced++;
@@ -473,11 +580,13 @@ static int voice_push_rx(bh_voice *v, const uint8_t *wire, uint32_t length,
     v->rx[v->rx_size] = wire[i];
     v->damaged[v->rx_size++] = (uint8_t)(packet_status != 0);
     if (v->rx_size == 1 && v->rx[0] != 1) {
+      uncertain_rx_sequence(v, 1);
       v->rx_size = 0;
       v->stats.resync_bytes++;
       continue;
     }
     if (v->rx_size == 2 && !header_valid(v->rx)) {
+      uncertain_rx_sequence(v, 1);
       /* Keep a trailing 0x01: it may begin a split H2 sync word. */
       v->rx[0] = v->rx[1];
       v->damaged[0] = v->damaged[1];
@@ -510,17 +619,27 @@ uint32_t bh_voice_read_pcm(bh_voice *v, int16_t *pcm, uint32_t capacity) {
     pcm[i] = quantize(v->queue[(v->queue_read + i) % v->capacity]);
   v->queue_read = (v->queue_read + count) % v->capacity;
   v->queue_size -= count;
+  if (!v->queue_size) v->drain_uncertain = 0;
   return count;
 }
-uint32_t bh_voice_read_f32(bh_voice *v, float *pcm, uint32_t capacity) {
+uint32_t bh_voice_read_f32_fenced(bh_voice *v, float *pcm, uint8_t *fence, uint32_t capacity) {
   if (!ready(v) || !pcm)
     return 0;
   uint32_t count = capacity < v->queue_size ? capacity : v->queue_size;
-  for (uint32_t i = 0; i < count; i++)
+  for (uint32_t i = 0; i < count; i++) {
     pcm[i] = v->queue[(v->queue_read + i) % v->capacity];
+    if (fence) fence[i] = v->fence[(v->queue_read + i) % v->capacity];
+  }
   v->queue_read = (v->queue_read + count) % v->capacity;
   v->queue_size -= count;
+  if (!v->queue_size) v->drain_uncertain = 0;
   return count;
+}
+uint32_t bh_voice_read_f32(bh_voice *v, float *pcm, uint32_t capacity) {
+  return bh_voice_read_f32_fenced(v, pcm, NULL, capacity);
+}
+uint32_t bh_voice_drain_confidence(const bh_voice *v) {
+  return ready(v) && (v->drain_uncertain || v->rx_fence_pending);
 }
 int bh_voice_conceal(bh_voice *v, uint32_t frames) {
   uint32_t i;
@@ -529,11 +648,15 @@ int bh_voice_conceal(bh_voice *v, uint32_t frames) {
   for (i = 0; i < frames; ++i) {
     if (conceal_one(v) < 0)
       return -3;
+    if (v->codec != BH_VOICE_CVSD) v->rx_unacknowledged_timer = 1;
   }
-  /* These frames represent known elapsed slots, so advance the expected H2
-   * sequence and do not conceal the same gap when the next packet arrives. */
-  if (v->rx_started)
-    v->rx_sequence = (v->rx_sequence + frames) % 4u;
+  /* One owner has committed these elapsed slots. Retain their count until a
+   * real H2 frame acknowledges them; late originals must not replay them.
+   * Four is enough to mark the sequence ambiguity, and bounds the counter. */
+  if (v->rx_started && v->codec != BH_VOICE_CVSD) {
+    uint32_t available = 4u - v->rx_concealed;
+    v->rx_concealed += frames < available ? frames : available;
+  }
   v->stats.missing_frames += frames;
   return (int)frames;
 }

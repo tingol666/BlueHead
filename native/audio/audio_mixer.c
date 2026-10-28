@@ -13,27 +13,52 @@
 #include "audio_timeline.h"
 #include "audio_float.h"
 #include "audio_resample.h"
+#include "audio_format_plan.h"
+#include "audio_pcm_boundary.h"
 #include <emmintrin.h>
 #define API __declspec(dllexport)
 #define INPUTS 8
 #define CAPACITY 48064u
 #define TAPS 64
 #define PHASES 1024
+#define REPAIR_MAX_FRAMES 384u
 #if ATOMIC_LLONG_LOCK_FREE != 2 || ATOMIC_INT_LOCK_FREE != 2
 #error BlueHead requires lock-free atomics
 #endif
 typedef struct {
   CRITICAL_SECTION producer;
   float *pcm;
+  /* Same capacity/publication cursor as PCM, producer writes before release.
+   * Format preparation owns allocation; the render consumer never allocates. */
+  uint8_t *fence;
   atomic_ullong read, write, trim, dropped, underruns, prefill;
   atomic_uint active, readers, gain, enabled, connected, epoch, drift_view;
   atomic_uint source_rate;
+  atomic_ullong lifetime_revision;
+  unsigned reserved; /* lifecycle-owned source-slot reservation during add */
   atomic_uint history_need;
   uint32_t target, maximum, capacity;
   atomic_uint continuity_mode, continuity_min, continuity_max, target_view, jitter_view;
   atomic_uint gap_owner;
+  /* Consumer publication, not presentation (which includes prefill time).
+   * The epoch check makes clear/format invalidate an in-flight old callback. */
+  atomic_uint consumer_ready, consumer_epoch;
+  atomic_uint control_generation, consumer_generation;
+  /* Read cursor and future filter support form one bounded consumer view.
+   * Odd publication means unavailable; workers never spin on the callback. */
+  atomic_uint consumer_publication, consumer_support;
   atomic_ullong expired, presentation, deadline_searches, recovery_discarded, invalid_samples;
   atomic_ullong concealed, concealed_silence, merged, rebuffers, expanded, accelerated;
+  atomic_ullong fence_reanchors;
+  atomic_ullong repair_boundaries, repair_windows, repair_frames;
+  /* Absolute PCM end position of the last published repair tag. This is only
+   * a fast-path hint: metadata still belongs to the same write/read/epoch. */
+  atomic_ullong repair_highwater;
+  uint64_t last_fence;
+  /* Render-owned source-position event cursor. Filter taps never advance it. */
+  uint64_t repair_checked;
+  uint32_t repair_remaining, repair_total, repair_waiting;
+  float repair_tail[2];
   uint64_t last_arrival;
   uint32_t previous_frames, adaptive_target, starve_frames, deficit_frames;
   double jitter_peak, adaptive_decay;
@@ -57,6 +82,8 @@ struct MixRoute {
   struct Mixer *owner;
   MixRoute *next;
   uint32_t rate, lookahead, ramp, internal;
+  uint32_t repair_length;
+  float repair_weight[REPAIR_MAX_FRAMES];
   double attack, release;
   BhRateKernel *kernel[INPUTS];
 };
@@ -72,12 +99,80 @@ typedef struct Mixer {
   BhMixQuality quality;
   double limited_total;
   MixRoute *routes, *default_route;
+  uint64_t route_revision; /* lifecycle; route pointer reuse never validates a plan */
   float scratch[CAPACITY * 2], boundary[BHR_MAX_TAPS * 4];
   double accumulated[CAPACITY * 2], delayed[CAPACITY * 2];
   LARGE_INTEGER qpc_frequency;
   float sinc[PHASES + 1][TAPS];
 } Mixer;
 static void release_mixer(Mixer *m);
+/* Nonzero typed boundaries all stop stale-presentation debt. Do not search
+ * only for the original byte1: decoder repair is byte3. Eight-byte zero runs
+ * keep this rare, bounded expiry scan independent of the number of tags. */
+static uint64_t first_pcm_boundary(const Input *s,uint64_t begin,uint64_t count) {
+  while (count) {
+    uint32_t at=(uint32_t)(begin%s->capacity);
+    uint32_t span=(uint32_t)(count>s->capacity-at?s->capacity-at:count), offset=0;
+    const uint8_t *p=s->fence+at;
+    while (span-offset>=sizeof(uint64_t)) {
+      uint64_t word;memcpy(&word,p+offset,sizeof(word));
+      if (word) break;
+      offset+=sizeof(word);
+    }
+    for (;offset<span;++offset) if (p[offset]) return begin+offset;
+    begin+=span;count-=span;
+  }
+  return UINT64_MAX;
+}
+/* Only call after the current output sample's future filter support has been
+ * proved available. Scanning source centres, including crossed centres, makes
+ * downsampling and fractional revisits consume each repair event once. */
+static void repair_boundaries(Input *s,const MixRoute *route,uint64_t centre,int audible) {
+  uint64_t at=s->repair_checked<s->cursor?s->cursor:s->repair_checked;
+  uint32_t events=s->repair_waiting;
+  s->repair_waiting=0;
+  for (;at<=centre;++at)
+    events+=!!(s->fence[at%s->capacity]&BH_PCM_BOUNDARY_REPAIR);
+  if (events) {
+    atomic_fetch_add(&s->repair_boundaries,events);
+    if (audible && !s->repair_remaining && s->continuity.count &&
+        !s->continuity.gap && !s->continuity.merge) {
+      s->repair_total=s->repair_remaining=route->repair_length;
+      s->repair_tail[0]=bhc_at(&s->continuity,1,0);
+      s->repair_tail[1]=bhc_at(&s->continuity,1,1);
+      atomic_fetch_add(&s->repair_windows,1);
+    }
+  }
+  if (s->repair_checked<=centre) s->repair_checked=centre+1;
+}
+/* A downsample step can release centres after its last actual output. Carry
+ * their event count before publishing physical read; the producer may reuse
+ * those slots immediately. Do not start/count a window until a later output
+ * sample really has its required support. */
+static void repair_released(Input *s,uint64_t end) {
+  uint64_t begin=s->repair_checked>s->cursor?s->repair_checked:s->cursor;
+  for (uint64_t at=begin;at<end;++at)
+    s->repair_waiting+=!!(s->fence[at%s->capacity]&BH_PCM_BOUNDARY_REPAIR);
+  if(s->repair_checked<end) s->repair_checked=end;
+}
+static void repair_sample(Input *s,const MixRoute *route,float in[2]) {
+  if (!s->repair_remaining) return;
+  float alpha=route->repair_weight[s->repair_total-s->repair_remaining];
+  for (unsigned ch=0;ch<2;++ch)
+    in[ch]=s->repair_tail[ch]*(1-alpha)+in[ch]*alpha;
+  s->repair_remaining--;
+  atomic_fetch_add(&s->repair_frames,1);
+}
+static void consumer_publish(Input *s, unsigned epoch, unsigned generation,
+                             uint32_t support, int ready) {
+  atomic_fetch_add_explicit(&s->consumer_publication, 1, memory_order_acq_rel);
+  atomic_store(&s->consumer_epoch, epoch);
+  atomic_store(&s->consumer_generation, generation);
+  atomic_store(&s->consumer_support, support);
+  atomic_store_explicit(&s->read, s->cursor, memory_order_release);
+  atomic_store_explicit(&s->consumer_ready, ready, memory_order_release);
+  atomic_fetch_add_explicit(&s->consumer_publication, 1, memory_order_release);
+}
 static void route_history(Mixer *m, int index) {
   unsigned need = 32;
   for (MixRoute *r = m->routes; r; r = r->next)
@@ -111,6 +206,10 @@ static MixRoute *route_create(Mixer *m, uint32_t rate, int internal) {
   route->owner = m;
   route->internal = !!internal;
   route->rate = rate;
+  route->repair_length=(rate+999u)/1000u;
+  for(uint32_t n=0;n<route->repair_length;++n)
+    route->repair_weight[n]=(float)(.5-.5*cos(3.14159265358979323846*n/(route->repair_length-1)));
+  route->repair_weight[0]=0;route->repair_weight[route->repair_length-1]=1;
   route->lookahead = (rate * 3u + 1999u) / 2000u;
   route->ramp = (rate + 199u) / 200u;
   route->attack = exp(-1. / (.00015 * rate));
@@ -135,6 +234,7 @@ static MixRoute *route_create(Mixer *m, uint32_t rate, int internal) {
     atomic_fetch_add(&m->references, 1);
   route->next = m->routes;
   m->routes = route;
+  m->route_revision++;
   for (int i = 0; i < INPUTS; i++)
     route_history(m, i);
   LeaveCriticalSection(&m->lifecycle);
@@ -151,8 +251,10 @@ API void bh_mix_route_free(MixRoute *route) {
   MixRoute **at = &m->routes;
   while (*at && *at != route)
     at = &(*at)->next;
-  if (*at)
+  if (*at) {
     *at = route->next;
+    m->route_revision++;
+  }
   for (int i = 0; i < INPUTS; i++) {
     release_kernel(route->kernel[i]);
     route_history(m, i);
@@ -256,6 +358,7 @@ API Mixer *bh_mix_create(void) {
     atomic_init(&s->epoch, 0);
     atomic_init(&s->drift_view, 1000);
     atomic_init(&s->source_rate, 48000);
+    atomic_init(&s->lifetime_revision, 1);
     atomic_init(&s->history_need, 32);
     s->capacity = CAPACITY;
     atomic_init(&s->continuity_mode, 0);
@@ -264,6 +367,12 @@ API Mixer *bh_mix_create(void) {
     atomic_init(&s->target_view, 0);
     atomic_init(&s->jitter_view, 0);
     atomic_init(&s->gap_owner, BHT_GENERIC);
+    atomic_init(&s->consumer_ready, 0);
+    atomic_init(&s->consumer_epoch, 0);
+    atomic_init(&s->control_generation, 0);
+    atomic_init(&s->consumer_generation, 0);
+    atomic_init(&s->consumer_publication, 0);
+    atomic_init(&s->consumer_support, 0);
     atomic_init(&s->expired, 0);
     atomic_init(&s->presentation, 0);
     atomic_init(&s->deadline_searches, 0);
@@ -275,11 +384,17 @@ API Mixer *bh_mix_create(void) {
     atomic_init(&s->rebuffers, 0);
     atomic_init(&s->expanded, 0);
     atomic_init(&s->accelerated, 0);
+    atomic_init(&s->fence_reanchors, 0);
+    atomic_init(&s->repair_boundaries,0);atomic_init(&s->repair_windows,0);atomic_init(&s->repair_frames,0);
+    atomic_init(&s->repair_highwater,0);
+    s->last_fence = UINT64_MAX;
     bhc_reset(&s->continuity);
     s->pcm = calloc(CAPACITY * 2, sizeof(float));
-    if (!s->pcm) {
+    s->fence = calloc(CAPACITY, 1);
+    if (!s->pcm || !s->fence) {
       for (int j = 0; j <= i; j++) {
         free(m->input[j].pcm);
+        free(m->input[j].fence);
         DeleteCriticalSection(&m->input[j].producer);
       }
       DeleteCriticalSection(&m->lifecycle);
@@ -291,6 +406,7 @@ API Mixer *bh_mix_create(void) {
   if (!m->default_route) {
     for (int i = 0; i < INPUTS; i++) {
       free(m->input[i].pcm);
+      free(m->input[i].fence);
       DeleteCriticalSection(&m->input[i].producer);
     }
     DeleteCriticalSection(&m->lifecycle);
@@ -307,6 +423,7 @@ static void release_mixer(Mixer *m) {
     bh_mix_route_free(m->routes);
   for (int i = 0; i < INPUTS; i++) {
     free(m->input[i].pcm);
+    free(m->input[i].fence);
     DeleteCriticalSection(&m->input[i].producer);
   }
   DeleteCriticalSection(&m->lifecycle);
@@ -316,154 +433,100 @@ API void bh_mix_free(Mixer *m) {
   if (m && !atomic_exchange_explicit(&m->closing, 1, memory_order_acq_rel))
     release_mixer(m);
 }
-/* Format boundaries retire only this source. Queue limits retain their time
- * duration and filter/ring allocation completes before publication. */
-API int bh_mix_format(Mixer *m, int index, uint32_t rate) {
-  if (!m || index < 0 || index >= INPUTS || rate < 8000 || rate > 384000)
-    return -1;
-  EnterCriticalSection(&m->lifecycle);
-  Input *s = &m->input[index];
-  EnterCriticalSection(&s->producer);
-  uint32_t old_rate = atomic_load(&s->source_rate);
-  if (old_rate == rate) {
-    LeaveCriticalSection(&s->producer);
-    LeaveCriticalSection(&m->lifecycle);
-    return 0;
-  }
-  uint32_t capacity = rate + BHR_MAX_TAPS;
-  float *pcm = calloc((size_t)capacity * 2, sizeof(float));
-  /* There are at most one default route plus two endpoint candidates in the
-   * production graph. Do not impose that implementation count on this ABI. */
-  size_t count = 0;
-  for (MixRoute *r = m->routes; r; r = r->next)
-    count++;
-  BhRateKernel **prepared = calloc(count, sizeof(*prepared));
-  size_t n = 0;
-  if (pcm && prepared)
-    for (MixRoute *r = m->routes; r; r = r->next) {
-      prepared[n] = route_kernel(r, rate);
-      if (!prepared[n++])
-        break;
-    }
-  if (!pcm || !prepared || n != count || (count && !prepared[count - 1])) {
-    for (size_t i = 0; i < n; i++)
-      release_kernel(prepared[i]);
-    free(prepared);
-    free(pcm);
-    LeaveCriticalSection(&s->producer);
-    LeaveCriticalSection(&m->lifecycle);
-    return -1;
-  }
-  unsigned active = atomic_exchange(&s->active, 0);
-  while (atomic_load(&s->readers))
-    Sleep(0);
-  n = 0;
-  for (MixRoute *r = m->routes; r; r = r->next) {
-    release_kernel(r->kernel[index]);
-    r->kernel[index] = prepared[n++];
-  }
-  route_history(m, index);
-  free(prepared);
-  free(s->pcm);
-  s->pcm = pcm;
-  s->capacity = capacity;
-  s->target = (uint32_t)bht_scale(s->target, old_rate, rate);
-  s->maximum = (uint32_t)bht_scale(s->maximum, old_rate, rate);
-  atomic_store(&s->continuity_min,
-               (uint32_t)bht_scale(atomic_load(&s->continuity_min), old_rate, rate));
-  atomic_store(&s->continuity_max,
-               (uint32_t)bht_scale(atomic_load(&s->continuity_max), old_rate, rate));
-  atomic_store(&s->dropped, bht_scale(atomic_load(&s->dropped), old_rate, rate));
-  atomic_store(&s->expired, bht_scale(atomic_load(&s->expired), old_rate, rate));
-  atomic_store(&s->recovery_discarded,
-               bht_scale(atomic_load(&s->recovery_discarded), old_rate, rate));
-  atomic_store(&s->target_view, s->target);
-  atomic_store(&s->read, 0);
-  atomic_store(&s->write, 0);
-  atomic_store(&s->trim, 0);
-  s->cursor = s->available = s->history_count = 0;
-  s->render_rate = 0;
-  s->adaptive_target = s->target;
-  s->last_arrival = 0;
-  s->previous_frames = 0;
-  memset(&s->arrival, 0, sizeof(s->arrival));
-  atomic_store(&s->jitter_view, 0);
-  if (old_rate == BHT_RATE && rate != BHT_RATE)
-    atomic_fetch_add(&m->native_formats, 1);
-  else if (old_rate != BHT_RATE && rate == BHT_RATE)
-    atomic_fetch_sub(&m->native_formats, 1);
-  atomic_store(&s->source_rate, rate);
-  atomic_fetch_add(&s->epoch, 1);
-  atomic_store(&s->active, active);
-  LeaveCriticalSection(&s->producer);
-  LeaveCriticalSection(&m->lifecycle);
-  return 0;
-}
-API int bh_mix_add(Mixer *m, uint32_t target, uint32_t maximum) {
+#include "audio_format_plan.inc"
+static int add_source(Mixer *m, uint32_t target, uint32_t maximum) {
   if (!m || !maximum || maximum > CAPACITY - TAPS || target > maximum)
     return -1;
   EnterCriticalSection(&m->lifecycle);
-  int index = -1;
-  for (int i = 0; i < INPUTS; i++)
-    if (!atomic_load(&m->input[i].active)) {
-      Input *s = &m->input[i];
-      if (bh_mix_format(m, i, 48000) < 0)
-        continue;
-      EnterCriticalSection(&s->producer);
-      while (atomic_load(&s->readers))
-        Sleep(0);
-      atomic_store(&s->read, 0);
-      atomic_store(&s->write, 0);
-      atomic_store(&s->trim, 0);
-      atomic_store(&s->dropped, 0);
-      atomic_store(&s->underruns, 0);
-      atomic_store(&s->prefill, 0);
-      atomic_store(&s->gain, 0x3f800000u);
-      atomic_store(&s->enabled, 1);
-      atomic_store(&s->connected, 1);
-      atomic_store(&s->epoch, 0);
-      atomic_store(&s->drift_view, 1000);
-      s->target = target;
-      s->maximum = maximum;
-      s->seen_epoch = s->history_count = 0;
-      s->cursor = s->available = s->rendered = 0;
-      s->presentation_fraction = 0;
-      s->concealed_total = s->silent_total = s->merged_total = 0;
-      s->render_rate = 0;
-      s->gate = 1;
-      s->buffering = 1;
-      s->recover_late = 0;
-      s->phase = s->drift = 0;
-      bht_clock_reset(&s->clock, target);
-      memset(&s->arrival, 0, sizeof(s->arrival));
-      s->deadline_debt = 0;
-      atomic_store(&s->gap_owner, BHT_GENERIC);
-      atomic_store(&s->expired, 0);
-      atomic_store(&s->presentation, 0);
-      atomic_store(&s->deadline_searches, 0);
-      atomic_store(&s->recovery_discarded, 0);
-      atomic_store(&s->invalid_samples, 0);
-      atomic_store(&s->continuity_mode, 0);
-      atomic_store(&s->target_view, target);
-      atomic_store(&s->jitter_view, 0);
-      atomic_store(&s->concealed, 0);
-      atomic_store(&s->concealed_silence, 0);
-      atomic_store(&s->merged, 0);
-      atomic_store(&s->rebuffers, 0);
-      atomic_store(&s->expanded, 0);
-      atomic_store(&s->accelerated, 0);
-      s->last_arrival = 0;
-      s->previous_frames = s->adaptive_target = s->adaptive_decay = 0;
-      s->starve_frames = s->deficit_frames = 0;
-      s->jitter_peak = 0;
-      bhc_reset(&s->continuity);
-      memset(&s->quality, 0, sizeof(s->quality));
-      atomic_store(&s->active, 1);
-      LeaveCriticalSection(&s->producer);
-      index = i;
-      break;
-    }
+  int index=-1;
+  if(!atomic_load(&m->closing))
+    for(int i=0;i<INPUTS;++i)
+      if(!atomic_load(&m->input[i].active) && !m->input[i].reserved) {
+        index=i;m->input[i].reserved=1;
+        atomic_fetch_add(&m->input[i].lifetime_revision,1);break;
+      }
   LeaveCriticalSection(&m->lifecycle);
+  if(index<0) return -1;
+  if(bh_mix_format(m,index,48000)<0) {
+    EnterCriticalSection(&m->lifecycle);m->input[index].reserved=0;
+    LeaveCriticalSection(&m->lifecycle);return -1;
+  }
+  EnterCriticalSection(&m->lifecycle);
+  Input *s=&m->input[index];
+  EnterCriticalSection(&s->producer);
+  if(atomic_load(&m->closing)) {
+    s->reserved=0;LeaveCriticalSection(&s->producer);
+    LeaveCriticalSection(&m->lifecycle);return -1;
+  }
+  atomic_store(&s->read, 0);
+  atomic_store(&s->write, 0);
+  atomic_store(&s->trim, 0);
+  atomic_store(&s->dropped, 0);
+  atomic_store(&s->underruns, 0);
+  atomic_store(&s->prefill, 0);
+  atomic_store(&s->gain, 0x3f800000u);
+  atomic_store(&s->enabled, 1);
+  atomic_store(&s->connected, 1);
+  atomic_store(&s->epoch, 0);
+  atomic_store(&s->drift_view, 1000);
+  s->target = target;
+  s->maximum = maximum;
+  s->seen_epoch = s->history_count = 0;
+  s->cursor = s->available = s->rendered = 0;
+  s->presentation_fraction = 0;
+  s->concealed_total = s->silent_total = s->merged_total = 0;
+  s->render_rate = 0;
+  s->gate = 1;
+  s->buffering = 1;
+  s->recover_late = 0;
+  s->phase = s->drift = 0;
+  bht_clock_reset(&s->clock, target);
+  memset(&s->arrival, 0, sizeof(s->arrival));
+  s->deadline_debt = 0;
+  atomic_store(&s->gap_owner, BHT_GENERIC);
+  atomic_store(&s->consumer_ready, 0);
+  atomic_store(&s->consumer_epoch, 0);
+  atomic_store(&s->control_generation, 0);
+  atomic_store(&s->consumer_generation, 0);
+  atomic_store(&s->consumer_publication, 0);
+  atomic_store(&s->consumer_support, 0);
+  atomic_store(&s->expired, 0);
+  atomic_store(&s->presentation, 0);
+  atomic_store(&s->deadline_searches, 0);
+  atomic_store(&s->recovery_discarded, 0);
+  atomic_store(&s->invalid_samples, 0);
+  atomic_store(&s->continuity_mode, 0);
+  atomic_store(&s->target_view, target);
+  atomic_store(&s->jitter_view, 0);
+  atomic_store(&s->concealed, 0);
+  atomic_store(&s->concealed_silence, 0);
+  atomic_store(&s->merged, 0);
+  atomic_store(&s->rebuffers, 0);
+  atomic_store(&s->expanded, 0);
+  atomic_store(&s->accelerated, 0);
+  atomic_store(&s->fence_reanchors, 0);
+  atomic_store(&s->repair_boundaries,0);atomic_store(&s->repair_windows,0);atomic_store(&s->repair_frames,0);
+  s->last_fence = UINT64_MAX;
+  s->repair_checked=0;s->repair_remaining=s->repair_total=s->repair_waiting=0;
+  atomic_store(&s->repair_highwater,0);
+  s->last_arrival = 0;
+  s->previous_frames = s->adaptive_target = s->adaptive_decay = 0;
+  s->starve_frames = s->deficit_frames = 0;
+  s->jitter_peak = 0;
+  bhc_reset(&s->continuity);
+  memset(&s->quality, 0, sizeof(s->quality));
+  atomic_fetch_add(&s->lifetime_revision,1);
+  s->reserved=0;
+  atomic_store(&s->active, 1);
+  LeaveCriticalSection(&s->producer);
+  LeaveCriticalSection(&m->lifecycle);
+  return index;
+}
+API int bh_mix_add(Mixer *m,uint32_t target,uint32_t maximum) {
+  if(!m) return -1;
+  atomic_fetch_add(&m->references,1);
+  int index=add_source(m,target,maximum);
+  release_mixer(m);
   return index;
 }
 API void bh_mix_remove(Mixer *m, int index) {
@@ -473,6 +536,7 @@ API void bh_mix_remove(Mixer *m, int index) {
   Input *s = &m->input[index];
   EnterCriticalSection(&s->producer);
   atomic_store(&s->active, 0);
+  atomic_fetch_add(&s->lifetime_revision,1);
   /* Only control waits; already acquired callbacks complete normally. */
   while (atomic_load(&s->readers))
     Sleep(0);
@@ -493,6 +557,8 @@ API void bh_mix_clear(Mixer *m, int index) {
   memset(&s->arrival, 0, sizeof(s->arrival));
   atomic_store(&s->jitter_view, 0);
   atomic_fetch_add(&s->epoch, 1);
+  atomic_fetch_add(&s->lifetime_revision,1);
+  atomic_store(&s->consumer_ready, 0);
   LeaveCriticalSection(&s->producer);
 }
 API void bh_mix_gain(Mixer *m, int index, float gain) {
@@ -500,20 +566,27 @@ API void bh_mix_gain(Mixer *m, int index, float gain) {
     atomic_store(&m->input[index].gain, bits(gain));
 }
 API void bh_mix_gate(Mixer *m, int index, int enabled) {
-  if (m && index >= 0 && index < INPUTS)
-    atomic_store(&m->input[index].enabled, !!enabled);
+  if (m && index >= 0 && index < INPUTS) {
+    if (atomic_exchange(&m->input[index].enabled, !!enabled) != (unsigned)!!enabled)
+      atomic_fetch_add(&m->input[index].control_generation, 1);
+    if (!enabled) atomic_store(&m->input[index].consumer_ready, 0);
+  }
 }
 /* Transport lifetime is independent of UI/continuity gates. A late decoder
  * commit cannot reopen a physically retired connection. Lock-free on USB. */
 API void bh_mix_connected(Mixer *m,int index,int connected) {
-  if(m && index>=0 && index<INPUTS) atomic_store(&m->input[index].connected,!!connected);
+  if(m && index>=0 && index<INPUTS) {
+    if (atomic_exchange(&m->input[index].connected,!!connected) != (unsigned)!!connected)
+      atomic_fetch_add(&m->input[index].control_generation,1);
+    if (!connected) atomic_store(&m->input[index].consumer_ready,0);
+  }
 }
 API void bh_mix_call(Mixer *m, int index) {
   if (m)
     atomic_store(&m->call, index);
 }
 static void write_timed(Mixer *m, int index, const float *pcm, uint32_t frames, uint64_t arrival,
-                        int mono) {
+                        int mono, const uint8_t *fence) {
   if (!m || !pcm || index < 0 || index >= INPUTS || !frames)
     return;
   Input *s = &m->input[index];
@@ -525,6 +598,7 @@ static void write_timed(Mixer *m, int index, const float *pcm, uint32_t frames, 
   if (frames > s->maximum) {
     atomic_fetch_add(&s->dropped, frames - s->maximum);
     pcm += (frames - s->maximum) * (mono ? 1 : 2);
+    if (fence) fence += frames - s->maximum;
     frames = s->maximum;
   }
   if (atomic_load(&s->continuity_mode) && atomic_load(&s->gap_owner) == BHT_GENERIC) {
@@ -557,6 +631,20 @@ static void write_timed(Mixer *m, int index, const float *pcm, uint32_t frames, 
     return;
   }
   uint32_t at = (uint32_t)(w % s->capacity);
+  uint32_t first = frames < s->capacity-at ? frames : s->capacity-at;
+  if (fence) {
+    memcpy(s->fence+at, fence, first);
+    memcpy(s->fence, fence+first, frames-first);
+    /* Producer work, never callback work. Publish this hint before the PCM
+     * release below; a consumer limits it to its acquired write snapshot. */
+    for(uint32_t end=frames;end;--end) if(fence[end-1]&BH_PCM_BOUNDARY_REPAIR) {
+      atomic_store_explicit(&s->repair_highwater,w+end,memory_order_relaxed);
+      break;
+    }
+  } else {
+    memset(s->fence+at, 0, first);
+    memset(s->fence, 0, frames-first);
+  }
   uint64_t invalid = 0;
   for (uint32_t i = 0; i < frames; i++) {
     uint32_t frame = (at + i) % s->capacity;
@@ -573,18 +661,30 @@ static void write_timed(Mixer *m, int index, const float *pcm, uint32_t frames, 
     }
   }
   atomic_fetch_add(&s->invalid_samples, invalid);
-  if (w - r + frames > s->maximum)
-    atomic_store_explicit(&s->trim, w + frames - s->maximum, memory_order_release);
+  /* Logical retirement is not physical ring ownership. Old callbacks may
+   * still read retired slots, so capacity above uses actual read. Maximum
+   * inventory uses max(read,trim), and a new write never moves trim backwards
+   * across an explicit clear/source epoch. Producers share this lock. */
+  uint64_t trim=atomic_load_explicit(&s->trim,memory_order_acquire);
+  uint64_t effective=r>trim?r:trim;
+  if (w-effective+frames>s->maximum) {
+    uint64_t next=w+frames-s->maximum;
+    if (next>trim) atomic_store_explicit(&s->trim,next,memory_order_release);
+  }
   atomic_store_explicit(&s->write, w + frames, memory_order_release);
   LeaveCriticalSection(&s->producer);
 }
 API void bh_mix_write(Mixer *m, int index, const float *pcm, uint32_t frames) {
-  write_timed(m, index, pcm, frames, 0, 0);
+  write_timed(m, index, pcm, frames, 0, 0, NULL);
+}
+API void bh_mix_write_fenced(Mixer *m, int index, const float *pcm,
+                             const uint8_t *fence, uint32_t frames) {
+  write_timed(m, index, pcm, frames, 0, 0, fence);
 }
 /* Offline virtual-clock harness. Production writes always use the real QPC. */
 API void bh_mix_test_write_at(Mixer *m, int index, const float *pcm, uint32_t frames,
                               uint64_t arrival) {
-  write_timed(m, index, pcm, frames, arrival, 0);
+  write_timed(m, index, pcm, frames, arrival, 0, NULL);
 }
 API void bh_mix_write_s16_mono(Mixer *m, int index, const int16_t *pcm, uint32_t frames) {
   if (!m || !pcm || frames > CAPACITY)
@@ -601,7 +701,11 @@ API void bh_mix_write_s16_mono(Mixer *m, int index, const int16_t *pcm, uint32_t
   }
 }
 API void bh_mix_write_f32_mono(Mixer *m, int index, const float *pcm, uint32_t frames) {
-  write_timed(m, index, pcm, frames, 0, 1);
+  write_timed(m, index, pcm, frames, 0, 1, NULL);
+}
+API void bh_mix_write_f32_mono_fenced(Mixer *m, int index, const float *pcm,
+                                      const uint8_t *fence, uint32_t frames) {
+  write_timed(m, index, pcm, frames, 0, 1, fence);
 }
 API int bh_mix_timeline(Mixer *m, int index, int owner) {
   if (!m || index < 0 || index >= INPUTS || owner < BHT_GENERIC || owner > BHT_CAPTURE)
@@ -638,6 +742,45 @@ API void bh_mix_observe(Mixer *m, int index, uint64_t position, uint64_t arrival
   atomic_store_explicit(&s->jitter_view,
                         (unsigned)(jitter * atomic_load(&s->source_rate) / BHT_RATE),
                         memory_order_release);
+  LeaveCriticalSection(&s->producer);
+}
+API void bh_mix_observe_confident(Mixer *m, int index, uint64_t position,
+                                 uint64_t arrival, uint32_t uncertain) {
+  if (!m || index<0 || index>=INPUTS) return;
+  Input *s=&m->input[index];
+  EnterCriticalSection(&s->producer);
+  double jitter=bht_arrival_confident(&s->arrival,position,arrival,
+                                     m->qpc_frequency.QuadPart,uncertain);
+  atomic_store_explicit(&s->jitter_view,
+      (unsigned)(jitter*atomic_load(&s->source_rate)/BHT_RATE),memory_order_release);
+  LeaveCriticalSection(&s->producer);
+}
+/* Worker-only conservative snapshot. Actual ring room and original receipt
+ * age bound synthetic audio; this is not a reservation or a debt credit. */
+API void bh_mix_gap_budget(Mixer *m, int index, uint32_t rate, uint64_t arrival,
+                           uint32_t *free_frames, uint32_t *remaining_frames) {
+  if (!free_frames || !remaining_frames) return;
+  *free_frames=*remaining_frames=0;
+  if (!m || index<0 || index>=INPUTS || !rate || !arrival) return;
+  Input *s=&m->input[index];
+  EnterCriticalSection(&s->producer);
+  if (atomic_load(&s->active) && atomic_load(&s->source_rate)==rate) {
+    uint64_t w=atomic_load_explicit(&s->write,memory_order_acquire);
+    uint64_t r=atomic_load_explicit(&s->read,memory_order_acquire);
+    uint64_t trim=atomic_load_explicit(&s->trim,memory_order_acquire);
+    if (trim>r) r=trim;
+    uint64_t queued=w>r?w-r:0;
+    *free_frames=queued<s->maximum?s->maximum-(uint32_t)queued:0;
+    LARGE_INTEGER now; QueryPerformanceCounter(&now);
+    uint64_t elapsed=(uint64_t)now.QuadPart>arrival?(uint64_t)now.QuadPart-arrival:0;
+    uint64_t bound=(uint64_t)s->maximum*m->qpc_frequency.QuadPart/rate;
+    if (elapsed<bound) {
+      uint64_t used=elapsed*rate/m->qpc_frequency.QuadPart;
+      *remaining_frames=used<s->maximum?s->maximum-(uint32_t)used:0;
+      uint64_t horizon=queued+rate/50u;
+      if (*remaining_frames>horizon) *remaining_frames=(uint32_t)horizon;
+    }
+  }
   LeaveCriticalSection(&s->producer);
 }
 static float sample(Input *s, int offset, int channel) {
@@ -770,6 +913,7 @@ static int render_legacy(Mixer *m, float *output, uint32_t count, float master) 
     if (trim > w)
       trim = w;
     unsigned epoch = atomic_load_explicit(&s->epoch, memory_order_acquire);
+    unsigned control_generation = atomic_load(&s->control_generation);
     if (trim > s->cursor || epoch != s->seen_epoch) {
       if (trim > s->cursor) {
         if (epoch == s->seen_epoch)
@@ -780,6 +924,7 @@ static int render_legacy(Mixer *m, float *output, uint32_t count, float master) 
       s->phase = s->drift = 0;
       s->buffering = 1;
       s->seen_epoch = epoch;
+      s->repair_checked=s->cursor;s->repair_remaining=s->repair_total=s->repair_waiting=0;
     }
     s->available = w - s->cursor;
     /* Observe the queue at the centre of this render quantum. Comparing a
@@ -794,7 +939,7 @@ static int render_legacy(Mixer *m, float *output, uint32_t count, float master) 
     }
     if (s->buffering && s->available < clock_target) {
       atomic_fetch_add(&s->prefill, count);
-      atomic_store_explicit(&s->read, s->cursor, memory_order_release);
+      consumer_publish(s, epoch, control_generation, 0, 0);
       atomic_fetch_sub(&s->readers, 1);
       continue;
     }
@@ -820,9 +965,13 @@ static int render_legacy(Mixer *m, float *output, uint32_t count, float master) 
     }
     uint32_t produced = 0;
     double position = s->phase;
+    uint64_t repair_limit=atomic_load_explicit(&s->repair_highwater,memory_order_relaxed);
+    if(repair_limit>w) repair_limit=w;
+    int repair_work=s->repair_waiting || repair_limit>s->repair_checked;
     for (; produced < count && (uint64_t)position < s->available; produced++, position += ratio) {
       int offset = (int)position;
       float fraction = (float)(position - offset);
+      if(repair_work) repair_boundaries(s,m->default_route,s->cursor+(uint32_t)offset,0);
       if (s->gate < target)
         s->gate = fminf(target, s->gate + 1.0f / 480);
       else if (s->gate > target)
@@ -837,6 +986,8 @@ static int render_legacy(Mixer *m, float *output, uint32_t count, float master) 
     uint32_t consumed = (uint32_t)position;
     if (consumed > s->available)
       consumed = (uint32_t)s->available;
+    if(repair_work) repair_released(s,s->cursor+consumed);
+    else if(s->repair_checked<s->cursor+consumed) s->repair_checked=s->cursor+consumed;
     save_history(s, consumed);
     s->cursor += consumed;
     s->available -= consumed;
@@ -853,7 +1004,9 @@ static int render_legacy(Mixer *m, float *output, uint32_t count, float master) 
     if (ppm > 1000)
       ppm = 1000;
     atomic_store(&s->drift_view, (unsigned)llround(ppm + 1000));
-    atomic_store_explicit(&s->read, s->cursor, memory_order_release);
+    consumer_publish(s, epoch, control_generation, 0,
+                     !s->buffering && consumed != 0 &&
+                     atomic_load(&s->enabled) && atomic_load(&s->connected));
     atomic_fetch_sub(&s->readers, 1);
   }
   float peak = 0;
@@ -871,6 +1024,37 @@ static int render_legacy(Mixer *m, float *output, uint32_t count, float master) 
   return 1;
 }
 #include "audio_mix_continuity.inc"
+/* Worker-only playout view. Raw FIFO room still owns capacity budgeting;
+ * samples held solely as SRC future support cannot postpone a deadline.
+ * An overlapping consumer/format/control publication fails closed, without
+ * a retry loop, and a new producer write is visible before another render. */
+API uint32_t bh_mix_playout_frames(Mixer *m, int index, uint64_t *frames) {
+  if (!frames) return 0;
+  *frames = 0;
+  if (!m || index < 0 || index >= INPUTS) return 0;
+  Input *s = &m->input[index];
+  unsigned publication = atomic_load_explicit(&s->consumer_publication, memory_order_acquire);
+  if (publication & 1u) return 0;
+  unsigned epoch = atomic_load(&s->epoch);
+  unsigned generation = atomic_load(&s->control_generation);
+  if (!atomic_load_explicit(&s->consumer_ready, memory_order_acquire) ||
+      atomic_load(&s->consumer_epoch) != epoch ||
+      atomic_load(&s->consumer_generation) != generation) return 0;
+  uint32_t rate = atomic_load(&s->source_rate);
+  uint32_t support = atomic_load(&s->consumer_support);
+  uint64_t r = atomic_load_explicit(&s->read, memory_order_acquire);
+  uint64_t w = atomic_load_explicit(&s->write, memory_order_acquire);
+  uint64_t trim = atomic_load_explicit(&s->trim, memory_order_acquire);
+  if (trim > r) r = trim;
+  uint64_t queued = w > r ? w - r : 0;
+  if (!atomic_load(&s->active) || !atomic_load(&s->enabled) || !atomic_load(&s->connected) ||
+      !atomic_load_explicit(&s->consumer_ready, memory_order_acquire) ||
+      atomic_load(&s->epoch) != epoch || atomic_load(&s->control_generation) != generation ||
+      atomic_load_explicit(&s->consumer_publication, memory_order_acquire) != publication)
+    return 0;
+  *frames = queued > support ? bht_scale(queued - support, rate, BHT_RATE) : 0;
+  return 1;
+}
 API uint64_t bh_mix_value(Mixer *m, int index, int field) {
   if (!m)
     return 0;
@@ -885,6 +1069,18 @@ API uint64_t bh_mix_value(Mixer *m, int index, int field) {
   uint32_t rate = atomic_load(&s->source_rate);
   if (field == 20)
     return rate;
+  if (field == 25) return atomic_load(&s->fence_reanchors);
+  if (field == 27) return atomic_load(&s->repair_boundaries);
+  if (field == 28) return atomic_load(&s->repair_windows);
+  if (field == 29) return atomic_load(&s->repair_frames);
+  if (field == 26) {
+    unsigned generation = atomic_load(&s->control_generation);
+    return atomic_load_explicit(&s->consumer_ready, memory_order_acquire) &&
+           atomic_load(&s->consumer_epoch) == atomic_load(&s->epoch) &&
+           atomic_load(&s->consumer_generation) == generation &&
+           atomic_load(&s->active) && atomic_load(&s->connected) && atomic_load(&s->enabled) &&
+           atomic_load(&s->control_generation) == generation;
+  }
   if (field == 0) {
     uint64_t r = atomic_load_explicit(&s->read, memory_order_acquire),
              w = atomic_load_explicit(&s->write, memory_order_acquire),

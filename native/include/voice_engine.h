@@ -45,6 +45,12 @@ BH_VOICE_API int bh_voice_reset(bh_voice *voice);
 /* Worker-only receive recovery; transmit sequence and encoder stay intact. */
 BH_VOICE_API int bh_voice_reset_rx(bh_voice *voice);
 BH_VOICE_API int bh_voice_skip_rx(bh_voice *voice, uint32_t wire_bytes);
+/* Worker has lost H2 cycle identity. Keep framing, decoder, queued PCM and TX;
+ * only stop inferring modulo-four gaps and fence the next genuine sample. */
+BH_VOICE_API int bh_voice_reanchor_rx_clock(bh_voice *voice);
+/* Trustworthy H2 header continuity, independently of queued PLC confidence.
+ * A damaged header cannot refresh receive timing or authorize timer gaps. */
+BH_VOICE_API uint32_t bh_voice_rx_clock_known(const bh_voice *voice);
 /* Fixed 7.5ms encoding frame: 360 samples for legacy 48k creation, otherwise
  * pcm_rate*75/10000. Returns bytes written, or <0.
  * Capacity errors do not consume sequence/codec state. CVSD here means HCI
@@ -63,6 +69,13 @@ BH_VOICE_API int bh_voice_push_rx(bh_voice *voice, const uint8_t *wire, uint32_t
                                   uint32_t packet_status);
 BH_VOICE_API uint32_t bh_voice_read_pcm(bh_voice *voice, int16_t *pcm, uint32_t capacity);
 BH_VOICE_API uint32_t bh_voice_read_f32(bh_voice *voice, float *pcm, uint32_t capacity);
+/* Same mono-sample cursor as both legacy reads. A byte1 marks the actual first
+ * genuine sample beyond an uncertain receive interval; CVSD marks every real
+ * frame because it cannot identify late originals. Query confidence before
+ * draining: pending genuine fences also cover PLC-only output. */
+BH_VOICE_API uint32_t bh_voice_read_f32_fenced(bh_voice *voice, float *pcm,
+                                              uint8_t *fence, uint32_t capacity);
+BH_VOICE_API uint32_t bh_voice_drain_confidence(const bh_voice *voice);
 BH_VOICE_API int bh_voice_conceal(bh_voice *voice, uint32_t frames);
 BH_VOICE_API int bh_voice_get_stats(const bh_voice *voice, bh_voice_stats *stats,
                                     uint32_t stats_size);

@@ -165,8 +165,8 @@ public sealed class EngineSettings
     public string? system_endpoint_id { get; set; }
     public bool calls { get; set; } = true;
     public bool voice_single_device { get; set; } = true;
-    public bool ldac_enabled { get; set; }
-    public bool lhdc5_enabled { get; set; }
+    public bool ldac_enabled { get; set; } = true;
+    public bool lhdc5_enabled { get; set; } = true;
     public bool le_audio_enabled { get; set; }
     public bool microphone_muted { get; set; }
     public double playback_gain { get; set; } = 1;

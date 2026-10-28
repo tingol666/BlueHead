@@ -49,8 +49,8 @@ class Settings:
     system_endpoint_id: str | None = None
     calls: bool = True
     voice_single_device: bool = True
-    ldac_enabled: bool = False
-    lhdc5_enabled: bool = False
+    ldac_enabled: bool = True
+    lhdc5_enabled: bool = True
     le_audio_enabled: bool = False
     connection_policy: str = ""
     allowed_codecs: list[str] | None = None

@@ -11,6 +11,10 @@ internal static partial class Program
 {
     private static void CodecChecks(MainWindow window, Dictionary<string, bool> checks, string folder, Action<string> receive)
     {
+        var fresh = new EngineSettings();
+        checks["fresh_install_allows_ldac_and_lhdc"] = fresh.ldac_enabled && fresh.lhdc5_enabled && CodecPolicyWindow.Allowed(fresh).IsSupersetOf(new[] { "ldac", "lhdc5" });
+        var disabled = JsonSerializer.Deserialize<EngineSettings>("{\"ldac_enabled\":false,\"lhdc5_enabled\":false}")!;
+        checks["saved_disabled_hd_codecs_are_not_enabled_by_new_defaults"] = !disabled.ldac_enabled && !disabled.lhdc5_enabled && !CodecPolicyWindow.Allowed(disabled).Overlaps(new[] { "ldac", "lhdc5" });
         int CaptureControl(FrameworkElement element, string name)
         {
             element.UpdateLayout();

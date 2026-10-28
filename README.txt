@@ -15,6 +15,7 @@ https://github.com/tingol666/BlueHead
 点击“电脑声音”选择采集来源。默认“全部应用声音（排除 BlueHead）”；指定播放设备须与 BlueHead 的播放设备分开，避免返送。采集不可用时不影响麦克风。
 电脑声音混合要求 Windows build 20348+，通常为 Windows 11；当前无声学回声消除，建议戴耳机。
 A2DP：SBC/AAC/aptX/aptX HD、实验 LDAC、LHDC 5.0。
+首次安装默认启用 LDAC、LHDC 5.0；升级会保留已有的编码选择。
 HFP：CVSD/mSBC/LC3-SWB。iPhone/iPad 标准 AAC/SBC、HFP、AVRCP。
 LE Audio：LC3 单播媒体和麦克风发送、音频广播接收、BASS/PAST、VCS/MICS。
 首页媒体编码右侧的齿轮打开“连接与编码”，选择 LE Audio 偏好、允许的经典编码与首选。每个经典编码旁的小齿轮可设置其采样率及可用的位深、码率或质量上限，自动保存。实际格式仍由双方能力协商，设备卡片显示结果。

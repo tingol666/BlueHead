@@ -54,9 +54,10 @@ internal static partial class Program
         var trace = Environment.GetEnvironmentVariable("BLUEHEAD_UI_TRACE") == "1";
         if (trace) Console.WriteLine($"UI wait {line}: start ({milliseconds} ms)");
         // Keep the diagnostic clock independent of dispatcher timer delivery.
-        // Posting a Send operation also wakes an otherwise quiet virtual desktop.
+        // Posting an operation also wakes an otherwise quiet virtual desktop.
+        // Drain ready input/binding/background work before asserting UI state.
         using (var timer = new System.Threading.Timer(_ =>
-            dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(() => frame.Continue = false)),
+            dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() => frame.Continue = false)),
             null, milliseconds, Timeout.Infinite))
             Dispatcher.PushFrame(frame);
         if (trace) Console.WriteLine($"UI wait {line}: complete");

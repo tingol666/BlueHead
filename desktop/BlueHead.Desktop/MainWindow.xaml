@@ -89,7 +89,7 @@
 
         <Border x:Name="MediaProfileCard" Style="{StaticResource Card}" Padding="12,8" Margin="0,0,0,8"><StackPanel>
 
-         <Grid x:Name="PlaybackOptionsRow"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="212"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="208"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+         <Grid x:Name="PlaybackOptionsRow"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="212"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="190"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
 
           <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,6,0"><TextBlock Text="多设备播放" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/><ui:Button x:Name="PlaybackHelpButton" Content="ⓘ" Tag="devices" Click="AudioOptionHelpClick" Padding="2,0" MinHeight="20" FontSize="15" Background="Transparent" BorderThickness="0" Foreground="{StaticResource AudioAccent}" Margin="3,0,0,0" ToolTip="点击了解多台设备连接时的播放方式" AutomationProperties.Name="多设备播放说明，点击查看"/></StackPanel>
 
@@ -99,7 +99,7 @@
 
           <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,6,0"><TextBlock x:Name="MediaCodecLabel" Text="媒体编码" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/><ui:Button x:Name="CodecHelpButton" Content="ⓘ" Tag="codec" Click="AudioOptionHelpClick" Padding="2,0" MinHeight="20" FontSize="15" Background="Transparent" BorderThickness="0" Foreground="{StaticResource AudioAccent}" Margin="3,0,0,0" ToolTip="点击了解媒体编码用途和选择建议" AutomationProperties.Name="媒体编码说明，点击查看"/></StackPanel>
 
-          <ComboBox x:Name="CodecPicker" Grid.Column="4" FontSize="12" SelectedIndex="0" SelectionChanged="CodecChanged" AutomationProperties.Name="媒体编码与参考码率" ToolTipService.ShowOnDisabled="True">
+          <ComboBox x:Name="CodecPicker" Grid.Column="4" FontSize="12" SelectedIndex="0" SelectionChanged="CodecChanged" AutomationProperties.Name="媒体编码与理论码率" ToolTipService.ShowOnDisabled="True">
            <ComboBox.ToolTip><ToolTip><TextBlock x:Name="CodecHint" Text="优先协商可用高清媒体编码；多设备断续时可切换 AAC。仅影响媒体播放，语音编码自动协商。" MaxWidth="320"/></ToolTip></ComboBox.ToolTip>
            <ComboBoxItem Content="自动 · 优先高清" Tag="auto"/>
            <ComboBoxItem Content="LHDC 5.0" Tag="lhdc5"/>

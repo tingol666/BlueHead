@@ -106,8 +106,17 @@ def create_services(
         source_pac=[lc3_record(microphone=True, max_octets=support.source_octets, blocks=support.source_blocks)]
         if source
         else (),
-        source_audio_locations=bap.AudioLocation.FRONT_CENTER if source else None,
+        # A single conventional channel also reaches older mobile audio HALs.
+        # Some peers map FRONT_CENTER to a location-less mono stream, whose
+        # offload path requires a newer HAL API. This is still one mono source;
+        # it does not duplicate/pan PCM or reduce its negotiated LC3 quality.
+        source_audio_locations=bap.AudioLocation.FRONT_LEFT if source else None,
     )
+    if source:
+        # Publish the real optional notification property, including its CCCD.
+        # A capability/layout change then participates in normal Service Changed
+        # and database-hash handling; never fabricate a hash or delete a bond.
+        capabilities.source_audio_locations.properties |= gatt.Characteristic.Properties.NOTIFY
     streams = AudioStreamService(
         device,
         bridge,
@@ -116,5 +125,6 @@ def create_services(
         emit=emit,
         source_octets=support.source_octets if source else 400,
         source_blocks=support.source_blocks if source else 2,
+        supported_phys=1 | (2 if getattr(device, 'supports_le_features', lambda _: False)(hci.LeFeatureMask.LE_2M_PHY) else 0),
     )
     return ServiceBundle(capabilities, streams, CommonAudioService())

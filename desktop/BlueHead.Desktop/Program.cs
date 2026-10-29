@@ -513,6 +513,10 @@ internal static partial class Program
         window.ShowPage("home"); Click(window.StartButton);
         Event("""{"event":"starting"}""");
         Event("""{"event":"device","key":"lost-controller-demo","state":"已连接"}""");
+        Event("""{"event":"error","category":"le_audio_stream","message":"音频通道未能准备，请断开并重新连接这个设备。"}""");
+        checks["le_stream_failure_does_not_request_driver_repair"] = window.CurrentControllerGuide == null && !window.ControllerNeedsInitialization && window.NoticeText.Text.Contains("音频通道");
+        Event("""{"event":"warning","category":"le_audio_connection_changed","message":"连接已变化"}""");
+        checks["le_connection_change_does_not_request_driver_repair"] = window.CurrentControllerGuide == null && !window.ControllerNeedsInitialization;
         var previousDriverOperations = window.SelfTestDriverOperations.Count;
         Event("""{"event":"error","category":"controller_hardware_error","message":"Controller error"}""");
         Event("""{"event":"stopping"}""");

@@ -27,7 +27,7 @@ public partial class MainWindow
     {
         settingsTimer.Tick += async (_, _) => await FlushSettings();
         NameEntry.TextChanged += SettingsEdited;
-        foreach (var toggle in new[] { CallsToggle, VoiceProtectionToggle, LeAudioToggle, TrayToggle, AutoStartToggle })
+        foreach (var toggle in new[] { CallsToggle, VoiceProtectionToggle, AutoReconnectToggle, LeAudioToggle, TrayToggle, AutoStartToggle })
         { toggle.Checked += SettingsEdited; toggle.Unchecked += SettingsEdited; }
         foreach (var picker in new[] { MediaBufferPicker, CallBufferPicker, MaximumPicker, ConnectionPolicyPicker }) picker.SelectionChanged += SettingsEdited;
     }
@@ -50,6 +50,7 @@ public partial class MainWindow
     {
         settingsDirty = true; settingsTimer.Stop(); settingsTimer.Start();
         PolicyWindow?.Synchronize(settings);
+        UpdateProtocolAvailability();
         codecSaveError = "";
         SettingsHint.Text = "正在自动保存…";
         UpdateCodecNotice();
@@ -64,7 +65,7 @@ public partial class MainWindow
         { settingsDirty = true; SettingsHint.Text = "请填写电脑对外显示的名称，随后会自动保存。"; return false; }
         if (System.Text.Encoding.UTF8.GetByteCount(next.name) > 200)
         { settingsDirty = true; SettingsHint.Text = "电脑名称过长，请缩短后会自动保存。"; return false; }
-        var values = new { next.name, next.calls, next.voice_single_device, next.buffer_ms, next.call_buffer_ms,
+        var values = new { next.name, next.calls, next.voice_single_device, next.auto_reconnect, next.buffer_ms, next.call_buffer_ms,
             next.maximum_devices, next.codec, next.allowed_codecs, next.codec_parameters, next.ldac_enabled, next.lhdc5_enabled,
             next.connection_policy, next.le_audio_enabled };
         preferencesRequest = ++requestId;
@@ -173,7 +174,7 @@ public partial class MainWindow
         }
         return true;
     }
-    private string StartupSettings() => JsonSerializer.Serialize(new { settings.name, settings.calls, settings.voice_single_device, settings.buffer_ms, settings.call_buffer_ms, settings.maximum_devices, policy = CodecPolicyWindow.Policy(settings) });
+    private string StartupSettings() => JsonSerializer.Serialize(new { settings.name, settings.calls, settings.voice_single_device, settings.auto_reconnect, settings.buffer_ms, settings.call_buffer_ms, settings.maximum_devices, policy = CodecPolicyWindow.Policy(settings) });
     private void StartCodecSession() { codecSession++; codecReconnectDevices.Clear(); codecRestartRequired = false; activeStartupSettings = StartupSettings(); }
     private void ResetCodecPending() { codecSession++; codecReconnectDevices.Clear(); codecRestartRequired = false; activeStartupSettings = null; pendingPreferenceReplies.Clear(); UpdateCodecNotice(); }
     private void UpdateCodecNotice()

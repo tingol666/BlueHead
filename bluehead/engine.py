@@ -3,6 +3,7 @@ from dataclasses import asdict, fields
 import json
 import logging
 import math
+import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import sys
@@ -61,7 +62,7 @@ def validate_settings(values, *, require_transport=True):
     for identity in (settings.output_endpoint_id, settings.input_endpoint_id, settings.system_endpoint_id):
         if identity is not None and (not isinstance(identity, str) or not 1 <= len(identity) <= 512):
             raise ValueError("无效声音设备标识")
-    for value in (settings.calls, settings.voice_single_device, settings.ldac_enabled, settings.lhdc5_enabled, settings.le_audio_enabled, settings.microphone_muted, settings.system_audio_enabled):
+    for value in (settings.calls, settings.voice_single_device, settings.auto_reconnect, settings.ldac_enabled, settings.lhdc5_enabled, settings.le_audio_enabled, settings.microphone_muted, settings.system_audio_enabled):
         if type(value) is not bool:
             raise ValueError("开关值必须为布尔值")
     for value in (settings.playback_gain, settings.microphone_gain, settings.system_gain):
@@ -314,7 +315,7 @@ class Engine:
             patch = message.get('values')
             allowed = {'codec', 'allowed_codecs', 'codec_parameters', 'ldac_enabled', 'lhdc5_enabled', 'connection_policy',
                        'le_audio_enabled', 'name', 'maximum_devices', 'buffer_ms', 'call_buffer_ms',
-                       'calls', 'voice_single_device'}
+                       'calls', 'voice_single_device', 'auto_reconnect'}
             if not isinstance(patch, dict) or set(patch) - allowed:
                 raise ValueError('自动保存设置格式无效')
             with self.settings_lock:
@@ -337,7 +338,7 @@ class Engine:
                 for name in ('codec', 'allowed_codecs', 'codec_parameters', 'ldac_enabled', 'lhdc5_enabled'))
             restart_required = running and any(getattr(previous_settings, name) != getattr(next_settings, name)
                 for name in ('connection_policy', 'le_audio_enabled', 'name', 'maximum_devices', 'buffer_ms',
-                             'call_buffer_ms', 'calls', 'voice_single_device'))
+                             'call_buffer_ms', 'calls', 'voice_single_device', 'auto_reconnect'))
             self.emit('preferences', success=True, settings=asdict(next_settings),
                       request_id=message.get('request_id', 0), deferred=running,
                       reconnect_required=reconnect_required, restart_required=restart_required,
@@ -412,6 +413,9 @@ def main(directory):
     handler.addFilter(MetadataOnly())
     logging.basicConfig(level=logging.WARNING, handlers=[handler], format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logging.getLogger("bluehead").setLevel(logging.INFO)
+    if os.environ.get("BLUEHEAD_LE_SIGNAL_TRACE") == "1":
+        # MetadataOnly permits selected control events, never audio/key PDUs.
+        logging.getLogger("bumble.host").setLevel(logging.DEBUG)
     sys.stdin.reconfigure(encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
     engine = Engine(directory, sys.stdout)

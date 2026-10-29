@@ -20,6 +20,9 @@ internal static partial class Program
             }
         }
         receive("""{"event":"stopped"}""");
+        window.LeAudioToggle.IsChecked = false; window.FlushSettings().GetAwaiter().GetResult();
+        window.ShowPage("broadcast"); Pump();
+        checks["disabled_le_cannot_open_a_hidden_broadcast_page"] = window.NavBroadcast.Visibility == Visibility.Collapsed && window.BroadcastPage.Visibility == Visibility.Collapsed && window.HomePage.IsVisible;
         window.ShowPage("settings"); window.LeAudioToggle.IsChecked = true;
         checks["application_settings_do_not_duplicate_codec_allow_controls"] = window.FindName("LdacToggle") == null && window.FindName("Lhdc5Toggle") == null;
         window.OpenCodecPolicy(); Pump();

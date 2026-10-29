@@ -63,6 +63,11 @@ public partial class CodecPolicyWindow : Window
     private void Refresh()
     {
         var previous = applying; applying = true;
+        var leEnabled = SelectedPolicy != "classic";
+        LeEnabledToggle.IsChecked = leEnabled;
+        LeAudioPanel.Visibility = PolicyRow.Visibility = PolicyExplanation.Visibility = PairingGuideButton.Visibility = leEnabled ? Visibility.Visible : Visibility.Collapsed;
+        ClassicCodecPanel.Margin = new Thickness(0, leEnabled ? 10 : 0, 0, 0);
+        ClassicCodecHint.Text = "勾选后向设备提供此编码；右侧齿轮可调参数。" + (leEnabled ? "这些选项不改变 LE Audio 的 LC3。" : "");
         PolicyExplanation.Text = SelectedPolicy switch
         {
             "le_only" => "只接受 LE Audio / LC3，不开放经典蓝牙媒体与语音。适合 LE 配对；更改后需停止再开始接收，并在发送设备上忽略 BlueHead 后重新配对。",
@@ -118,6 +123,14 @@ public partial class CodecPolicyWindow : Window
         editor.Show();
     }
     private void Commit() { if (!applying) changed(SelectedPolicy, allowed.ToList(), preferred, CodecParameters.CopyAll(parameters)); }
+    private void LeEnabledChanged(object sender, RoutedEventArgs e)
+    {
+        if (applying) return;
+        applying = true;
+        SelectPolicy(LeEnabledToggle.IsChecked == true ? "prefer_le" : "classic");
+        applying = false;
+        Refresh(); Commit();
+    }
     private void PolicyChanged(object sender, SelectionChangedEventArgs e) { if (applying) return; Refresh(); Commit(); }
     private void PreferenceChanged(object sender, SelectionChangedEventArgs e) { if (applying) return; preferred = (PreferencePicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "auto"; Commit(); }
     private void CodecChanged(object sender, RoutedEventArgs e)

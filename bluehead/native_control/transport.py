@@ -54,8 +54,9 @@ def dispatch_packet(host, packet, epoch):
 
 
 class _Source:
-    def __init__(self, client, *, guard_commands=False):
+    def __init__(self, client, *, guard_commands=False, capture=None):
         self.client, self.sink = client, None
+        self.capture = capture
         self.guard_commands, self.command_owner = guard_commands, None
         self.failure = None
         self.failure_category = ""
@@ -81,6 +82,8 @@ class _Source:
                 if self.failure is not None:
                     break
                 batch = self.client.request("usb_poll")
+                if self.capture:
+                    self.capture.batch(batch)
                 self.startup = batch
                 if batch.get("starting"):
                     await asyncio.sleep(0.04)
@@ -101,6 +104,8 @@ class _Source:
                     self.ready.set()
                 epochs = batch.get("packet_epochs", ())
                 for index, packet in enumerate(batch["packets"]):
+                    if self.capture:
+                        self.capture.packet(bytes.fromhex(packet), 1)
                     if self.sink:
                         dispatch_packet(
                             self.sink, bytes.fromhex(packet), epochs[index] if index < len(epochs) else 0
@@ -164,10 +169,13 @@ def startup_error(detail):
 
 
 class _Sink:
-    def __init__(self, client):
+    def __init__(self, client, capture=None):
         self.client = client
+        self.capture = capture
 
     def on_packet(self, packet):
+        if self.capture:
+            self.capture.packet(packet, 0)
         self.client.request("usb_send", packet=bytes(packet).hex())
 
 
@@ -177,8 +185,15 @@ class NativeTransport:
         target = transport_target(spec)
         if le_audio:
             target["le_audio"] = True
-        self.client.request("usb_open", **target)
-        self.source, self.sink = _Source(client, guard_commands=le_audio), _Sink(client)
+        from .capture import ControlCapture
+        self.capture = ControlCapture.configured()
+        try:
+            self.client.request("usb_open", **target)
+        except BaseException:
+            if self.capture:
+                self.capture.close()
+            raise
+        self.source, self.sink = _Source(client, guard_commands=le_audio, capture=self.capture), _Sink(client, self.capture)
 
     async def __aenter__(self):
         return self
@@ -219,3 +234,7 @@ class NativeTransport:
         except OSError:
             if exc_type is None:
                 raise
+        finally:
+            if self.capture:
+                result = await asyncio.to_thread(self.capture.close)
+                logging.getLogger(__name__).info("HCI diagnostic capture closed: %s", result)

@@ -40,6 +40,7 @@ class Settings:
     buffer_ms: int = 60
     call_buffer_ms: int = 30
     maximum_devices: int = 3
+    auto_reconnect: bool = False
     output_device: int | None = None
     input_device: int | None = None
     system_device: int | None = None
@@ -301,6 +302,8 @@ class Receiver:
         self.device = None
         self.stop_event = asyncio.Event()
         self.retiring = False
+        from .reconnect import LinkReconnect
+        self.reconnect = LinkReconnect(self)
         self.output = None
         self.calls = None
         self.voice_protection = None
@@ -743,6 +746,7 @@ class Receiver:
             self.emit("warning", message="已达到设置的连接数量上限")
             return
         self.connections[key] = connection
+        self.reconnect.watch(connection)
         self.emit("device", key=key, state="已连接，等待音频")
         if self.le_audio:
             self.le_audio.progress.connected(connection, le=False)
@@ -1110,6 +1114,7 @@ class Receiver:
         self.stop_event.set()
         self.emit("stopping")
         retirement = Retirement()
+        await retirement.async_call(self.reconnect.close)
         connections = list(self.connections.items())
         if self.le_audio:
             connections.extend((str(connection.peer_address), connection) for connection in self.le_audio.connections.values())

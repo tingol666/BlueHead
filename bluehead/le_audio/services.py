@@ -11,6 +11,7 @@ from bumble import att, gatt
 from bumble.device import CisLink
 from .ascs_control import StreamControl
 from .endpoints import State
+from .cis_acceptance import CisAcceptance, CisSuperseded
 from ..errors import SourceExpired
 
 log = logging.getLogger(__name__)
@@ -30,13 +31,15 @@ class AudioStreamService(gatt.TemplateService):
         source_octets=400,
         source_blocks=2,
         enable_timeout=8.0,
+        supported_phys=3,
     ):
         self.device, self.bridge, self.notify_engine = device, bridge, emit
         self.admit = lambda owner: True
         self.peer_activity = lambda owner: None
         self.discovery_activity = lambda owner, phase: None
         self.control = StreamControl(
-            maximum_peers, microphone=microphone, source_octets=source_octets, source_blocks=source_blocks
+            maximum_peers, microphone=microphone, source_octets=source_octets, source_blocks=source_blocks,
+            supported_phys=supported_phys,
         )
         if hasattr(bridge, "attach"):
             bridge.attach(self.control)
@@ -49,6 +52,7 @@ class AudioStreamService(gatt.TemplateService):
         self.locks, self.pending, self.watched = {}, {}, {}
         self.prepared, self.bound, self.links, self.routes = set(), set(), {}, {}
         self.tasks, self.writers = set(), set()
+        self.accepting = {}
         self.listeners = []
         self.ases = {}
         for ase in (1, 2, 3) if microphone else (1, 2):
@@ -69,7 +73,8 @@ class AudioStreamService(gatt.TemplateService):
             gatt.CharacteristicValue(write=self.write_control),
         )
         super().__init__([*self.ases.values(), self.control_point])
-        self._listen(device, device.EVENT_CIS_REQUEST, lambda link: self.spawn(self.accept(link)))
+        self._listen(device, device.EVENT_CIS_REQUEST, self.incoming)
+        self._listen(device, "cis_establishment", self.established)
 
     def _listen(self, emitter, event, callback):
         emitter.on(event, callback)
@@ -142,6 +147,13 @@ class AudioStreamService(gatt.TemplateService):
                 if not self.current(owner):
                     return
                 result = self.control.write(owner, bytes(data), secured=bool(owner.encryption))
+                log.info("LE ASCS control: acl=%s opcode=%s response=%s", owner.handle,
+                         data[0] if data else -1, result.response.hex())
+                for endpoint in self.control.peer(owner).pool.endpoints.values():
+                    if endpoint.codec is not None and endpoint.qos is not None:
+                        log.info("LE ASCS configuration: ase=%s rate=%s channels=%s duration_us=%s octets=%s blocks=%s qos=%s",
+                                 endpoint.ase, endpoint.codec.rate, endpoint.codec.channels,
+                                 endpoint.codec.duration_us, endpoint.codec.octets, endpoint.codec.blocks, endpoint.qos)
                 if any(endpoint.codec is not None for endpoint in self.control.peer(owner).pool.endpoints.values()):
                     self.discovery_activity(owner, 'configured')
                 await self.notify(owner, self.control_point, result.response)
@@ -190,34 +202,98 @@ class AudioStreamService(gatt.TemplateService):
             and peer.pool.cis_matches(endpoint.token, link.acl_connection, link.cig_id, link.cis_id)
         ]
 
-    async def accept(self, link):
+    def begin_accept(self, link):
+        previous = self.accepting.get(link.handle)
+        if previous is not None:
+            previous.supersede()
+        stale = self.links.get(link.handle)
+        if stale is not None and stale is not link:
+            self.links.pop(link.handle)
+            self.forget(stale)
+            self.spawn(self.link_lost(stale, retired=True))
+        attempt = CisAcceptance(self.device, link)
+        self.accepting[link.handle] = attempt
+        return attempt
+
+    def incoming(self, link):
+        # Event installation must precede the next HCI packet in the batch.
+        previous = self.accepting.get(link.handle)
+        if previous is not None and previous.same_request(link):
+            previous.follow(link)
+            log.info("LE duplicate pending CIS coalesced: cis=%s", link.handle)
+            return previous.task
+        attempt = self.begin_accept(link)
+        attempt.task = self.spawn(self.accept(link, attempt))
+        return attempt.task
+
+    def established(self, link):
+        attempt = self.accepting.get(link.handle)
+        if (attempt is None or attempt.link is not link) and self.links.get(link.handle) is not link:
+            self.spawn(self.retire_unowned(link))
+
+    async def retire_unowned(self, link):
+        attempt = self.accepting.get(link.handle)
+        if (self.device.cis_links.get(link.handle) is link
+                and link.state == CisLink.State.ESTABLISHED
+                and (attempt is None or attempt.link is not link)
+                and not any(route is link for route in self.routes.values())):
+            try:
+                await asyncio.wait_for(link.disconnect(), 2)
+            except Exception as error:
+                log.warning("LE unowned CIS retirement failed: cis=%s error=%s", link.handle, type(error).__name__)
+
+    async def accept(self, link, attempt=None):
         owner = link.acl_connection
+        attempt = attempt or self.begin_accept(link)
+        if attempt.task is None:
+            attempt.task = asyncio.current_task()
+        tokens = []
+        log.info("LE CIS request: acl=%s cis=%s cig=%s stream=%s", owner.handle, link.handle, link.cig_id, link.cis_id)
         try:
             lock = self.watch(owner)
-        except att.ATT_Error:
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(self.device.reject_cis_request(link), 2)
-            return
-        async with lock:
-            tokens = self.matching(link)
-            if not tokens or any(token not in self.prepared for token in tokens):
+            async with lock:
+                tokens = self.matching(link)
+                ready = bool(tokens) and all(token in self.prepared for token in tokens)
+            if not ready:
                 with contextlib.suppress(Exception):
-                    await asyncio.wait_for(self.device.reject_cis_request(link), 2)
+                    if self.device.cis_links.get(link.handle) is link and not attempt.result.done():
+                        await asyncio.wait_for(self.device.reject_cis_request(link), 2)
                 return
-            try:
-                await asyncio.wait_for(self.device.accept_cis_request(link), 3)
-                if not self.current(owner) or not self.matching(link):
-                    with contextlib.suppress(Exception):
-                        await asyncio.wait_for(link.disconnect(), 2)
+            # Neither the peer lock nor Bumble's global CIS convenience lock
+            # may be held while awaiting an asynchronous controller event.
+            await asyncio.wait_for(attempt.run(), 3)
+            link = attempt.link
+            async with lock:
+                if (self.accepting.get(link.handle) is not attempt or not self.current(owner)
+                        or not self.matching(link) or self.device.cis_links.get(link.handle) is not link):
                     return
+                log.info("LE CIS established: cis=%s", link.handle)
                 self.links[link.handle] = link
                 self._listen(link, "disconnection", lambda reason: self.spawn(self.link_lost(link)))
                 await self.activate(link)
-            except Exception as error:
-                for token in tokens:
-                    await self.fail(token, error)
+        except CisSuperseded:
+            log.info("LE CIS attempt superseded: cis=%s", link.handle)
+        except att.ATT_Error:
+            with contextlib.suppress(Exception):
+                if self.device.cis_links.get(link.handle) is link and not attempt.result.done():
+                    await asyncio.wait_for(self.device.reject_cis_request(link), 2)
+        except Exception as error:
+            if self.accepting.get(link.handle) is attempt and self.current(owner):
+                lock = self.locks.get(id(owner))
+                if lock is not None:
+                    async with lock:
+                        for token in tokens:
+                            if self.control.current(token):
+                                await self.fail(token, error)
+        finally:
+            attempt.close()
+            if self.accepting.get(link.handle) is attempt:
+                self.accepting.pop(link.handle, None)
+            await self.retire_unowned(link)
 
     async def activate(self, link):
+        if self.device.cis_links.get(link.handle) is not link:
+            return
         for token in self.matching(link):
             if token in self.bound or token not in self.prepared:
                 continue
@@ -299,18 +375,23 @@ class AudioStreamService(gatt.TemplateService):
                 self.notify_engine(
                     "error", message="音频通道未能准备，请断开并重新连接这个设备。", category="le_audio_stream"
                 )
-        log.warning("LE stream setup failed (%s)", type(error).__name__)
+        log.warning("LE stream setup failed: ase=%s source=%s error=%s", token.ase, token.source,
+                    type(error).__name__, exc_info=(type(error), error, error.__traceback__))
 
-    async def link_lost(self, link):
-        if self.links.get(link.handle) is not link:
+    async def link_lost(self, link, *, retired=False):
+        if not retired and self.links.get(link.handle) is not link:
             return
-        self.links.pop(link.handle)
+        if self.links.get(link.handle) is link:
+            self.links.pop(link.handle)
         self.forget(link)
         lock = self.locks.get(id(link.acl_connection))
         if lock is None:
             return
         async with lock:
-            for token in self.matching(link):
+            for token in tuple(token for token, route in self.routes.items() if route is link):
+                if not self.control.current(token):
+                    await self.stop(token)
+                    continue
                 peer = self.control.peer(token.owner)
                 old, fresh = peer.pool.disable(token)
                 if token.source:
@@ -319,6 +400,9 @@ class AudioStreamService(gatt.TemplateService):
                 await self.state_changed(fresh)
 
     def disconnected(self, owner):
+        for attempt in tuple(self.accepting.values()):
+            if attempt.link.acl_connection is owner:
+                attempt.disconnected(0)
         tokens = self.control.disconnected(owner)
         for handle, link in tuple(self.links.items()):
             if link.acl_connection is owner:
@@ -338,6 +422,8 @@ class AudioStreamService(gatt.TemplateService):
 
     async def close(self):
         self.closed = True
+        for attempt in self.accepting.values():
+            attempt.close()
         for timer in self.ready_timers.values():
             timer.cancel()
         self.ready_timers.clear()

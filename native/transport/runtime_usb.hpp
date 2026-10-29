@@ -189,6 +189,7 @@ class Usb {
       deadline_misses{0};
   std::atomic<int> last_submit_error{0}, last_transfer_status{LIBUSB_TRANSFER_COMPLETED};
   std::atomic<bool> startup_complete{false}, controller_failed{false}, controller_restarted{false}, callback_failed{false};
+  ControllerEvidence controller_evidence;
   std::atomic<uint32_t> hardware_error{0}, last_event{0}, last_opcode{0};
   std::atomic<uint64_t> last_receive{0};
   void check(int result, const char *stage) {
@@ -514,6 +515,7 @@ class Usb {
       if (n) last_event = p[0];
       auto signal = controller_signal(p, n, startup_complete.load(), capabilities.backend == "intel-tlv");
       if (signal != ControllerSignal::Normal) {
+        controller_evidence.record(signal,p,n);
         controller_failed = signal == ControllerSignal::HardwareError;
         controller_restarted = signal == ControllerSignal::Restarted;
         if (signal == ControllerSignal::HardwareError) hardware_error = p[2];
@@ -1057,6 +1059,8 @@ public:
   bool active() const { return alive.load(); }
   json startup() const {
     std::lock_guard<std::mutex> lock(init_mutex);
+    std::array<uint8_t,9> terminal{};
+    auto terminal_size=controller_evidence.copy(terminal.data(),uint32_t(terminal.size()));
     return {{"starting", initializing.load()},
             {"startup_complete", startup_complete.load()},
             {"firmware_state", firmware_state},
@@ -1070,6 +1074,7 @@ public:
                           {"iso_packet_length", le_capabilities.packet_length()}, {"iso_packets", le_capabilities.packet_count()}}},
             {"firmware_error", init_code},
             {"firmware_profile", init_profile},
+            {"controller_terminal_event", hex(terminal.data(),terminal_size)},
             {"error", init_error}};
   }
   const char *terminal_reason() const {

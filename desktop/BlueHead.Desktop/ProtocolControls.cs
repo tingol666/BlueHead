@@ -27,6 +27,9 @@ public partial class MainWindow
     }
     private void UpdateProtocolAvailability()
     {
+        var leVisibility = settings.le_audio_enabled ? Visibility.Visible : Visibility.Collapsed;
+        NavBroadcast.Visibility = ConnectionPolicyPicker.Visibility = LeAudioDetails.Visibility = leVisibility;
+        if (!settings.le_audio_enabled && BroadcastPage.Visibility == Visibility.Visible) ShowPage("home");
         LeAudioState.Text = !EffectiveLeEnabled ? "开启后自动保存，再点击音频中心的“开始接收”。" : !running ? "点击音频中心的“开始接收”后，这里显示适配器能力。" : leCapabilitySummary.Length > 0 ? leCapabilitySummary : "正在检查适配器的 LE Audio 能力…";
         if (running && sessionLeEnabled != settings.le_audio_enabled) LeAudioState.Text += " 连接偏好已修改，下次开始接收生效。";
         string reason, action;

@@ -1,8 +1,9 @@
-"""Restore bonded Service Changed subscriptions without touching pairing keys.
+"""Bonded GATT client configuration and confirmed database invalidation.
 
-Only opaque identity hashes, a database hash and an opted-in CCCD are persisted.
-Disk work is outside realtime audio. Unknown/unbonded peers never get unsolicited
-indications; failed confirmation is retried on the next encrypted connection.
+Preload notification opt-ins before advertising; disk writes stay outside HCI
+callbacks. Layout and bond fingerprints prevent replay across identities or
+re-pairing. Service Changed is only sent to opted-in, bonded encrypted peers;
+failed confirmation retains the old database hash for the next connection.
 """
 
 import asyncio
@@ -11,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from .subscriptions import BondedSubscriptions
 
 
 class ServiceCache:
@@ -25,6 +27,17 @@ class ServiceCache:
         self.server = getattr(self.device, 'gatt_server', None)
         if self.characteristic is not None:
             self.characteristic.on('subscription', self.subscription)
+        self.subscriptions = BondedSubscriptions(self)
+
+    async def load(self):
+        await self.subscriptions.load()
+
+    def pairing_started(self, owner):
+        self.subscriptions.pairing_started(owner)
+
+    def paired(self, owner, keys):
+        self.subscriptions.paired(owner, keys)
+        self.checked.discard(id(owner))
 
     def identity(self, owner):
         local = str(getattr(self.device, 'public_address', ''))
@@ -52,6 +65,7 @@ class ServiceCache:
             self.spawn(self.remember(owner, bool(indicate)))
 
     def ready(self, owner):
+        self.subscriptions.restore(owner)
         if (self.characteristic is not None and self.app.admitted(owner)
                 and getattr(owner, 'encryption', False) and id(owner) not in self.checked):
             self.checked.add(id(owner))
@@ -95,12 +109,17 @@ class ServiceCache:
         try:
             async with self.lock:
                 self.records = await asyncio.to_thread(self.read)
-                if not await self.bonded(owner) or not self.app.admitted(owner):
+                if (not await self.bonded(owner) or not self.app.admitted(owner)
+                        or id(owner) in self.subscriptions.new_bonds):
                     return
                 record = self.records.get(self.identity(owner))
-                if not record or not record['subscribed']:
+                if (not record or not record['subscribed']
+                        or self.subscriptions.service_changed_opt_in(owner) is False):
                     return
-                self.server.subscribers.setdefault(owner, {})[self.characteristic.handle] = b'\x02\0'
+                live = self.server.subscribers.setdefault(owner, {})
+                live.setdefault(self.characteristic.handle, b'\x02\0')
+                if not live[self.characteristic.handle][0] & 2:
+                    return
                 digest = self.digest(owner)
                 if record['hash'] != digest:
                     await asyncio.wait_for(self.device.indicate_subscriber(
@@ -115,9 +134,11 @@ class ServiceCache:
 
     def disconnected(self, owner):
         self.checked.discard(id(owner))
+        self.subscriptions.disconnected(owner)
 
     async def close(self):
         self.closed = True
+        await self.subscriptions.close()
         if self.characteristic is not None:
             self.characteristic.remove_listener('subscription', self.subscription)
         for task in tuple(self.tasks):

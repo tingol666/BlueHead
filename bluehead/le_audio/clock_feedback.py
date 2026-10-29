@@ -44,6 +44,8 @@ class ClockFeedback:
             self.task = asyncio.create_task(self.poll(link, self.halt))
 
     async def poll(self, link, halt):
+        previous = None
+        unusable = 0
         try:
             while not halt.is_set():
                 try:
@@ -63,6 +65,24 @@ class ClockFeedback:
                 # round-trip/time estimate enters the real-time audio loop.
                 if response.status:
                     return
+                sample = tuple(getattr(response, name, None) for name in (
+                    "packet_sequence_number", "tx_time_stamp", "time_offset"
+                ))
+                if all(type(value) is int for value in sample):
+                    sequence, stamp, offset = sample
+                    anchor = (stamp + offset) & 0xFFFFFFFF
+                    # A successful status does not prove a usable clock. Some
+                    # controllers advertise this command but return constants.
+                    # Keep native frequency holdover; do not repeatedly query
+                    # the device, reset PCM or mistake this for a radio failure.
+                    if previous is not None and (sequence == previous[0] or anchor == previous[1]):
+                        unusable += 1
+                    else:
+                        unusable = 0
+                    previous = sequence, anchor
+                    if unusable >= 2:
+                        log.debug("ISO TX clock did not advance; retaining native cadence holdover")
+                        return
         except asyncio.CancelledError:
             # Cancellation is reserved for whole-receiver teardown.
             raise

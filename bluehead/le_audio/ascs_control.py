@@ -111,6 +111,8 @@ class Payload:
     configuration: bytes = b""
     metadata: bytes = b""
     delay: tuple = (10000, 80000, 20000, 60000)
+    transport_ms: int = 10
+    preferred_phy: int = 2
 
 
 @dataclass
@@ -140,10 +142,13 @@ def uint24(value):
 
 
 class StreamControl:
-    def __init__(self, maximum_peers=3, *, microphone=True, source_octets=400, source_blocks=2):
+    def __init__(self, maximum_peers=3, *, microphone=True, source_octets=400, source_blocks=2, supported_phys=3):
         if not 1 <= maximum_peers <= 4:
             raise ValueError("Unsupported LE peer budget")
         self.maximum_peers = maximum_peers
+        if type(supported_phys) is not int or supported_phys not in (1, 3):
+            raise ValueError("Invalid local CIS PHY capabilities")
+        self.supported_phys = supported_phys
         self.delay_caps = None
         self.microphone = bool(microphone)
         if not 20 <= source_octets <= 400 or source_blocks not in (1, 2):
@@ -174,10 +179,11 @@ class StreamControl:
         if endpoint.state in (State.IDLE, State.RELEASING):
             return result
         if endpoint.state == State.CODEC:
-            cfg = peer.payloads[ase].configuration
+            payload = peer.payloads[ase]
+            cfg = payload.configuration
             return (
                 result
-                + struct.pack("<BBBH", 0, 2, 2, 100)
+                + struct.pack("<BBBH", 0, payload.preferred_phy, 2, payload.transport_ms)
                 + b"".join(uint24(n) for n in peer.payloads[ase].delay)
                 + b"\x06\x00\x00\x00\x00"
                 + bytes([len(cfg)])
@@ -224,12 +230,16 @@ class StreamControl:
                     "Invalid presentation capability range", Reason.PRESENTATION_DELAY, unsupported=True
                 )
             peer.pool.configure(entry.ase, peer.owner, codec, secured=True)
-            peer.payloads[entry.ase] = Payload(config, delay=delay)
+            preferred_phy = phy if phy in (1, 2) and self.supported_phys & (1 << (phy - 1)) else (2 if self.supported_phys & 2 else 1)
+            peer.payloads[entry.ase] = Payload(config, delay=delay, transport_ms=codec.preferred_transport_ms,
+                                            preferred_phy=preferred_phy)
             return [Effect("stop", token)] if token else []
         if token is None:
             raise EndpointError("Configure ASE before using it")
         if opcode == 2:
             qos = entry.values[0]
+            if qos.phy in (1, 2) and not self.supported_phys & (1 << (qos.phy - 1)):
+                raise ConfigurationError("This controller cannot use the requested CIS PHY", Reason.PHY, unsupported=True)
             delay = peer.payloads[entry.ase].delay
             if not delay[0] <= qos.presentation_us <= delay[1]:
                 raise ConfigurationError(

@@ -62,6 +62,9 @@ class MetadataOnly(logging.Filter):
                 "HCI_COMMAND_STATUS_EVENT:", "HCI_ACCEPT_SYNCHRONOUS_CONNECTION_REQUEST_COMMAND:",
                 "HCI_ENHANCED_ACCEPT_SYNCHRONOUS_CONNECTION_REQUEST_COMMAND:",
                 "HCI_SETUP_SYNCHRONOUS_CONNECTION_COMMAND:", "HCI_ENHANCED_SETUP_SYNCHRONOUS_CONNECTION_COMMAND:",
+                "HCI_LE_CIS_REQUEST_EVENT:", "HCI_LE_CIS_ESTABLISHED_EVENT:",
+                "HCI_LE_ACCEPT_CIS_REQUEST_COMMAND:", "HCI_LE_REJECT_CIS_REQUEST_COMMAND:",
+                "HCI_LE_SETUP_ISO_DATA_PATH_COMMAND:", "HCI_LE_REMOVE_ISO_DATA_PATH_COMMAND:",
             ))
         if record.name == "bumble.transport.usb":
             return message.startswith(("SCO alternate settings", "SCO OUT: alternate setting", "SCO link",

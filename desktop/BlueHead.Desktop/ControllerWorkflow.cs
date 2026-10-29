@@ -28,7 +28,7 @@ public partial class MainWindow
     private bool ApplyControllerFailure(JsonElement message)
     {
         string code = message.Text("category");
-        if (code.Length == 0 || code.StartsWith("audio_", StringComparison.Ordinal) ||
+        if (code.Length == 0 || code.StartsWith("audio_", StringComparison.Ordinal) || code.StartsWith("le_audio_", StringComparison.Ordinal) ||
             code is "source_expired" or "native_channel" or "session_cleanup" or "usb_callback_failed" or "device_removed" || ReceptionAdapter == null) return false;
         controllerFailureId = ReceptionAdapter.AdapterId;
         controllerCode = code; controllerProfile = message.Text("firmware_profile"); controllerDiagnostic = message.Text("message");

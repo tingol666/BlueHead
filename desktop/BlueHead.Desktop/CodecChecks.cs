@@ -14,6 +14,8 @@ internal static partial class Program
         CodecBitrateChecks(checks);
         checks["home_codec_order_matches_connection_codec_settings"] = window.CodecPicker.Items.OfType<ComboBoxItem>().Select(item => item.Tag?.ToString()).SequenceEqual(new[] { "auto" }.Concat(CodecPolicyWindow.Codecs.Select(item => item.Code)));
         var fresh = new EngineSettings();
+        checks["le_audio_is_opt_in_for_new_and_legacy_settings"] = !fresh.le_audio_enabled && CodecPolicyWindow.Policy(fresh) == "classic" && !JsonSerializer.Deserialize<EngineSettings>("{}")!.le_audio_enabled;
+        checks["software_reconnect_is_opt_in_for_new_and_legacy_settings"] = !fresh.auto_reconnect && !JsonSerializer.Deserialize<EngineSettings>("{}")!.auto_reconnect && window.AutoReconnectToggle.IsChecked == false;
         checks["fresh_install_allows_every_available_classic_codec"] = fresh.ldac_enabled && fresh.lhdc5_enabled && CodecPolicyWindow.Allowed(fresh).SetEquals(CodecPolicyWindow.Codecs.Select(item => item.Code));
         var disabled = JsonSerializer.Deserialize<EngineSettings>("{\"ldac_enabled\":false,\"lhdc5_enabled\":false}")!;
         checks["saved_disabled_hd_codecs_are_not_enabled_by_new_defaults"] = !disabled.ldac_enabled && !disabled.lhdc5_enabled && !CodecPolicyWindow.Allowed(disabled).Overlaps(new[] { "ldac", "lhdc5" });
@@ -76,6 +78,8 @@ internal static partial class Program
         checks["codec_gear_reuses_home_row_and_opens_policy"] = policy.IsVisible && policy.Title.Contains("连接与编码") && Math.Abs(window.CodecSettingsButton.TranslatePoint(new(0,0), window).Y - window.CodecPicker.TranslatePoint(new(0,0), window).Y) < 3;
         policy.PolicyPicker.SelectedIndex = 1; window.FlushSettings().GetAwaiter().GetResult();
         checks["codec_policy_and_settings_le_switch_stay_synchronized"] = window.LeAudioToggle.IsChecked == false && window.ConnectionPolicyPicker.SelectedIndex == 1 && window.SelfTestCommands.Last().GetProperty("values").Text("connection_policy") == "classic";
+        checks["disabled_le_hides_broadcast_and_both_policy_editors"] = window.NavBroadcast.Visibility == Visibility.Collapsed && window.ConnectionPolicyPicker.Visibility == Visibility.Collapsed && window.LeAudioDetails.Visibility == Visibility.Collapsed && policy.LeAudioPanel.Visibility == Visibility.Collapsed && !policy.LeEnabledToggle.IsVisible && policy.PolicyRow.Visibility == Visibility.Collapsed && policy.PairingGuideButton.Visibility == Visibility.Collapsed && policy.LeEnabledToggle.IsChecked == false && policy.ClassicCodecPanel.IsEnabled && policy.ClassicCodecPanel.Margin.Top == 0;
+        Capture(policy, Path.Combine(folder, "classic-only-codec-policy.png"));
         var sbc = policy.CheckFor("sbc");
         var ldac = policy.CheckFor("ldac");
         checks["sbc_compatibility_is_always_selected_and_cannot_be_unchecked"] = sbc.IsChecked == true && !sbc.IsEnabled;
@@ -83,8 +87,9 @@ internal static partial class Program
         checks["allowed_codec_change_is_separate_from_preference"] = window.SelfTestCommands.Last().GetProperty("values").GetProperty("allowed_codecs").EnumerateArray().Any(item => item.GetString() == "ldac");
         ldac.IsChecked = false; window.FlushSettings().GetAwaiter().GetResult();
         checks["disabled_codec_stays_visible_but_dimmed"] = ldac.Opacity < 1 && window.CodecPicker.Items.OfType<ComboBoxItem>().Single(item => Equals(item.Tag, "ldac")).IsEnabled == false;
-        policy.PolicyPicker.SelectedIndex = 0; window.FlushSettings().GetAwaiter().GetResult();
+        window.ShowPage("settings"); window.LeAudioToggle.IsChecked = true; window.FlushSettings().GetAwaiter().GetResult(); window.ShowPage("home"); Pump();
         checks["le_preference_saves_without_stopping_receiver"] = Stops() == stops && window.LeAudioToggle.IsChecked == true;
+        checks["enabling_le_reveals_broadcast_and_policy_choices_in_both_editors"] = window.NavBroadcast.Visibility == Visibility.Visible && window.ConnectionPolicyPicker.Visibility == Visibility.Visible && window.LeAudioDetails.Visibility == Visibility.Visible && policy.LeEnabledToggle.IsVisible && policy.PolicyRow.IsVisible && policy.PairingGuideButton.IsVisible;
         checks["every_codec_has_a_vector_settings_button"] = CodecPolicyWindow.Codecs.All(item => policy.GearFor(item.Code).Content is Viewbox view && view.Child is System.Windows.Shapes.Path path && path.Data.Bounds.Width > 18 && !policy.GearFor(item.Code).FontFamily.Source.Contains("Icons"));
         void Choose(ComboBox picker, string tag) => picker.SelectedItem = picker.Items.OfType<ComboBoxItem>().Single(item => Equals(item.Tag, tag));
         foreach (var (code, _) in CodecPolicyWindow.Codecs)
@@ -192,5 +197,10 @@ internal static partial class Program
         Capture(policy, Path.Combine(folder, "le-only-codec-policy.png"));
         policy.PolicyPicker.SelectedIndex = 0; window.FlushSettings().GetAwaiter().GetResult();
         policy.Close(); Pump();
+        window.ShowPage("settings");
+        window.AutoReconnectToggle.IsChecked = true; window.FlushSettings().GetAwaiter().GetResult();
+        checks["software_reconnect_switch_saves_explicit_opt_in"] = window.SelfTestCommands.Last(item => item.Text("command") == "preferences").GetProperty("values").Flag("auto_reconnect");
+        window.AutoReconnectToggle.IsChecked = false; window.FlushSettings().GetAwaiter().GetResult();
+        checks["software_reconnect_switch_saves_explicit_opt_out"] = !window.SelfTestCommands.Last(item => item.Text("command") == "preferences").GetProperty("values").Flag("auto_reconnect");
     }
 }

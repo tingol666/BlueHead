@@ -122,6 +122,7 @@ public partial class MainWindow
     internal void ShowFromTray() { if (closing) return; Show(); WindowState = WindowState.Normal; Activate(); }
     internal void ShowPage(string page)
     {
+        if (page == "broadcast" && !settings.le_audio_enabled) page = "home";
         CloseAudioEditors();
         if (page != "adapters" && HasPendingMode) { CancelModeChoice(); UpdateDriverActions(); }
         foreach (var (button, name) in new[] { (NavHome, "home"), (NavBroadcast, "broadcast"), (NavSettings, "settings"), (NavAdapters, "adapters"), (NavHelp, "help") })
@@ -201,6 +202,7 @@ public partial class MainWindow
     {
         settings.name = NameEntry.Text.Trim(); settings.calls = CallsToggle.IsChecked == true;
         settings.voice_single_device = VoiceProtectionToggle.IsChecked == true;
+        settings.auto_reconnect = AutoReconnectToggle.IsChecked == true;
         settings.codec = (CodecPicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "auto";
         settings.transport = (AdapterPicker.SelectedItem as AdapterChoice)?.Transport ?? settings.transport;
         settings.buffer_ms = int.Parse((MediaBufferPicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "60");
@@ -215,6 +217,7 @@ public partial class MainWindow
         applying = true;
         NameEntry.Text = settings.name; CallsToggle.IsChecked = settings.calls;
         VoiceProtectionToggle.IsChecked = settings.voice_single_device;
+        AutoReconnectToggle.IsChecked = settings.auto_reconnect;
         LeAudioToggle.IsChecked = settings.le_audio_enabled;
         SelectTag(ConnectionPolicyPicker, CodecPolicyWindow.Policy(settings));
         SelectTag(CodecPicker, settings.codec); RefreshCodecChoices(); SelectTag(PlaybackModePicker, settings.media_mode); SelectTag(ModePicker, settings.mode); SelectTag(HomeModePicker, settings.mode);
@@ -503,7 +506,7 @@ public partial class MainWindow
         DedicatedNameFields.Visibility = shared ? Visibility.Collapsed : Visibility.Visible;
         SharedNameFields.Visibility = shared ? Visibility.Visible : Visibility.Collapsed;
         AdvancedAudio.Visibility = shared ? Visibility.Collapsed : Visibility.Visible;
-        VoiceSettingsRow.Visibility = VoiceProtectionRow.Visibility = shared ? Visibility.Collapsed : Visibility.Visible;
+        VoiceSettingsRow.Visibility = VoiceProtectionRow.Visibility = AutoReconnectRow.Visibility = shared ? Visibility.Collapsed : Visibility.Visible;
         VoiceProtectionToggle.IsEnabled = !running && !stopping && !starting && !driverBusy;
         SharedCodecValue.Visibility = shared ? Visibility.Visible : Visibility.Collapsed;
         CodecPicker.Visibility = shared ? Visibility.Collapsed : Visibility.Visible;
@@ -681,7 +684,7 @@ public partial class MainWindow
         running = value;
         if (!value && !driverBusy && pendingSetupMode is { } desired) { pendingSetupMode = null; _ = ChooseMode(desired, false); }
         StartButton.Content = value ? "停止接收" : "开始接收"; StartButton.IsEnabled = !driverBusy;
-        foreach (Control control in new Control[] { NameEntry, CallsToggle, ModePicker, AdapterPicker, MediaBufferPicker, CallBufferPicker, MaximumPicker, LeAudioToggle, ConnectionPolicyPicker }) control.IsEnabled = !value && !driverBusy;
+        foreach (Control control in new Control[] { NameEntry, CallsToggle, AutoReconnectToggle, ModePicker, AdapterPicker, MediaBufferPicker, CallBufferPicker, MaximumPicker, LeAudioToggle, ConnectionPolicyPicker }) control.IsEnabled = !value && !driverBusy;
         if (!value) { pending.Clear(); StatusTitle.Text = "接收已停止"; StatusDetail.Text = "点击开始接收，即可再次连接移动设备。"; }
         SettingsHint.Text = value ? "音量与声音设备可实时调整；其它连接设置先停止接收再修改，修改自动保存。" : "修改自动保存。";
         SetPickerStates(); UpdateSetupState(); UpdateProtocolAvailability();
@@ -701,7 +704,7 @@ public partial class MainWindow
         SystemGain.IsEnabled &= !running || !sessionMediaOnly;
         SystemGain.CanAdjust = settings.system_audio_enabled;
         SystemAudioToggle.IsEnabled = settings.mode != "native" && (!running || !sessionMediaOnly) && settings.calls && !driverBusy && systemAudioRequest == null;
-        foreach (Control control in new Control[] { NameEntry, CallsToggle, MediaBufferPicker, CallBufferPicker, MaximumPicker, LeAudioToggle, ConnectionPolicyPicker })
+        foreach (Control control in new Control[] { NameEntry, CallsToggle, AutoReconnectToggle, MediaBufferPicker, CallBufferPicker, MaximumPicker, LeAudioToggle, ConnectionPolicyPicker })
             control.IsEnabled = !running && !driverBusy && settings.mode != "native";
         VoiceCodecHint.Text = settings.mode == "native" ? VoiceCodecStatus : VoiceCodecStatus + "；用于通话及支持蓝牙麦克风的录音、录像应用";
         if (!running) SettingsHint.Text = settings.mode == "native" ? "共用蓝牙模式：设备名称、媒体编码、播放设备和音量由 Windows 管理，不提供蓝牙语音与麦克风。" : "";

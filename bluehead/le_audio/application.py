@@ -6,6 +6,7 @@ Receiver owns UI intent and media arbitration. No parallel PCM/USB implementatio
 
 import asyncio
 import contextlib
+import logging
 from dataclasses import replace
 import struct
 import time
@@ -14,6 +15,7 @@ from types import SimpleNamespace
 from bumble import avdtp, hci, gatt
 from bumble.core import PhysicalTransport
 from .profile import ControllerSupport, create_services, CommonAudioService, device_information
+from .capability_check import checked_support
 from .native_bridge import NativeStreamBridge
 from .broadcast_receiver import BroadcastReceiver, NativeBroadcastSink
 from .bass_service import BroadcastScanService
@@ -24,6 +26,8 @@ from .peer_control import PeerAudioControl
 from .service_cache import ServiceCache
 from ..protocol import Format, format_metadata
 from ..errors import Retirement
+
+log = logging.getLogger(__name__)
 
 
 class LeMediaSession:
@@ -247,10 +251,11 @@ class LeAudioApplication:
         # The packet pump is the sole consumer of usb_poll. Snapshot is read-only.
         status = await asyncio.to_thread(receiver.mixer.client.request, "snapshot")
         support = ControllerSupport.parse(status.get("usb", {}))
-        if not device.supports_le_features(hci.LeFeatureMask.LE_EXTENDED_ADVERTISING):
-            support = replace(support, receive=False, transmit=False, broadcast=False)
-            receiver.emit('le_audio_discovery', phase='unavailable',
-                          reason='这个适配器当前不能发送 LE Audio 所需的扩展广播，已使用经典蓝牙。')
+        issues = ()
+        if support.receive or support.broadcast:
+            support, issues = checked_support(support, device)
+            if issues:
+                log.warning('LE Audio capability limitations: %s', ', '.join(issues))
         if support.receive:
             # Enable the host ISO feature only after actual transport/features
             # are known. Unsupported LE Audio must not break classic startup.
@@ -269,15 +274,19 @@ class LeAudioApplication:
             transmit=support.transmit,
             broadcast=support.broadcast,
             transport=support.transport,
+            limitations=list(issues),
         )
         if not (support.receive or support.broadcast):
             receiver.emit(
                 "warning",
-                message="这个蓝牙适配器当前无法使用 LE Audio。仍可使用适配器支持的经典蓝牙音频；麦克风是否可用，以首页提示为准。",
+                message=("这个蓝牙适配器当前无法使用 LE Audio。请打开首页“媒体编码”右侧的设置，选择“仅经典蓝牙”，再重新开始接收。"
+                         if receiver.settings.connection_policy == 'le_only' else
+                         "这个蓝牙适配器当前无法使用 LE Audio，已保留经典蓝牙功能。"),
             )
             return None
         app = cls(receiver, device, support)
         try:
+            await app.service_cache.load()
             # The Receiver first publishes this application as the connection
             # owner, then opens discovery. A connection cannot arrive in the
             # await between starting advertising and assigning receiver.le_audio.
@@ -374,6 +383,9 @@ class LeAudioApplication:
         first = key not in self.receiver.connection_keys()
         self.connections[id(connection)] = connection
         self.identities[id(connection)] = key
+        reconnect = getattr(self.receiver, 'reconnect', None)
+        if reconnect is not None:
+            reconnect.watch(connection)
 
         def lost(reason):
             self.disconnected(connection, reason=reason)
@@ -381,8 +393,12 @@ class LeAudioApplication:
         def paired(keys):
             connection._bluehead_bonded = True
             self.identity_changed(connection)
+            self.service_cache.paired(connection, keys)
             self.peer_controls.start(connection)
             self.service_cache.ready(connection)
+
+        def pairing_started():
+            self.service_cache.pairing_started(connection)
 
         def encrypted():
             if self.admitted(connection):
@@ -392,9 +408,11 @@ class LeAudioApplication:
                 self.service_cache.ready(connection)
 
         connection.on("disconnection", lost)
+        connection.on('pairing_start', pairing_started)
         connection.on("pairing", paired)
         connection.on('connection_encryption_change', encrypted)
         self.listeners.extend(((connection, "disconnection", lost), (connection, "pairing", paired),
+                               (connection, 'pairing_start', pairing_started),
                                (connection, 'connection_encryption_change', encrypted)))
         if first:
             self.emit("device", key=key, state="已连接，等待音频")
@@ -417,13 +435,7 @@ class LeAudioApplication:
     def disconnected(self, connection, *, reason=None):
         if self.connections.pop(id(connection), None) is None:
             return
-        # Targeted announcements solicit an actually bonded link-loss peer.
-        # An unrelated old key must never change every new device's pairing.
-        if getattr(connection, '_bluehead_bonded', False) and reason in (0x08, 0x22):
-            self.reconnect_target = str(connection.peer_address)
-            if self.reconnect_timer:
-                self.reconnect_timer.cancel()
-            self.reconnect_timer = asyncio.get_running_loop().call_later(5, self.end_reconnect)
+        log.info("LE ACL disconnected: handle=%s reason=%s", connection.handle, reason)
         self.progress.disconnected(connection)
         self.peer_controls.disconnected(connection)
         self.service_cache.disconnected(connection)
@@ -441,6 +453,15 @@ class LeAudioApplication:
             self.receiver.voice_protection.ended(connection)
         if key not in self.receiver.connection_keys():
             self.emit("device", key=key, state="已断开")
+        self.receiver.spawn_control(self.advertise())
+
+    def request_reconnect(self, connection):
+        if self.closed or not getattr(self.receiver.settings, 'auto_reconnect', False):
+            return
+        self.reconnect_target = str(connection.peer_address)
+        if self.reconnect_timer:
+            self.reconnect_timer.cancel()
+        self.reconnect_timer = asyncio.get_running_loop().call_later(5, self.end_reconnect)
         self.receiver.spawn_control(self.advertise())
 
     async def media_changed(self, record, active):

@@ -64,6 +64,15 @@ class Lc3Configuration:
     def bitrate(self):
         return self.octets * self.channels * 8_000_000 // self.duration_us
 
+    @property
+    def preferred_transport_ms(self):
+        # ASCS asks for a preference, not a promise about RF scheduling. Keep
+        # controller transport paced to one actual SDU; presentation and native
+        # endpoint buffering have their own independent, unchanged budget.
+        # A static 100 ms preference can lead a peer to choose an unnecessarily
+        # deep CIS schedule. Never change the codec/blocks to obtain this value.
+        return max(5, (self.interval_us + 999) // 1000)
+
     @classmethod
     def parse(cls, data: bytes, *, source=False):
         fields = ltv_fields(data)

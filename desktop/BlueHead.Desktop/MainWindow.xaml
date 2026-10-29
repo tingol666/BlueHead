@@ -30,7 +30,7 @@
 
       <Button x:Name="NavHome" Style="{StaticResource Nav}" Click="HomeClick" AutomationProperties.Name="音频中心"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE80F;" Style="{StaticResource NavIcon}"/><TextBlock Text="音频中心"/></StackPanel></Button>
 
-      <Button x:Name="NavBroadcast" Style="{StaticResource Nav}" Click="BroadcastClick" AutomationProperties.Name="音频广播"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE704;" Style="{StaticResource NavIcon}"/><TextBlock Text="音频广播"/></StackPanel></Button>
+      <Button x:Name="NavBroadcast" Style="{StaticResource Nav}" Click="BroadcastClick" Visibility="Collapsed" AutomationProperties.Name="音频广播"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE704;" Style="{StaticResource NavIcon}"/><TextBlock Text="音频广播"/></StackPanel></Button>
 
       <Button x:Name="NavAdapters" Style="{StaticResource Nav}" Click="AdaptersClick" AutomationProperties.Name="蓝牙驱动设置"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE702;" Style="{StaticResource NavIcon}"/><TextBlock Text="蓝牙驱动设置"/></StackPanel></Button>
 
@@ -250,6 +250,7 @@
        <Grid x:Name="VoiceSettingsRow" Margin="0,22,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="蓝牙语音与麦克风"/><TextBlock x:Name="VoiceCodecHint" Text="语音编码：自动协商；用于通话及支持蓝牙麦克风的录音、录像应用" Style="{StaticResource Caption}" Margin="0,5,12,0"/></StackPanel><CheckBox x:Name="CallsToggle" Grid.Column="1" IsChecked="True" Style="{StaticResource Switch}" VerticalAlignment="Center" AutomationProperties.Name="启用蓝牙语音与麦克风"/></Grid>
 
        <Grid x:Name="VoiceProtectionRow" Margin="0,18,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="通话／语音保护"/><TextBlock Text="开启后，设备使用电脑麦克风进行通话、录音或录像时，会暂时断开其它设备并阻止新连接，避免蓝牙中断。使用结束后可重新连接。默认开启；先在音频中心点“停止接收”，修改后自动保存。" Style="{StaticResource Caption}" Margin="0,5,14,0"/></StackPanel><CheckBox x:Name="VoiceProtectionToggle" Grid.Column="1" IsChecked="True" Style="{StaticResource Switch}" VerticalAlignment="Center" AutomationProperties.Name="通话／语音保护"/></Grid>
+       <Grid x:Name="AutoReconnectRow" Margin="0,18,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="软件主动回连"/><TextBlock Text="意外断连后，尝试找回本次已配对连接过的设备；手动断开不会被拉回。默认关闭，关闭后仍接受手机／平板自行连接。经典蓝牙与 LE Audio 共用此设置。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,5,14,0"/></StackPanel><CheckBox x:Name="AutoReconnectToggle" Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center" AutomationProperties.Name="软件主动回连，默认关闭"/></Grid>
       </StackPanel></Border>
 
       <Border Style="{StaticResource Card}" Margin="0,16,0,0"><StackPanel>
@@ -280,9 +281,10 @@
 
        <TextBlock Text="最多同时连接几台设备"/><TextBlock Text="连接不等于同时播放；多设备的播放方式在音频中心选择。通话／语音保护启用时，使用电脑麦克风会暂时只保留一个设备。" Style="{StaticResource Caption}" Margin="0,5,0,0"/><ComboBox x:Name="MaximumPicker" SelectedIndex="2" Margin="0,8,0,16"><ComboBoxItem Content="1 台" Tag="1"/><ComboBoxItem Content="2 台" Tag="2"/><ComboBoxItem Content="3 台" Tag="3"/><ComboBoxItem Content="4 台" Tag="4"/></ComboBox>
 
-       <Grid Margin="0,14,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="210"/></Grid.ColumnDefinitions><CheckBox x:Name="LeAudioToggle" Content="启用 LE Audio（LC3）" Style="{StaticResource Switch}"/><ComboBox x:Name="ConnectionPolicyPicker" Grid.Column="1" AutomationProperties.Name="LE Audio 连接偏好"><ComboBoxItem Content="优先 LE Audio / LC3" Tag="prefer_le"/><ComboBoxItem Content="仅经典蓝牙" Tag="classic"/><ComboBoxItem Content="仅 LE Audio / LC3" Tag="le_only"/></ComboBox></Grid><TextBlock Text="与首页媒体编码右侧的设置同步。双模保留经典连接；仅 LE Audio 关闭经典音频入口，适合重新配对 LC3。修改自动保存，下次开始接收生效。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="24,6,0,0"/>
+       <Grid Margin="0,14,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="210"/></Grid.ColumnDefinitions><CheckBox x:Name="LeAudioToggle" Content="启用 LE Audio（LC3）" Style="{StaticResource Switch}"/><ComboBox x:Name="ConnectionPolicyPicker" Grid.Column="1" Visibility="Collapsed" AutomationProperties.Name="LE Audio 连接偏好"><ComboBoxItem Content="优先 LE Audio / LC3" Tag="prefer_le"/><ComboBoxItem Content="仅经典蓝牙" Tag="classic"/><ComboBoxItem Content="仅 LE Audio / LC3" Tag="le_only"/></ComboBox></Grid>
+       <StackPanel x:Name="LeAudioDetails" Visibility="Collapsed"><TextBlock Text="与首页媒体编码右侧的设置同步。双模保留经典连接；仅 LE Audio 关闭经典音频入口，适合重新配对 LC3。修改自动保存，下次开始接收生效。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="24,6,0,0"/>
        <ui:Button x:Name="LePairingGuideButton" Content="LE 配对指南 · 手机没有 LC3？" Click="LePairingGuideClick" HorizontalAlignment="Left" Margin="24,8,0,0" Padding="8,4" FontSize="12"/><TextBlock x:Name="LeAudioState" Text="开始接收后，这里显示适配器的 LE Audio 能力。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="24,6,0,0"/>
-       <TextBlock Text="LE Audio 自动协商 LC3 编码与播放时延，首页“媒体编码”和上方起始缓冲用于经典蓝牙音频。对端可同时提供两种连接，实际协议显示在设备卡片中。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="24,6,0,0"/>
+       <TextBlock Text="LE Audio 自动协商 LC3 编码与播放时延，首页“媒体编码”和上方起始缓冲用于经典蓝牙音频。对端可同时提供两种连接，实际协议显示在设备卡片中。" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="24,6,0,0"/></StackPanel>
        </StackPanel></Border></Expander>
 
 

@@ -45,8 +45,12 @@ public:
       }
       response.assign(p + 5, p + n);
       replied = true;
-    } else if (p[0] == 0x0f && n == 6 && expected && le16(p + 4) == expected && p[2])
-      failure = "initialization command status rejected";
+    } else if (p[0] == 0x0f && n == 6 && expected && le16(p + 4) == expected && p[2]) {
+      // A failed Command Status is a complete rejection, not a malformed
+      // transport. Optional vendor commands may fall back after readback.
+      response = {p[2]};
+      replied = true;
+    }
   }
 };
 struct ControllerVersion {

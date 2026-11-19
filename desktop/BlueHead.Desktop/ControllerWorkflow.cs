@@ -19,7 +19,7 @@ public partial class MainWindow
         var matches = Drivers.MatchTransport(choice.Transport, driverInventory);
         return matches.Count == 1 ? choice with { Name = matches[0].DeviceLabel } : choice;
     }
-    internal ControllerGuide? CurrentControllerGuide => settings.mode != "native" && ReceptionAdapter is { } adapter &&
+    internal ControllerGuide? CurrentControllerGuide => settings.mode == "advanced" && ReceptionAdapter is { } adapter &&
         adapter.AdapterId == controllerFailureId && controllerCode != null ? BluetoothSetup.Controller(controllerCode, controllerProfile ?? "") : null;
     internal bool ControllerNeedsInitialization => CurrentControllerGuide != null && ReceptionAdapter?.HasBackup == true &&
         controllerCode is "controller_unresponsive" or "controller_hardware_error" or "controller_restarted" or "controller_connection_lost";
@@ -35,11 +35,13 @@ public partial class MainWindow
         var guide = BluetoothSetup.Controller(code, controllerProfile);
         ControllerPreparation.IsExpanded = guide.CanAcquire;
         ShowNotice(guide.Title + "。" + guide.Detail); controllerNotice = true;
+        ScheduleDriverRecheck();
         UpdateControllerActions(); UpdateSetupState();
         return true;
     }
     private void ClearControllerFailure()
     {
+        CancelDriverRecheck();
         if (controllerNotice) { Notice.Visibility = Visibility.Collapsed; controllerNotice = false; }
         controllerFailureId = controllerCode = controllerProfile = controllerDiagnostic = null;
         UpdateControllerActions(); UpdateSetupState();
@@ -148,7 +150,8 @@ public partial class MainWindow
         if (picker.ShowDialog(this) == true) await PrepareFirmware(picker.FileName);
     }
     private void CancelFirmwareClick(object sender, RoutedEventArgs e) => firmwareCancellation?.Cancel();
-    private async void OriginalBootstrapClick(object sender, RoutedEventArgs e) => await DriverOperation("initialize-original");
+    private async void OriginalBootstrapClick(object sender, RoutedEventArgs e) =>
+        await DriverOperation(DriverPicker.SelectedItem is DriverDevice device && BluetoothSetup.Dedicated(device) ? "initialize-original" : "repair-system");
     private void RetryControllerClick(object sender, RoutedEventArgs e)
     {
         if (!RetryControllerButton.IsEnabled) return;

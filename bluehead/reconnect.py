@@ -55,8 +55,12 @@ class LinkReconnect:
                     and getattr(owner, 'encryption', False)):
                 app.request_reconnect(owner)
             return
-        if key not in self.tasks:
-            task = self.tasks[key] = asyncio.create_task(self.classic(key, owner.peer_address))
+        self.request_classic(owner.peer_address)
+
+    def request_classic(self, address):
+        key = str(address)
+        if self.available(key) and key not in self.tasks:
+            task = self.tasks[key] = asyncio.create_task(self.classic(key, address))
 
             def done(result):
                 if self.tasks.get(key) is result:
@@ -102,6 +106,9 @@ class LinkReconnect:
                           message='暂未连上，请在发送设备的蓝牙设置中点击 BlueHead。')
 
     async def media_control(self, owner):
+        from .classic_startup import optional_ready
+        if not await optional_ready(owner) or self.closed:
+            return
         receiver = self.receiver
         listener = getattr(receiver, 'listener', None)
         if listener is None or owner.handle in listener.servers:

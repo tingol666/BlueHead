@@ -73,6 +73,7 @@ internal static partial class Program
         window.CodecPicker.IsDropDownOpen = false; Pump();
         int Stops() => window.SelfTestCommands.Count(item => item.Text("command") == "stop");
         var stops = Stops();
+        var codecCommandStart = window.SelfTestCommands.Count;
         Click(window.CodecSettingsButton);
         var policy = window.PolicyWindow!;
         checks["codec_gear_reuses_home_row_and_opens_policy"] = policy.IsVisible && policy.Title.Contains("连接与编码") && Math.Abs(window.CodecSettingsButton.TranslatePoint(new(0,0), window).Y - window.CodecPicker.TranslatePoint(new(0,0), window).Y) < 3;
@@ -182,7 +183,7 @@ internal static partial class Program
         window.LeAudioToggle.IsChecked = true; window.FlushSettings().GetAwaiter().GetResult();
         checks["enabling_le_updates_application_policy_picker"] = window.ConnectionPolicyPicker.SelectedIndex == 0;
         checks["reverting_to_active_connection_policy_clears_unneeded_restart_prompt"] = window.CodecReconnectNotice.Visibility == Visibility.Collapsed;
-        checks["codec_settings_never_disconnect_or_restart_active_connections"] = Stops() == stops && window.SelfTestCommands.All(item => item.Text("command") != "device_action" || item.Text("action") != "disconnect");
+        checks["codec_settings_never_disconnect_or_restart_active_connections"] = Stops() == stops && window.SelfTestCommands.Skip(codecCommandStart).All(item => item.Text("command") != "device_action" || item.Text("action") != "disconnect");
         receive("""{"event":"stopped"}""");
         checks["receiver_stop_clears_pending_connection_reminders"] = window.CodecReconnectNotice.Visibility == Visibility.Collapsed;
         window.OpenCodecPolicy(); Pump(); policy = window.PolicyWindow!;

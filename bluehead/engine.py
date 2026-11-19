@@ -98,9 +98,13 @@ class Engine:
         self.write_lock = threading.Lock()
         self.settings_lock = threading.RLock()
         self.runner = Runner(self.emit)
+        from .native import WindowsControlActor
+        self.shared_actor = WindowsControlActor()
+        self.runner.shared_actor = self.shared_actor
         self.settings = Settings()
         self.closed = False
         self.inventory_lock = threading.Lock()
+        self.shared_scan_lock = threading.Lock()
         self.audio_refresh_lock = threading.Lock()
         self.monitor_stop = threading.Event()
         path = self.directory / "settings.json"
@@ -110,6 +114,9 @@ class Engine:
                 # Before the allow-list existed, saved codec choices used the
                 # base four codecs plus explicit LDAC/LHDC switches. Preserve
                 # that historical meaning independently of new install defaults.
+                migrated_profile = isinstance(values, dict) and values.get('mode') == 'profile'
+                if migrated_profile:
+                    values['mode'], values['transport'] = 'native', ''
                 if isinstance(values, dict) and 'allowed_codecs' not in values:
                     values['allowed_codecs'] = None
                 if isinstance(values, dict) and values.get('allowed_codecs') is None:
@@ -118,6 +125,8 @@ class Engine:
                 self.settings = validate_settings(
                     {k: v for k, v in values.items() if k in {f.name for f in fields(Settings)}},
                     require_transport=False)
+                if migrated_profile:
+                    self.save()
             except (OSError, ValueError, TypeError):
                 logging.exception("Settings could not be loaded")
 
@@ -169,6 +178,30 @@ class Engine:
             finally:
                 self.inventory_lock.release()
         threading.Thread(target=scan, daemon=True, name="inventory").start()
+
+    def scan_shared(self, *, stop_key=None, transport=None):
+        if self.settings.mode != 'native':
+            return
+        receiver = self.runner.receiver
+        if stop_key is None and receiver is not None and receiver.native is not None:
+            self.runner.action('shared_refresh', '')
+            return
+        if not self.shared_scan_lock.acquire(blocking=False):
+            return
+        def scanned(future):
+            try:
+                self.emit('shared_devices', devices=future.result(), running=False, scanning=False)
+            except Exception:
+                logging.exception('Windows paired source discovery failed')
+                self.emit('shared_status', message='Windows 音频设备暂未读取完成，请点击“重新检测”。', scanning=False)
+            finally:
+                self.shared_scan_lock.release()
+        from .native import scan_sources
+        try:
+            self.shared_actor.submit(scan_sources(directory=self.directory, stop_key=stop_key)).add_done_callback(scanned)
+        except OSError:
+            self.shared_scan_lock.release()
+            self.emit('shared_status', message='Windows 音频控制暂未准备，请重新打开软件。', scanning=False)
 
     def remap_saved_audio(self, settings):
         from .endpoints import find_endpoint
@@ -305,12 +338,25 @@ class Engine:
                 self.runner.action("media_mode", mode)
             else:
                 self.emit("media_mode", success=True, mode=mode)
+        elif action == 'shared_scan':
+            transport = message.get('transport')
+            if transport is not None and (not isinstance(transport, str) or len(transport) > 4096):
+                raise ValueError('蓝牙设备标识无效')
+            self.scan_shared(transport=transport)
         elif action == "device_action":
             operation = message.get("action")
             if operation not in ("answer", "hangup", "call_audio", "select_call", "disconnect", "select_media",
-                                  "play", "pause", "play_pause", "stop", "next", "previous"):
+                                  "play", "pause", "play_pause", "stop", "next", "previous", "shared_connect"):
                 raise ValueError("不支持的设备操作")
-            self.runner.action(operation, str(message.get("key", ""))[:200])
+            key = str(message.get("key", ""))[:200]
+            if operation == 'disconnect' and self.settings.mode == 'native' and not running:
+                from .native import selected_sources, save_source_choices
+                selected = selected_sources(self.directory)
+                selected.discard(key)
+                save_source_choices(self.directory, selected)
+                self.scan_shared()
+            else:
+                self.runner.action(operation, key)
         elif action == 'preferences':
             patch = message.get('values')
             allowed = {'codec', 'allowed_codecs', 'codec_parameters', 'ldac_enabled', 'lhdc5_enabled', 'connection_policy',
@@ -396,7 +442,11 @@ class Engine:
                 raise ValueError('请先在音频中心使用进阶模式，点击“开始接收”，再搜索音频广播。')
             self.runner.action('broadcast', values)
         elif action == "telemetry":
-            if not running or not self.runner.telemetry(self.settings.mode != "native"):
+            if running and getattr(self.runner, 'recovering', False):
+                self.emit("telemetry", running=True, audio={}, devices=[], devices_complete=True, broadcast=None)
+            elif running and self.settings.mode == 'native':
+                self.emit("telemetry", running=True, audio={}, devices=[], devices_complete=False, broadcast=None)
+            elif not running or not self.runner.telemetry(self.settings.mode != "native"):
                 self.emit("telemetry", running=False, audio={}, devices=[],
                           devices_complete=self.settings.mode != "native", broadcast=None)
         elif action == "shutdown":
@@ -438,4 +488,5 @@ def main(directory):
         engine.runner.stop()
         if engine.runner.thread:
             engine.runner.thread.join(8)
+        engine.shared_actor.close()
     return 0

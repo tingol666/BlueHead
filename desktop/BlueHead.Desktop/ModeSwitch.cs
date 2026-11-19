@@ -62,7 +62,7 @@ public partial class MainWindow
         if (!HasPendingMode || !CanUseMode(RequestedMode) || running || stopping || starting || driverBusy || closing) return;
         var selected = DriverPicker.SelectedItem as DriverDevice;
         string previousMode = settings.mode, desired = RequestedMode;
-        if (desired != "native" && selected != null)
+        if (desired == "advanced" && selected != null)
         {
             var choices = AdapterPicker.Items.OfType<AdapterChoice>().Where(choice => Drivers.MatchTransport(choice.Transport, new[] { selected }).Count == 1).ToArray();
             if (choices.Length == 1) { var previous = applying; applying = true; AdapterPicker.SelectedItem = choices[0]; applying = previous; settings.transport = choices[0].Transport; }
@@ -116,6 +116,7 @@ public partial class MainWindow
             {
                 case "install": DriverInstallButton.Content = driverAwaitingPermission ? "等待管理员授权…" : "正在备份并切换…"; break;
                 case "restore": DriverRestoreButton.Content = driverAwaitingPermission ? "等待管理员授权…" : "正在恢复 Windows 蓝牙…"; break;
+                case "repair-system": OriginalBootstrapButton.Content = driverAwaitingPermission ? "等待管理员授权…" : "正在修复 Windows 蓝牙…"; break;
                 default: OriginalBootstrapButton.Content = driverAwaitingPermission ? "等待管理员授权…" : "正在修复专用蓝牙…"; break;
             }
         }
@@ -123,7 +124,7 @@ public partial class MainWindow
         {
             DriverInstallButton.Content = "备份并启用专用蓝牙";
             DriverRestoreButton.Content = "恢复 Windows 蓝牙";
-            OriginalBootstrapButton.Content = "修复专用蓝牙";
+            OriginalBootstrapButton.Content = DriverPicker.SelectedItem is DriverDevice selected && !BluetoothSetup.Dedicated(selected) ? "修复 Windows 蓝牙" : "修复专用蓝牙";
         }
         HomeUsageNotice.Visibility = !running && usageOutcomeTitle != null ? Visibility.Visible : Visibility.Collapsed;
         HomeUsageTitle.Text = usageOutcomeTitle ?? ""; HomeUsageText.Text = usageOutcomeDetail ?? "";

@@ -854,7 +854,7 @@ class Usb {
                                            firmware_state = state;
                                            firmware_progress = progress;
                                            capabilities.firmware = state;
-                                         }});
+                                         }}, ControllerAddressProfile::load(selected_id), driver_prepare);
     {
       std::lock_guard<std::mutex> lock(init_mutex);
       capabilities.backend = bootstrap->name();

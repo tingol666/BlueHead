@@ -38,7 +38,41 @@ internal static class BluetoothRadio
     }
     public static bool IsReady(string instance) => Query(instance);
     public static bool AnyReady() => Query(null);
-    private static bool Query(string? instance)
+    internal static bool IsSoleSystemRadio(string instance)
+    {
+        var guid = RadioInterface;
+        var set = SetupDiGetClassDevs(ref guid, null, IntPtr.Zero, 2 | 16);
+        if (set == new IntPtr(-1)) return false;
+        bool selected = false;
+        try
+        {
+            for (uint i = 0; ; i++)
+            {
+                var data = new InterfaceData { Size = (uint)Marshal.SizeOf<InterfaceData>() };
+                if (!SetupDiEnumDeviceInterfaces(set, IntPtr.Zero, ref guid, i, ref data))
+                    return Marshal.GetLastWin32Error() == 259 && selected;
+                var device = DeviceNative.NewDevice();
+                SetupDiGetDeviceInterfaceDetail(set, ref data, IntPtr.Zero, 0, out var required, ref device);
+                if (required < 8 || required > 65536) return false;
+                var memory = Marshal.AllocHGlobal(required);
+                try
+                {
+                    Marshal.WriteInt32(memory, IntPtr.Size == 8 ? 8 : 6);
+                    if (!SetupDiGetDeviceInterfaceDetail(set, ref data, memory, required, out _, ref device) || !Matches(device.Instance, instance)) return false;
+                    selected = true;
+                }
+                finally { Marshal.FreeHGlobal(memory); }
+            }
+        }
+        finally { DeviceNative.SetupDiDestroyDeviceInfoList(set); }
+    }
+    public static string? Address(string instance)
+    {
+        string? address = null;
+        Query(instance, info => address = info.Address.ToString("X12", System.Globalization.CultureInfo.InvariantCulture));
+        return address;
+    }
+    private static bool Query(string? instance, Action<RadioInfo>? found = null)
     {
         var guid = RadioInterface;
         var set = SetupDiGetClassDevs(ref guid, null, IntPtr.Zero, 2 | 16); // PRESENT | DEVICEINTERFACE
@@ -61,7 +95,8 @@ internal static class BluetoothRadio
                     if (string.IsNullOrEmpty(path)) continue;
                     using var radio = CreateFile(path!, 0, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
                     var info = new RadioInfo { Size = (uint)Marshal.SizeOf<RadioInfo>(), Name = "" };
-                    if (!radio.IsInvalid && BluetoothGetRadioInfo(radio, ref info) == 0 && DriverReadiness.ValidRadioAddress(info.Address)) return true;
+                    if (!radio.IsInvalid && BluetoothGetRadioInfo(radio, ref info) == 0 && DriverReadiness.ValidRadioAddress(info.Address))
+                    { found?.Invoke(info); return true; }
                 }
                 finally { Marshal.FreeHGlobal(memory); }
             }

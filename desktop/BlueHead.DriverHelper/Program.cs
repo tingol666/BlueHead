@@ -9,6 +9,8 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        var quiet = args.Contains("--quiet");
+        args = args.Where(arg => arg != "--quiet").ToArray();
         try
         {
             if (args.Length == 1 && args[0] == "--desktop-running") return Drivers.DesktopRunning() ? 10 : 0;
@@ -35,22 +37,22 @@ internal static class Program
                 var devices = Drivers.Enumerate();
                 Console.WriteLine(JsonSerializer.Serialize(new { passed = true, device_count = devices.Count, readonly_inventory = true, device_struct_size = System.Runtime.InteropServices.Marshal.SizeOf<DeviceNativeProbe>() })); return 0;
             }
-            if (args.Length == 2 && args[0] is "--install" or "--restore" or "--backup" or "--initialize-original")
+            if (args.Length == 2 && args[0] is "--install" or "--restore" or "--backup" or "--initialize-original" or "--repair-system")
             {
                 var operation = args[0]; var instance = args[1];
                 // Wait without pumping a second arbitrary IPC command: this process performs one exact operation.
-                var task = operation == "--install" ? Drivers.InstallAsync(instance) : operation == "--restore" ? Drivers.RestoreAsync(instance) : operation == "--initialize-original" ? Drivers.InitializeOriginalAsync(instance) : Drivers.BackupAsync(instance);
+                var task = operation == "--install" ? Drivers.InstallAsync(instance) : operation is "--restore" or "--repair-system" ? Drivers.RestoreAsync(instance) : operation == "--initialize-original" ? Drivers.InitializeOriginalAsync(instance) : Drivers.BackupAsync(instance);
                 var record = task.GetAwaiter().GetResult(); Console.WriteLine(JsonSerializer.Serialize(record));
-                if (operation is "--restore" or "--initialize-original" && record.RebootRequired)
-                    System.Windows.Forms.MessageBox.Show("驱动恢复完成，请重启电脑。", "BlueHead · 系统蓝牙", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return 0;
+                // The desktop presents the final state and exact recovery cause.
+                // Headless validation must never wait behind a modal message box.
+                return record.RebootRequired ? 3010 : 0;
             }
-            Console.Error.WriteLine("Usage: --list | --compatible INSTANCE | --backup INSTANCE | --install INSTANCE | --restore INSTANCE | --initialize-original INSTANCE | --self-test"); return 2;
+            Console.Error.WriteLine("Usage: --list | --compatible INSTANCE | --backup INSTANCE | --install INSTANCE | --restore INSTANCE | --repair-system INSTANCE | --initialize-original INSTANCE | --self-test"); return 2;
         }
         catch (Exception error)
         {
             Console.Error.WriteLine(error.Message);
-            if (args.Any(arg => arg is "--install" or "--restore" or "--initialize-original" or "--restore-all" or "--restore-all-elevate")) System.Windows.Forms.MessageBox.Show(error.Message, "BlueHead · 驱动操作未完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (!quiet && args.Any(arg => arg is "--install" or "--restore" or "--repair-system" or "--initialize-original" or "--restore-all" or "--restore-all-elevate")) System.Windows.Forms.MessageBox.Show(error.Message, "BlueHead · 驱动操作未完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return 1;
         }
     }

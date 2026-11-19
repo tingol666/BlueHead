@@ -64,10 +64,11 @@ public sealed class EngineClient : IDisposable
         if (File.Exists(packaged)) info = new(packaged);
         else if (root != null && File.Exists(Path.Combine(root, "launch.py")))
         {
-            var runtime = Path.Combine(root, "bluehead", "assets", "BlueHead.Runtime.exe");
+            var runtime = Environment.GetEnvironmentVariable("BLUEHEAD_NATIVE_RUNTIME") ?? Path.Combine(root, "bluehead", "assets", "BlueHead.Runtime.exe");
             if (!File.Exists(runtime)) throw new FileNotFoundException($"请先构建 {AppVersion.Number} 原生音频后台。");
             info = new(runtime);
             info.AddArgument("--source-root"); info.AddArgument(root);
+            info.AddArgument("--assets"); info.AddArgument(Path.Combine(root, "bluehead", "assets"));
         }
         else throw new FileNotFoundException("找不到蓝牙后台，请重新解压完整安装包。");
         info.AddArgument("--engine"); info.AddArgument("--data-dir"); info.AddArgument(dataDirectory);

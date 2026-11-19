@@ -312,8 +312,11 @@ class Receiver:
         self.codec_availability = None
         self.codec_peers = {}
         self.native = None
+        self.shared_actor = None
         self.audio_lock = asyncio.Lock()
         self.control_tasks = set()
+        self.advertise_lock = asyncio.Lock()
+        self.classic_advertised = None
         self.control_loop = None
         with contextlib.suppress(RuntimeError):
             self.control_loop = asyncio.get_running_loop()
@@ -344,20 +347,25 @@ class Receiver:
         listener.on("connection", self.on_protocol)
         self.listener = listener
         if self.settings.calls and self.classic_calls_available:
-            from .calls import CallManager
-            if getattr(self.mixer, "remote", False):
-                from .native_calls import NativeCallManager
-                CallManager = NativeCallManager
-            self.calls = CallManager(device, self.mixer, self.emit, self.settings.input_device)
-            self.calls.voice_protection = self.voice_protection
-            self.calls.router.muted = self.settings.microphone_muted
-            self.calls.router.microphone_gain = self.settings.microphone_gain
-            self.calls.router.system_gain = self.settings.system_gain
-            self.calls.router.device_gains = {key: gains.get("up", 1) for key, gains in self.settings.device_volumes.items()}
-            self.calls.downlink_gains = {key: gains.get("down", 1) for key, gains in self.settings.device_volumes.items()}
-            self.calls.system_enabled = self.settings.system_audio_enabled
-            self.calls.system_endpoint = self.settings.system_endpoint_id
+            self.attach_calls(device)
         add_server_record(device)
+
+    def attach_calls(self, device):
+        if self.calls is not None:
+            return
+        from .calls import CallManager
+        if getattr(self.mixer, "remote", False):
+            from .native_calls import NativeCallManager
+            CallManager = NativeCallManager
+        self.calls = CallManager(device, self.mixer, self.emit, self.settings.input_device)
+        self.calls.voice_protection = self.voice_protection
+        self.calls.router.muted = self.settings.microphone_muted
+        self.calls.router.microphone_gain = self.settings.microphone_gain
+        self.calls.router.system_gain = self.settings.system_gain
+        self.calls.router.device_gains = {key: gains.get("up", 1) for key, gains in self.settings.device_volumes.items()}
+        self.calls.downlink_gains = {key: gains.get("down", 1) for key, gains in self.settings.device_volumes.items()}
+        self.calls.system_enabled = self.settings.system_audio_enabled
+        self.calls.system_endpoint = self.settings.system_endpoint_id
 
     def spawn_control(self, coroutine):
         try:
@@ -746,6 +754,13 @@ class Receiver:
             self.emit("warning", message="已达到设置的连接数量上限")
             return
         self.connections[key] = connection
+        from .classic_startup import ClassicStartup
+        connection._bluehead_classic_startup = ClassicStartup(connection)
+        def authentication_failed(error):
+            if self.connections.get(key) is connection and int(error) in (0x05, 0x06):
+                self.emit('pairing_required', key=key,
+                          message=f'此设备的配对记录不匹配。请在移动设备的蓝牙设置中忽略“{self.settings.name}”，再重新配对。')
+        connection.on('connection_authentication_failure', authentication_failed)
         self.reconnect.watch(connection)
         self.emit("device", key=key, state="已连接，等待音频")
         if self.le_audio:
@@ -915,12 +930,20 @@ class Receiver:
         protocol.on("close", lambda: self.media_paused(key, session, True))
 
     async def advertise(self):
-        if self.device and not self.stop_event.is_set():
-            if self.settings.connection_policy != 'le_only':
-                await self.device.set_discoverable(True)
-                await self.device.set_connectable(True)
-            if self.le_audio:
-                await self.le_audio.advertise()
+        async with self.advertise_lock:
+            if self.device and not self.stop_event.is_set():
+                device = self.device
+                if self.settings.connection_policy != 'le_only':
+                    current = (device, bytes(device.inquiry_response or b''))
+                    # Classic inquiry/page scanning survives an ACL connection.
+                    # Reissuing EIR + scan writes during every SSP exchange is
+                    # unnecessary. Cache only after both commands succeed.
+                    if (self.classic_advertised != current or not device.discoverable or not device.connectable):
+                        await device.set_discoverable(True)
+                        await device.set_connectable(True)
+                        self.classic_advertised = (device, bytes(device.inquiry_response or b''))
+                if self.le_audio:
+                    await self.le_audio.advertise()
 
     async def initialize_transport(self, device, config, transport, timeout=12):
         """Bound setup independently of the media path and honor Stop mid-reset."""
@@ -978,6 +1001,9 @@ class Receiver:
             current = getattr(transport.source, 'startup', {}).get('capabilities', {})
             if current:
                 self.emit('controller_capabilities', **current, le_audio_pending=self.settings.le_audio_enabled)
+                identity = current.get('hci', {}).get('identity')
+                if identity:
+                    self.emit('bluetooth_identity', **identity)
                 if self.settings.calls and not current.get('voice_transport'):
                     # Session-only degradation; the user's saved choice survives
                     # switching to an adapter with synchronous USB endpoints.
@@ -994,8 +1020,11 @@ class Receiver:
     async def run(self):
         if self.settings.mode == "native":
             from .native import NativeReceiver
-            self.native = NativeReceiver(self.emit)
-            await self.native.run(self.stop_event)
+            self.native = NativeReceiver(self.emit, directory=self.directory, auto_reconnect=self.settings.auto_reconnect)
+            if self.shared_actor:
+                await self.shared_actor.run_receiver(self.native, self.stop_event)
+            else:
+                await self.native.run(self.stop_event)
             return
         if not self.settings.transport.startswith(("usb:", "usb-id:")):
             raise ValueError("请选择一个 USB 蓝牙适配器；程序不会自动更改驱动")
@@ -1032,8 +1061,12 @@ class Receiver:
                 # Numeric comparison is not meaningful on a headset; pair on the phone.
                 from .le_audio.security import AudioPairingSession, pairing_config
                 device.smp_session_proxy = AudioPairingSession
-                device.pairing_config_factory = lambda _: pairing_config(
-                    dual_mode=config.classic_enabled and config.le_enabled)
+                def pairing_configuration(connection):
+                    startup = getattr(connection, '_bluehead_classic_startup', None)
+                    if startup:
+                        startup.pairing_started()
+                    return pairing_config(dual_mode=config.classic_enabled and config.le_enabled)
+                device.pairing_config_factory = pairing_configuration
                 self.attach(device)
                 output_factory = AudioOutput
                 if getattr(self.mixer, "remote", False):
@@ -1244,6 +1277,16 @@ class Receiver:
             return mapped, errors
 
     async def action(self, action, key):
+        if self.native:
+            operation = (self.native.connect(key) if action == 'shared_connect' else
+                         self.native.refresh() if action == 'shared_refresh' else
+                         self.native.disconnect(key) if action == 'disconnect' else None)
+            if operation is not None:
+                if self.shared_actor:
+                    await self.shared_actor.invoke(operation)
+                else:
+                    await operation
+            return
         if action == 'codec_preferences':
             self.settings = replace(self.settings, **key)
         elif action == 'broadcast':
@@ -1300,6 +1343,8 @@ class Runner:
         self.loop = None
         self.thread = None
         self.stop_requested = threading.Event()
+        self.recovering = False
+        self.shared_actor = None
         self.telemetry_lock, self.telemetry_pending = threading.Lock(), None
 
     def start(self, settings, directory):
@@ -1315,9 +1360,41 @@ class Runner:
     def _run(self, settings, directory):
         async def run():
             self.loop = asyncio.get_running_loop()
-            self.receiver = Receiver(settings, directory, self.emit)
-            if not self.stop_requested.is_set():
-                await self.receiver.run()
+            transient = {'usb_transfer_failed', 'controller_connection_lost', 'controller_unresponsive',
+                         'controller_restarted', 'device_removed'}
+            def relay(event, **values):
+                # Retirement is completed before a replacement owner is created.
+                # Do not present a transient internal retirement as a user stop.
+                if not self.stop_requested.is_set() and (
+                    event == 'stopping' or event == 'status' and values.get('message') == '已停止'):
+                    return
+                if event == 'status' and values.get('message', '').startswith('已就绪'):
+                    self.recovering = False
+                self.emit(event, **values)
+            for attempt in range(3):
+                if self.stop_requested.is_set():
+                    return
+                self.receiver = Receiver(settings, directory, relay)
+                self.receiver.shared_actor = self.shared_actor
+                try:
+                    await self.receiver.run()
+                    return
+                except Exception as error:
+                    # Receiver.run owns complete transport/PCM retirement. Never
+                    # reset a live owner, retry missing firmware, or raise UAC.
+                    if (settings.mode == 'native' or self.stop_requested.is_set() or attempt == 2
+                            or getattr(error, 'category', '') not in transient):
+                        raise
+                    log.warning('Transient receiver failure; complete old owner retired before retry %d: %s',
+                                attempt + 1, getattr(error, 'category', ''))
+                    self.recovering = True
+                    self.receiver = None
+                    self.emit('recovery', state='retrying', attempt=attempt + 1,
+                              message='蓝牙连接暂时中断，正在自动恢复… 可随时点击“停止接收”。')
+                    for _ in range((5, 15)[attempt]):
+                        if self.stop_requested.is_set():
+                            return
+                        await asyncio.sleep(.1)
         try:
             asyncio.run(run())
         except Exception as exc:
@@ -1332,6 +1409,7 @@ class Runner:
             # that executor, or accept a replacement using incomplete cleanup.
             self.receiver = None
             self.loop = None
+            self.recovering = False
             self.emit("stopped")
 
     def stop(self):

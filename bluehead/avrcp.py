@@ -291,6 +291,9 @@ class Peer:
     async def connect(self):
         if self.closed:
             raise PeerDisconnected()
+        from .classic_startup import optional_ready
+        if not await optional_ready(self.connection) or self.closed:
+            return
         if self.channel is not None or self.connecting:
             return
         self.connecting = True

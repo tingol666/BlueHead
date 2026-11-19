@@ -42,6 +42,7 @@ internal static class DeviceNative
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string DriverPath;
     }
     [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern IntPtr SetupDiGetClassDevs(IntPtr guid, string? enumerator, IntPtr window, uint flags);
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern IntPtr SetupDiGetClassDevs(ref Guid guid, string? enumerator, IntPtr window, uint flags);
     [DllImport("setupapi.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetupDiEnumDeviceInfo(IntPtr set, uint index, ref DeviceInfo device);
     [DllImport("setupapi.dll", SetLastError = true)] internal static extern bool SetupDiDestroyDeviceInfoList(IntPtr set);
     [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern bool SetupDiGetDeviceInstanceId(IntPtr set, ref DeviceInfo device, StringBuilder buffer, int length, out int required);
@@ -53,8 +54,28 @@ internal static class DeviceNative
     [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern bool SetupCopyOEMInf(string source, string? sourcePath, uint media, uint style, StringBuilder destination, int length, out int required, IntPtr component);
     [DllImport("newdev.dll", SetLastError = true)] internal static extern bool DiInstallDevice(IntPtr window, IntPtr set, ref DeviceInfo device, ref DriverInfo driver, uint flags, out bool reboot);
     [DllImport("cfgmgr32.dll")] internal static extern uint CM_Get_DevNode_Status(out uint status, out uint problem, uint instance, uint flags);
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)] internal static extern uint CM_Query_And_Remove_SubTreeW(uint node, out uint veto,
+        [Out, MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.U2, SizeParamIndex = 3)] char[] name, uint capacity, uint flags);
+    [DllImport("cfgmgr32.dll")] internal static extern uint CM_Setup_DevNode(uint node, uint flags);
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)] internal static extern uint CM_Locate_DevNodeW(out uint node, string instance, uint flags);
+    [DllImport("cfgmgr32.dll")] internal static extern uint CM_Disable_DevNode(uint node, uint flags);
+    [DllImport("cfgmgr32.dll")] internal static extern uint CM_Enable_DevNode(uint node, uint flags);
     [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)] private static extern uint CM_Get_Device_ID(uint instance, StringBuilder id, int length, uint flags);
     [DllImport("cfgmgr32.dll")] private static extern uint CM_Get_Parent(out uint parent, uint instance, uint flags);
+    internal static bool BelongsTo(uint node, string ancestor)
+    {
+        // Match the exact HCI function, including &MI_ interfaces. Comparing
+        // only the USB container could touch a sibling function or miss it.
+        for (int depth = 0; depth < 16; depth++)
+        {
+            var id = new StringBuilder(1024);
+            if (CM_Get_Device_ID(node, id, id.Capacity, 0) != 0) return false;
+            if (id.ToString().Equals(ancestor, StringComparison.OrdinalIgnoreCase)) return true;
+            if (CM_Get_Parent(out var parent, node, 0) != 0 || parent == node) return false;
+            node = parent;
+        }
+        return false;
+    }
     internal static string PhysicalInstance(uint node)
     {
         for (var depth = 0; depth < 8; depth++)

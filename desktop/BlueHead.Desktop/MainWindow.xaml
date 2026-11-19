@@ -48,7 +48,7 @@
 
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
 
-    <Border x:Name="Notice" Visibility="Collapsed" Background="#FFF2DF" CornerRadius="7" Padding="10,8" Margin="0,0,0,10"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="NoticeText" Foreground="#805015" VerticalAlignment="Center"/><ui:Button x:Name="NoticeAction" Grid.Column="1" Content="处理蓝牙问题" Click="SetupBluetoothClick" Visibility="Collapsed" Padding="9,4" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Border>
+    <Border x:Name="Notice" Visibility="Collapsed" Background="#FFF2DF" CornerRadius="7" Padding="10,8" Margin="0,0,0,10"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="NoticeText" Foreground="#805015" VerticalAlignment="Center"/><ui:Button x:Name="NoticeRecheck" Grid.Column="1" Content="重新检测" Click="RefreshClick" Visibility="Collapsed" Padding="9,4" Margin="10,0,0,0" VerticalAlignment="Center"/><ui:Button x:Name="NoticeAction" Grid.Column="2" Content="处理蓝牙问题" Click="SetupBluetoothClick" Visibility="Collapsed" Padding="9,4" Margin="6,0,0,0" VerticalAlignment="Center"/></Grid></Border>
 
     <Grid Grid.Row="1">
 
@@ -137,6 +137,18 @@
 
         <Border x:Name="EmptyState" Style="{StaticResource Card}" Padding="18,16" Margin="0,0,0,8"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="44"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Border Width="30" Height="34" CornerRadius="8" Background="#F0F2F6" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Text="&#xE95B;" FontFamily="Segoe Fluent Icons" FontSize="20" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,12,0"><TextBlock Text="等待设备连接" FontSize="15" FontWeight="SemiBold"/><TextBlock x:Name="PairingHint" Text="开始接收后，在移动设备的蓝牙设置中连接 BlueHead PC。" Foreground="{StaticResource Muted}" FontSize="12" Margin="0,4,0,0"/></StackPanel><ui:Button Grid.Column="2" Content="连接步骤" Click="PairingClick" BorderThickness="0" Background="Transparent" Foreground="{StaticResource Accent}" VerticalAlignment="Center" Padding="6,4"/></Grid></Border>
 
+        <Border x:Name="SharedPlaybackPanel" Style="{StaticResource Card}" Padding="12,10" Margin="0,0,0,8" Visibility="Collapsed">
+         <StackPanel>
+          <DockPanel Margin="0,0,0,6"><ui:Button DockPanel.Dock="Right" Content="Windows 蓝牙设置" Click="WindowsBluetoothClick" Padding="7,3" FontSize="11" BorderThickness="0" Background="Transparent" Foreground="{StaticResource Accent}"/><TextBlock x:Name="SharedSelectionTitle" Text="选择 Windows 已连接的设备" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/></DockPanel>
+          <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+           <ComboBox x:Name="SharedSourcePicker" MinWidth="150" MinHeight="28" SelectionChanged="SharedSourceChanged" AutomationProperties.Name="选择设备；由 Windows 配对和连接，BlueHead 只接收你选择的设备音频"/>
+           <ui:Button x:Name="SharedConnectButton" Grid.Column="1" Content="接收此设备的音频" Click="SharedConnectClick" Padding="9,4" Margin="7,0,0,0" Appearance="Primary" IsEnabled="False"/>
+           <ui:Button x:Name="SharedRecheckButton" Grid.Column="2" Content="重新检测" Click="RefreshClick" Padding="9,4" Margin="6,0,0,0"/>
+          </Grid>
+          <DockPanel Margin="0,5,0,0"><CheckBox x:Name="SharedShowDisconnected" DockPanel.Dock="Right" Content="显示未连接设备" FontSize="11" VerticalAlignment="Center" Checked="SharedFilterChanged" Unchecked="SharedFilterChanged"/><TextBlock x:Name="SharedSelectionCount" Text="已选择 0 台" Style="{StaticResource Caption}" VerticalAlignment="Center"/></DockPanel>
+          <TextBlock x:Name="SharedPlaybackHint" Text="先点击右上方“Windows 蓝牙设置”配对设备，再在此选择设备，点击“接收此设备的音频”。未选择的设备继续由 Windows 管理。" Style="{StaticResource Caption}" Margin="0,7,0,0"/>
+         </StackPanel>
+        </Border>
         <ItemsControl x:Name="DeviceCards" ItemsSource="{Binding Devices}">
 
          <ItemsControl.ItemTemplate><DataTemplate DataType="{x:Type local:DeviceCard}">
@@ -294,7 +306,7 @@
      </StackPanel></ScrollViewer>
 
      <Grid x:Name="AdaptersPage" Visibility="Collapsed"><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><ScrollViewer x:Name="AdaptersScroll" VerticalScrollBarVisibility="Auto" Padding="0,0,2,0"><StackPanel>
-      <DockPanel LastChildFill="True" Margin="0,0,0,5"><ui:Button x:Name="RefreshBluetoothButton" DockPanel.Dock="Right" Content="刷新状态" Click="RefreshClick" Padding="9,4"/><TextBlock Text="蓝牙驱动设置" Style="{StaticResource Heading}" VerticalAlignment="Center"/></DockPanel>
+      <DockPanel LastChildFill="True" Margin="0,0,0,5"><ui:Button x:Name="RefreshBluetoothButton" DockPanel.Dock="Right" Content="重新检测" Click="RefreshClick" Padding="9,4"/><TextBlock Text="蓝牙驱动设置" Style="{StaticResource Heading}" VerticalAlignment="Center"/></DockPanel>
       <TextBlock Text="先选电脑的蓝牙设备，再选蓝牙使用方式。是否需要切换驱动，下面会告诉你。" Style="{StaticResource Caption}" Margin="0,0,0,12"/>
       <Border x:Name="BluetoothSetupCard" Style="{StaticResource Card}" Padding="14"><StackPanel>
        <StackPanel x:Name="DriverChoiceRow"><TextBlock Text="1  选择电脑的蓝牙设备" FontWeight="SemiBold" FontSize="14"/>

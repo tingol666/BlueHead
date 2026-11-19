@@ -138,6 +138,7 @@ class CallManager:
         self.protocols, self.links, self.tasks = {}, {}, set()
         self.protocol_tasks = {}
         self.connections, self.clients, self.control_ready, self.control_locks = {}, {}, {}, {}
+        self.incoming_muxes, self.incoming_changed = {}, {}
         self.closed = False
         self.voice_protection = None
         self.microphone = None
@@ -164,6 +165,7 @@ class CallManager:
             supported_audio_codecs=[hfp.AudioCodec(codec) for codec in available_codecs()],
         )
         self.server = rfcomm.Server(device)
+        self.server.on(self.server.EVENT_START, self.incoming_started)
         channel = self.server.listen(self.on_dlc)
         self.sdp_record = handsfree_records(0x10002, channel, self.configuration)
         device.sdp_service_records[0x10002] = self.sdp_record
@@ -285,12 +287,16 @@ class CallManager:
             # Let the phone initiate first; otherwise behave like a headset and
             # establish the service-level connection from this side.
             await asyncio.sleep(2)
+            from .classic_startup import optional_ready
+            if not await optional_ready(connection):
+                return
             if not self.closed and self.connections.get(key) is connection:
                 try:
                     await self.ensure_control(key)
                 except Exception as exc:
-                    log.warning("HFP connect failed: peer=%s %s", key, exc)
-                    self.emit("call", key=key, state="蓝牙语音服务未连接，可点击“连接语音通道”重试")
+                    if not self.closed and self.connections.get(key) is connection:
+                        log.warning("HFP connect failed: peer=%s %s", key, exc)
+                        self.emit("call", key=key, state="蓝牙语音服务未连接，请在发送设备的蓝牙设置中断开这台电脑后重新连接")
 
         task = self.spawn(connect_control())
 
@@ -322,6 +328,10 @@ class CallManager:
         if client:
             retirement.call(self.retire_rfcomm_client, client)
         self.control_locks.pop(key, None)
+        self.incoming_muxes.pop(key, None)
+        changed = self.incoming_changed.pop(key, None)
+        if changed:
+            changed.set()
         self.statistics.pop(key, None)
         self.traffic.pop(key, None)
         self.speaker_volumes.pop(key, None)
@@ -332,6 +342,43 @@ class CallManager:
         if retirement.first:
             log.warning("Disconnected voice cleanup incomplete (%s)", type(retirement.first).__name__)
 
+    def incoming_started(self, mux):
+        connection = mux.l2cap_channel.connection
+        key = str(connection.peer_address)
+        if self.closed or self.connections.get(key) is not connection:
+            return
+        self.incoming_muxes.setdefault(key, set()).add(mux)
+        changed = self.incoming_changed.setdefault(key, asyncio.Event())
+        changed.set()
+        def closed():
+            current = self.incoming_muxes.get(key)
+            if current is not None:
+                current.discard(mux)
+                if not current:
+                    self.incoming_muxes.pop(key, None)
+            changed.set()
+        mux.l2cap_channel.once('close', closed)
+
+    async def wait_incoming(self, key, connection):
+        # The remote RFCOMM multiplexer opens before its HFP DLC is delivered.
+        # It is already an incoming connection attempt: do not create a second
+        # multiplexer merely because on_dlc has not run yet.
+        while (not self.closed and self.connections.get(key) is connection and key not in self.protocols
+               and any(mux.l2cap_channel.connection is connection and mux.state not in
+                       (rfcomm.Multiplexer.State.DISCONNECTED, rfcomm.Multiplexer.State.RESET)
+                       for mux in self.incoming_muxes.get(key, ()))):
+            changed = self.incoming_changed.setdefault(key, asyncio.Event())
+            changed.clear()
+            try:
+                # Bumble has no multiplexer-state notification. A peer may
+                # close RFCOMM before closing L2CAP; observe that transition
+                # without waiting for the entire SLC deadline or sending HCI.
+                await asyncio.wait_for(changed.wait(), .25)
+            except TimeoutError:
+                pass
+        if self.closed or self.connections.get(key) is not connection:
+            raise ConnectionError("蓝牙连接已更换")
+
     async def ensure_control(self, key):
         connection = self.connections.get(key)
         if connection is None:
@@ -341,9 +388,17 @@ class CallManager:
             if self.closed or self.connections.get(key) is not connection:
                 raise ConnectionError("蓝牙连接已更换")
             if key not in self.protocols:
-                self.emit("call", key=key, state="正在连接蓝牙语音服务…")
+                from .classic_startup import optional_ready
+                if not await optional_ready(connection):
+                    raise ConnectionError("蓝牙配对尚未完成")
                 async with asyncio.timeout(12):
-                    record = await hfp.find_ag_sdp_record(connection)
+                    await self.wait_incoming(key, connection)
+                    if key in self.protocols:
+                        record = None
+                    else:
+                        self.emit("call", key=key, state="正在连接蓝牙语音服务…")
+                        record = await hfp.find_ag_sdp_record(connection)
+                    await self.wait_incoming(key, connection)
                     if self.closed or self.connections.get(key) is not connection:
                         raise ConnectionError("蓝牙连接已更换")
                     if key not in self.protocols:
@@ -355,6 +410,7 @@ class CallManager:
                             mux = await client.start()
                             if self.closed or self.connections.get(key) is not connection:
                                 raise ConnectionError("蓝牙连接已更换")
+                            await self.wait_incoming(key, connection)
                             if key not in self.protocols:
                                 dlc = await mux.open_dlc(record[0])
                                 if self.closed or self.connections.get(key) is not connection:
@@ -396,6 +452,9 @@ class CallManager:
                     (self.voice_protection is None or await self.voice_protection.prepare(connection, codec)))
         protocol.before_codec = before_codec
         self.protocols[key] = protocol
+        changed = self.incoming_changed.get(key)
+        if changed:
+            changed.set()
         def current():
             return (not self.closed and self.connections.get(key) is connection and
                     self.protocols.get(key) is protocol and not protocol.stopped)
@@ -877,6 +936,7 @@ class CallManager:
         self.closed = True
         retirement = Retirement()
         retirement.call(self.server.l2cap_server.close)
+        retirement.call(self.server.remove_listener, self.server.EVENT_START, self.incoming_started)
         if self.device.sdp_service_records.get(0x10002) is self.sdp_record:
             self.device.sdp_service_records.pop(0x10002, None)
         for protocol in list(self.protocols.values()):
@@ -884,6 +944,10 @@ class CallManager:
         self.protocols.clear()
         self.control_ready.clear()
         self.protocol_tasks.clear()
+        self.incoming_muxes.clear()
+        for changed in self.incoming_changed.values():
+            changed.set()
+        self.incoming_changed.clear()
         for key, client in list(self.clients.items()):
             self.clients.pop(key, None)
             retirement.call(self.retire_rfcomm_client, client)

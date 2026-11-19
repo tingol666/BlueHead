@@ -28,7 +28,7 @@ public record DriverDevice(string InstanceId, string Name, string Service, strin
         }
     }
     public string DeviceLabel => Name + " · " + PortHint;
-    public string DisplayName => $"{DeviceLabel} · {(RebootRequired ? "需要重启 Windows" : string.Equals(Service, "WinUSB", StringComparison.OrdinalIgnoreCase) ? "专用接收" : "系统蓝牙")}";
+    public string DisplayName => $"{DeviceLabel} · {(RebootRequired ? "驱动尚未生效" : string.Equals(Service, "WinUSB", StringComparison.OrdinalIgnoreCase) ? "专用接收" : "系统蓝牙")}";
 }
 public sealed class DriverRecord
 {
@@ -44,6 +44,13 @@ public sealed class DriverRecord
     public bool RebootRequired { get; set; }
     public bool SystemRadioReady { get; set; }
     public string? FirmwarePreparation { get; set; }
+    public string PhysicalInstanceId { get; set; } = "";
+    public string OriginalAddress { get; set; } = "";
+    public string DedicatedAddress { get; set; } = "";
+    public List<string> SuspendedAudioDevices { get; set; } = [];
+    public bool AudioGatewayWasRunning { get; set; }
+    public string? AudioRestoreWarning { get; set; }
+    public string? ReleaseDiagnostic { get; set; }
 }
 public static partial class Drivers
 {
@@ -120,13 +127,10 @@ public static partial class Drivers
                 var queried = DeviceNative.CM_Get_DevNode_Status(out var status, out var problem, device.Instance, 0) == 0;
                 var restart = queried && (status & 0x100) != 0; // DN_NEED_RESTART
                 var record = ReadRecord(instance);
-                // A firmware timeout can require a restart even without
-                // DN_NEED_RESTART. Re-check live radio state after reboot.
-                if (!restart && !service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase) &&
-                    record?.Stage == "restored_restart_required" && record.RebootRequired)
-                    restart = !BluetoothRadio.IsReady(instance);
+                // Operation history is diagnostic only. It cannot manufacture a
+                // new reboot requirement after the device has recovered itself.
                 var healthy = queried && problem == 0 && (status & 8) != 0 && !restart;
-                bool? radioReady = service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase) ? null : healthy && BluetoothRadio.IsReady(instance);
+                bool? radioReady = service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase) ? null : queried && problem == 0 && (status & 8) != 0 && BluetoothRadio.IsReady(instance);
                 var backupAvailable = record != null && File.Exists(Path.Combine(RecordDirectory(instance), record.BackupInf));
                 result.Add(new(instance, name, service, DeviceNative.DriverInf(set, ref device), hardware.Replace('\0', ';'), healthy, backupAvailable) { RebootRequired = restart, SystemRadioReady = radioReady, PhysicalInstanceId = DeviceNative.PhysicalInstance(device.Instance), LocationPaths = DeviceNative.Property(set, ref device, 35), RecoveryStage = record?.Stage ?? "" });
             }
@@ -157,6 +161,31 @@ public static partial class Drivers
         var path = Path.Combine(RecordDirectory(record.InstanceId), "recovery.json");
         File.WriteAllText(path + ".tmp", JsonSerializer.Serialize(record, new JsonSerializerOptions { WriteIndented = true }));
         FrameworkCompat.ReplaceFile(path + ".tmp", path);
+        if (record.OriginalAddress.Length == 12 && record.DedicatedAddress.Length == 12)
+        {
+            var identityRoot = Path.Combine(Store, "Identities"); SecureDirectory(identityRoot);
+            var instance = record.PhysicalInstanceId.Length > 0 ? record.PhysicalInstanceId : record.InstanceId;
+            var identity = Path.Combine(identityRoot, FrameworkCompat.HashPrefix(instance.ToUpperInvariant()) + ".json");
+            var text = JsonSerializer.Serialize(new { InstanceId = instance, record.OriginalAddress, record.DedicatedAddress });
+            if (!File.Exists(identity) || File.ReadAllText(identity) != text)
+            {
+                File.WriteAllText(identity + ".tmp", text);
+                FrameworkCompat.ReplaceFile(identity + ".tmp", identity);
+            }
+        }
+    }
+    private static void EnsureAddressProfile(DriverRecord record, string? original, string physical)
+    {
+        record.PhysicalInstanceId = physical;
+        if (record.OriginalAddress.Length == 0 && original != null && Regex.IsMatch(original, "^[0-9A-Fa-f]{12}$"))
+            record.OriginalAddress = original.ToUpperInvariant();
+        if (record.OriginalAddress.Length == 12 && record.DedicatedAddress.Length == 0)
+        {
+            var bytes = new byte[6];
+            using (var random = RandomNumberGenerator.Create()) random.GetBytes(bytes);
+            bytes[0] = 0x02; // locally administered, unicast; never impersonate a vendor OUI
+            record.DedicatedAddress = BitConverter.ToString(bytes).Replace("-", "");
+        }
     }
     private static (IntPtr Set, DeviceNative.DeviceInfo Device) Open(string instanceId)
     {
@@ -211,7 +240,11 @@ public static partial class Drivers
         SecureDirectory(Path.GetDirectoryName(Store)!); SecureDirectory(Store);
         var folder = RecordDirectory(instanceId); SecureDirectory(folder);
         var existing = ReadRecord(instanceId);
-        if (existing != null && File.Exists(Path.Combine(folder, existing.BackupInf))) return existing;
+        if (existing != null && File.Exists(Path.Combine(folder, existing.BackupInf)))
+        {
+            EnsureAddressProfile(existing, BluetoothRadio.Address(instanceId), device.PhysicalInstanceId);
+            Save(existing); return existing;
+        }
         var original = device.Inf;
         string description = device.Name, provider = "";
         if (device.Service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase))
@@ -234,6 +267,7 @@ public static partial class Drivers
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "INF", original), Directory.EnumerateFiles(backup, "*.inf", SearchOption.AllDirectories)) : null;
         var record = new DriverRecord { InstanceId = instanceId, OriginalInf = original, OriginalDescription = description, OriginalProvider = provider,
             BackupInf = inf == null ? "original/inbox-reference.txt" : FrameworkCompat.RelativePath(folder, inf) };
+        EnsureAddressProfile(record, BluetoothRadio.Address(instanceId), device.PhysicalInstanceId);
         Save(record); return record;
     }
     private static bool Bind(string instanceId, string infPath)
@@ -264,22 +298,23 @@ public static partial class Drivers
     {
         RequireAdministrator();
         RequireReceiverStopped(instanceId);
-        using var lease = new Mutex(false, @"Global\BlueHead.DriverOperation");
-        if (!lease.WaitOne(0)) throw new IOException("另一个驱动操作正在执行。");
-        try
+        using (var lease = new DriverOperationLease())
         {
             RequireReceiverStopped(instanceId);
             var record = BackupAsync(instanceId).GetAwaiter().GetResult();
-            if (Enumerate().Single(item => item.InstanceId.Equals(instanceId, StringComparison.OrdinalIgnoreCase)).Service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase)) return record;
+            if (Enumerate().Single(item => item.InstanceId.Equals(instanceId, StringComparison.OrdinalIgnoreCase)).Service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase))
+            {
+                using var audio = QuiesceDriverAudio(record);
+                WaitForDriverReady(record, true);
+                record.Stage = record.RebootRequired ? "winusb_restart_required" : "winusb_ready"; record.Error = null; Save(record); return record;
+            }
             record.Stage = "preparing_winusb"; record.Error = null; Save(record);
             try
             {
                 var package = Path.Combine(RecordDirectory(instanceId), "winusb"); SecureDirectory(package);
                 LibWdi.Prepare(instanceId, package);
                 record.Stage = "binding_winusb"; Save(record);
-                record.RebootRequired = Bind(instanceId, Path.Combine(package, "bluehead.inf"));
-                record.SystemRadioReady = false;
-                if (!record.RebootRequired) WaitForDriverReady(record, true);
+                BindAndConfirm(record, Path.Combine(package, "bluehead.inf"), true);
                 record.Stage = record.RebootRequired ? "winusb_restart_required" : "winusb_ready"; Save(record); return record;
             }
             catch (Exception error)
@@ -289,17 +324,21 @@ public static partial class Drivers
                 throw;
             }
         }
-        finally { lease.ReleaseMutex(); }
     });
     private static DriverRecord RestoreCore(DriverRecord record, bool prepareFirmware = true)
     {
-        if (prepareFirmware) PrepareControllerRestore(record);
+        using var audio = QuiesceDriverAudio(record);
+        var current = Enumerate().SingleOrDefault(item => item.InstanceId.Equals(record.InstanceId, StringComparison.OrdinalIgnoreCase));
+        bool dedicated = current?.Service.Equals("WinUSB", StringComparison.OrdinalIgnoreCase) == true;
+        if (dedicated && (prepareFirmware || record.OriginalAddress.Length == 12)) PrepareControllerRestore(record);
         record.Stage = "restoring"; record.Error = null; Save(record);
         var inf = Path.Combine(RecordDirectory(record.InstanceId), record.BackupInf);
         if (Path.GetExtension(inf) != ".inf") inf = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "INF", record.OriginalInf);
-        record.RebootRequired = Bind(record.InstanceId, inf);
+        // An already-bound Windows driver needs observation/restart, not a new
+        // install (which can create another pending driver transaction).
+        if (dedicated) record.RebootRequired = Bind(record.InstanceId, inf);
         record.SystemRadioReady = false;
-        if (!record.RebootRequired) WaitForDriverReady(record, false);
+        WaitForDriverReady(record, false);
         record.Error = record.RebootRequired ? "驱动恢复完成，请重启电脑。" : null;
         record.Stage = record.RebootRequired ? "restored_restart_required" : "restored"; Save(record); return record;
     }
@@ -307,16 +346,13 @@ public static partial class Drivers
     {
         RequireAdministrator();
         RequireReceiverStopped(instanceId);
-        using var lease = new Mutex(false, @"Global\BlueHead.DriverOperation");
-        if (!lease.WaitOne(0)) throw new IOException("另一个驱动操作正在执行。");
-        try
+        using (var lease = new DriverOperationLease())
         {
             RequireReceiverStopped(instanceId);
             var record = ReadRecord(instanceId) ?? BackupAsync(instanceId).GetAwaiter().GetResult();
             try { return RestoreCore(record); }
             catch (Exception error) { record.Stage = "recovery_required"; record.Error = error.Message; Save(record); throw; }
         }
-        finally { lease.ReleaseMutex(); }
     });
     private static void RequireAdministrator()
     {

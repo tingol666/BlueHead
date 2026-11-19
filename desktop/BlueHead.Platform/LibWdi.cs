@@ -23,6 +23,17 @@ internal static class LibWdi
     [DllImport("libwdi.dll")] private static extern IntPtr wdi_strerror(int code);
     internal static void Prepare(string instanceId, string folder)
     {
+        // The folder is protected for administrators by Drivers. Reuse the
+        // exact existing package; Windows still verifies its signed catalog at
+        // binding. Repeated repairs must not create dated duplicates forever.
+        var existing = Path.Combine(folder, "bluehead.inf");
+        var hardware = instanceId.Split('\\')[1];
+        if (File.Exists(existing) && File.Exists(Path.Combine(folder, "bluehead.cat")))
+        {
+            var text = File.ReadAllText(existing);
+            if (text.IndexOf(hardware, StringComparison.OrdinalIgnoreCase) >= 0 &&
+                text.IndexOf("WINUSB.NT", StringComparison.OrdinalIgnoreCase) >= 0) return;
+        }
         var options = new ListOptions { All = 1, Trim = 1 };
         var error = wdi_create_list(out var list, ref options);
         Check(error);
